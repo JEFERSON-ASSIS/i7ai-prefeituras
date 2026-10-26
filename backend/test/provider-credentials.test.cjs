@@ -4,7 +4,7 @@ const http = require('node:http');
 require('reflect-metadata');
 const { ProviderCredentialsService } = require('../dist/ai/provider-credentials.service');
 
-const SECRET = 'sk-proj-REALSECRETVALUE1234567890';
+const SECRET = 'sk-test-not-a-real-key-0000000000';
 const envKeys = ['OMNIROUTER_BASE_URL', 'OMNIROUTER_API_KEY', 'LITELLM_ADMIN_URL', 'LITELLM_ADMIN_KEY', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 test.afterEach(() => envKeys.forEach(key => savedEnv[key] === undefined ? delete process.env[key] : process.env[key] = savedEnv[key]));
