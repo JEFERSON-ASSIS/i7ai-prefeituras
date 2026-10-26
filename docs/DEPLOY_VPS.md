@@ -49,14 +49,13 @@ A ordem de liberação é 1.1 → 1.4. Os itens 1.1 a 1.3 são feitos agora. O i
 Na máquina de desenvolvimento, no repositório `JEFERSON-ASSIS/i7ai-prefeituras`:
 
 ```bash
-git status --short            # só arquivos fora do escopo (ex.: output/verification/*) podem aparecer; não os inclua
 git fetch origin
+git merge-base --is-ancestor origin/main feat/central-ia && echo ff-ok
 git log --oneline origin/main..feat/central-ia   # confira a lista; este roteiro (docs/DEPLOY_VPS.md) precisa estar nela
-git checkout main && git merge --ff-only feat/central-ia
-git push origin main
+git push origin feat/central-ia:main
 ```
 
-**Esperado:** o merge é fast-forward. Em GitHub → Actions, o workflow **Docker Publish** termina verde e publica `ghcr.io/jeferson-assis/i7ai-backend` e `ghcr.io/jeferson-assis/i7ai-frontend` com as tags `main`, `latest` e o SHA do commit.
+**Esperado:** `ff-ok`; o push é fast-forward (sem checkout: alterações locais fora do escopo, como `output/verification/*`, não entram). Em GitHub → Actions, o workflow **Docker Publish** termina verde e publica `ghcr.io/jeferson-assis/i7ai-backend` e `ghcr.io/jeferson-assis/i7ai-frontend` com as tags `main`, `latest` e o SHA do commit.
 
 ### 1.2 Pacotes do GHCR públicos
 
@@ -137,15 +136,15 @@ Copie o arquivo da migration da sua máquina para a VPS (do checkout do SGDM na 
 
 ```bash
 # na sua máquina
-scp apps/api/prisma/migrations/20261210100000_i7ai_permissoes/migration.sql <VPS_USER>@162.141.109.168:/root/i7ai_permissoes.sql
+scp apps/api/prisma/migrations/20261210100000_i7ai_permissoes/migration.sql <VPS_USER>@162.141.109.168:~/i7ai_permissoes.sql
 ```
 
 Na VPS — ⚠ **altera a VPS** (cria e depois apaga o banco `sgdm_teste`; o banco `postgres` só é lido):
 
 ```bash
 docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -c 'CREATE DATABASE sgdm_teste'
-docker exec -i $(docker ps -q -f name=postgres_postgres) sh -c 'pg_dump -U postgres --no-owner --no-privileges -d postgres | psql -q -U postgres -d sgdm_teste' > /root/sgdm_teste_restore.log 2>&1
-grep -c ERROR /root/sgdm_teste_restore.log
+docker exec -i $(docker ps -q -f name=postgres_postgres) sh -c 'pg_dump -U postgres --no-owner --no-privileges -d postgres | psql -q -U postgres -d sgdm_teste' > ~/sgdm_teste_restore.log 2>&1
+grep -c ERROR ~/sgdm_teste_restore.log
 ```
 
 **Esperado:** `CREATE DATABASE`; o `grep -c` imprime `0`. Se houver erros, leia o log: só são aceitáveis os de extensão ou objeto já existente que não tocam as tabelas `permissoes`, `perfis` e `perfil_permissoes`.
@@ -153,7 +152,7 @@ grep -c ERROR /root/sgdm_teste_restore.log
 Primeira aplicação:
 
 ```bash
-docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgdm_teste -v ON_ERROR_STOP=1 < /root/i7ai_permissoes.sql
+docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgdm_teste -v ON_ERROR_STOP=1 < ~/i7ai_permissoes.sql
 ```
 
 **Esperado:** `INSERT 0 3` (as três permissões) e `INSERT 0 N`, com N = 3 × número de perfis de sistema (`perfis.sistema = true`: ADMINISTRADOR e DONO_PLATAFORMA). Nenhum `ERROR`.
@@ -161,7 +160,7 @@ docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgd
 Segunda aplicação (prova de idempotência):
 
 ```bash
-docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgdm_teste -v ON_ERROR_STOP=1 < /root/i7ai_permissoes.sql
+docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgdm_teste -v ON_ERROR_STOP=1 < ~/i7ai_permissoes.sql
 ```
 
 **Esperado:** `INSERT 0 0` e `INSERT 0 0`.
@@ -170,7 +169,7 @@ Limpeza — ⚠ **altera a VPS**:
 
 ```bash
 docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -c 'DROP DATABASE sgdm_teste'
-rm /root/sgdm_teste_restore.log /root/i7ai_permissoes.sql
+rm ~/sgdm_teste_restore.log ~/i7ai_permissoes.sql
 docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname = 'sgdm_teste'"
 ```
 
