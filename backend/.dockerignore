@@ -1,6 +1,7 @@
 # Exclude installed Windows binaries, local secrets, tests and previous builds.
 *
 !Dockerfile
+!docker-entrypoint.sh
 !package.json
 !package-lock.json
 !nest-cli.json
