@@ -160,8 +160,12 @@ services:
       - interna
       - SGDMNET
     read_only: true
-    tmpfs:
-      - /tmp
+    # read_only: /tmp gravável como tmpfs (sintaxe longa, honrada pelo Swarm).
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 67108864
     cap_drop:
       - ALL
     healthcheck:
@@ -190,8 +194,12 @@ services:
     networks:
       - SGDMNET
     read_only: true
-    tmpfs:
-      - /tmp
+    # read_only: /tmp gravável como tmpfs (sintaxe longa, honrada pelo Swarm).
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 67108864
     cap_drop:
       - ALL
     healthcheck:

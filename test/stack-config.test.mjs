@@ -37,6 +37,13 @@ test('a pilha renderiza com o exemplo e não publica portas', () => {
   // Depending on the CLI version, 1200M renders as-is or in bytes.
   assert.match(out, /memory: "?(1200M|1258291200)"?/);
   assert.ok(!out.includes('published:'), 'no port may be published');
+  // read_only services need /tmp as a tmpfs mount that Swarm honours (long volume syntax).
+  for (const service of ['i7ai-backend', 'i7ai-frontend']) {
+    const block = out.split(new RegExp(`^  ${service}:$`, 'm'))[1]?.split(/^  \S/m)[0] ?? '';
+    assert.match(block, /type: tmpfs\s+target: \/tmp/, `${service} must mount /tmp as tmpfs`);
+    assert.doesNotMatch(block, /^    tmpfs:/m, `${service} must not rely on short tmpfs syntax`);
+    assert.doesNotMatch(block, /type: volume\s+target: \/tmp/, `${service} must not mount /tmp as a volume`);
+  }
   // The marketing site's router and the shared names on SGDMNET must stay untouched.
   assert.ok(!/routers\.i7ai\./.test(out), 'router name must not collide with the marketing site');
   assert.ok(!/@postgres:|redis:\/\/[^@]*@redis:|http:\/\/minio:/.test(out), 'must not target SGDM data services');
