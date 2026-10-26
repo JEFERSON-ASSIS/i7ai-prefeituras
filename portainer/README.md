@@ -15,7 +15,7 @@ flowchart LR
   F -- /i7ai/api --> B[i7ai-backend :3000]
   B --> P[(i7ai-postgres)]
   B --> R[(i7ai-redis)]
-  B --> M[(i7ai-minio)]
+  B --> M[(minio do SGDM)]
   B --> L[litellm :4000]
   B --> S[sgdm-api :3001]
   S --> L
@@ -26,12 +26,11 @@ flowchart LR
 |-------|--------|------------|
 | `i7ai-postgres` | `interna` | pgvector; usuário e banco `i7ai`; banco `litellm` criado na 1ª subida |
 | `i7ai-redis` | `interna` | com senha e AOF |
-| `i7ai-minio` | `interna` | mesma imagem do MinIO do SGDM |
 | `litellm` | `interna` + `SGDMNET` | o SGDM chama `http://litellm:4000` |
 | `i7ai-backend` | `interna` + `SGDMNET` | migrations e bucket no entrypoint |
 | `i7ai-frontend` | `SGDMNET` | rota do Traefik `i7ai_plataforma` |
 
-Nenhuma porta é publicada; só o Traefik expõe 80/443. Os nomes `postgres`, `redis`, `minio` e `sgdm-api` na `SGDMNET` são do SGDM — por isso os serviços de dados do i7Ai se chamam `i7ai-*` e ficam fora da `SGDMNET`.
+Nenhuma porta é publicada; só o Traefik expõe 80/443. Os nomes `postgres`, `redis` e `sgdm-api` na `SGDMNET` são do SGDM — por isso Postgres e Redis do i7Ai se chamam `i7ai-*` e ficam fora da `SGDMNET`. O armazenamento de arquivos é o **MinIO compartilhado do SGDM** (`http://minio:9000`, resolvido só na `SGDMNET`): o i7Ai usa o bucket `i7ai-documents` e um usuário próprio (`I7AI_S3_ACCESS_KEY` / `I7AI_S3_SECRET_KEY`) com política restrita a esse bucket, criados antes do deploy (passo 6.1 de [docs/DEPLOY_VPS.md](../docs/DEPLOY_VPS.md)). A stack não sobe MinIO próprio: o MinIO deixou de publicar imagens públicas.
 
 ---
 
@@ -129,7 +128,7 @@ Uma vez só, depois do primeiro Docker Publish: GitHub → Packages → tornar `
 | Voltar a versão anterior de um serviço | `docker service rollback i7ai-plataforma_i7ai-backend` (ou `_i7ai-frontend`) |
 | Tirar o i7Ai do ar (SGDM continua) | `docker stack rm i7ai-plataforma` |
 
-`docker stack rm` remove só os serviços desta stack; os volumes (`i7ai-plataforma_i7ai_postgres`, `_i7ai_redis`, `_i7ai_minio`) ficam, e um novo deploy volta com os mesmos dados. Nada do SGDM é alterado.
+`docker stack rm` remove só os serviços desta stack; os volumes (`i7ai-plataforma_i7ai_postgres`, `_i7ai_redis`) ficam, e um novo deploy volta com os mesmos dados. Nada do SGDM é alterado.
 
 ---
 

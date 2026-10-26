@@ -24,7 +24,8 @@ Referências: [portainer/README.md](../portainer/README.md) (stack), [portainer/
 | Postgres compartilhado | `postgres:14`, stack `postgres`, serviço `postgres_postgres` |
 | Banco do SGDM | banco **`postgres`**, usuário `postgres` (não o `sgdm` dos exemplos) |
 | Stack do SGDM | `sgdm-app` → serviços `sgdm-app_sgdm-api` e `sgdm-app_sgdm-web`; hosts `sgdm.com.br` e `api.sgdm.com.br` |
-| Stack nova | **`i7ai-plataforma`** → `i7ai-plataforma_i7ai-postgres`, `_i7ai-redis`, `_i7ai-minio`, `_litellm`, `_i7ai-backend`, `_i7ai-frontend` |
+| MinIO compartilhado | stack `minio`, serviço `minio_minio`; o i7Ai usa o bucket `i7ai-documents` e um usuário próprio (passo 6.1) |
+| Stack nova | **`i7ai-plataforma`** → `i7ai-plataforma_i7ai-postgres`, `_i7ai-redis`, `_litellm`, `_i7ai-backend`, `_i7ai-frontend` |
 | Stack que NÃO se mexe | **`i7ai`** — é o site institucional `i7ai.com.br`. Nunca use esse nome nem rode `docker stack rm i7ai`. |
 | Backup do SGDM | i7ai-cloud, backup diário do banco do SGDM (usuário `backup_leitura`, só leitura) |
 
@@ -222,9 +223,9 @@ Parta de [portainer/stack.env.example](../portainer/stack.env.example) e preench
 | `I7AI_IMAGE_TAG` | `main` |
 | `POSTGRES_PASSWORD` | `openssl rand -hex 32` |
 | `REDIS_PASSWORD` | `openssl rand -hex 32` |
-| `MINIO_ROOT_USER` | `i7ai` |
-| `MINIO_ROOT_PASSWORD` | `openssl rand -hex 32` |
-| `S3_BUCKET` | `i7ai-documents` |
+| `I7AI_S3_ACCESS_KEY` | `i7ai-app` (usuário do MinIO do SGDM criado no passo 6.1) |
+| `I7AI_S3_SECRET_KEY` | `openssl rand -hex 32`; o mesmo valor é usado no passo 6.1 e na stack |
+| `S3_BUCKET` | `i7ai-documents` (criado no passo 6.1) |
 | `JWT_SECRET` | `openssl rand -hex 32` |
 | `SGDM_JWT_SECRET` | **o `JWT_SECRET` da stack `sgdm-app`** (Portainer → Stacks → `sgdm-app` → Environment variables) |
 | `SGDM_INTEGRATION_KEY` | `openssl rand -hex 32`, gerado **uma vez**; o mesmo valor vai em `I7AI_INTEGRACAO_CHAVE` do `sgdm-app` no passo 9 |
@@ -235,6 +236,86 @@ Parta de [portainer/stack.env.example](../portainer/stack.env.example) e preench
 | `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL` | vazios (base de conhecimento sem embeddings) |
 
 **Esperado:** nenhuma variável obrigatória vazia nem com o texto de exemplo (`change-...`).
+
+---
+
+## 6.1 Bucket e usuário do i7Ai no MinIO do SGDM
+
+⚠ **altera a VPS** (cria um bucket, uma política e um usuário no MinIO do SGDM; nenhum bucket existente é tocado). O MinIO deixou de publicar imagens públicas, então a stack do i7Ai **não** sobe MinIO próprio: usa o MinIO que o SGDM já roda (stack `minio`, serviço `minio_minio`, resolvido como `minio:9000` na `SGDMNET`), com o bucket `i7ai-documents` e um usuário que só enxerga esse bucket. O `mc` roda **dentro** do contêiner do MinIO, sem baixar imagem. Faça isto **antes** do passo 7.
+
+Tenha à mão `I7AI_S3_ACCESS_KEY` (`i7ai-app`) e `I7AI_S3_SECRET_KEY` do passo 6. As credenciais raiz do MinIO estão em Portainer → Stacks → `minio` → Environment variables (`MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`).
+
+**a. Achar o contêiner e conferir o `mc`** (só lê):
+
+```bash
+docker ps -q -f label=com.docker.swarm.service.name=minio_minio | wc -l
+M=$(docker ps -q -f label=com.docker.swarm.service.name=minio_minio)
+docker exec $M sh -c 'command -v mc && mc --version'
+```
+
+**Esperado:** `1` na contagem (se vier `0` ou `2`, **pare**: o MinIO não está como esperado); o caminho do `mc` e sua versão. **Se o `mc` não existir no contêiner, PARE e não continue:** reporte ao responsável pelo deploy; o deploy do i7Ai espera uma solução (não instale nada no MinIO do SGDM por conta própria).
+
+**b. Alias administrativo** (senha lida sem eco, fora do histórico do shell; o `mc` guarda o alias na pasta pessoal do contêiner, por isso ele é removido no item f):
+
+```bash
+read -r -p 'MINIO_ROOT_USER: ' RU
+read -r -s -p 'MINIO_ROOT_PASSWORD: ' RP; echo
+docker exec -e RU="$RU" -e RP="$RP" $M sh -c 'mc alias set local http://127.0.0.1:9000 "$RU" "$RP"'
+unset RU RP
+```
+
+**Esperado:** ``Added `local` successfully.``
+
+**c. Bucket privado:**
+
+```bash
+docker exec $M sh -c 'mc mb --ignore-existing local/i7ai-documents && mc anonymous set none local/i7ai-documents'
+```
+
+**Esperado:** ``Bucket created successfully `local/i7ai-documents`.`` (ou nada, se já existia) e a permissão do bucket como `private`.
+
+**d. Política restrita e usuário** (mesma política do bucket-init do `docker-compose.production.yml`, só para este bucket):
+
+```bash
+read -r -p 'I7AI_S3_ACCESS_KEY: ' AK
+read -r -s -p 'I7AI_S3_SECRET_KEY: ' SK; echo
+docker exec $M sh -c 'cat > /tmp/i7ai-app-policy.json <<EOF
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::i7ai-documents"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::i7ai-documents/*"]}]}
+EOF'
+docker exec $M mc admin policy create local i7ai-app /tmp/i7ai-app-policy.json
+docker exec -e AK="$AK" -e SK="$SK" $M sh -c 'mc admin user add local "$AK" "$SK" && mc admin policy attach local i7ai-app --user "$AK"'
+docker exec $M rm -f /tmp/i7ai-app-policy.json
+```
+
+**Esperado:** ``Created policy `i7ai-app` ``, ``Added user `i7ai-app` successfully.`` e a política `i7ai-app` anexada ao usuário. O MinIO de 2024 aceita `mc admin policy create/attach` (existem desde 2023). Se algum for "not recognized", use a sintaxe antiga: `mc admin policy add local i7ai-app <arquivo>` e `mc admin policy set local i7ai-app user="$AK"`.
+
+**e. Verificar que o usuário funciona e está confinado:**
+
+```bash
+docker exec -e AK="$AK" -e SK="$SK" $M sh -c 'mc alias set i7test http://127.0.0.1:9000 "$AK" "$SK" && mc ls i7test/i7ai-documents; echo "saida_i7ai=$?"; mc ls i7test/sgdm-arquivos; echo "saida_sgdm=$?"'
+unset AK SK
+```
+
+**Esperado:** o `mc ls` de `i7ai-documents` termina com `saida_i7ai=0` (bucket vazio, sem listagem); o de `sgdm-arquivos` mostra `Access Denied` e `saida_sgdm=1`. Se o segundo listar arquivos, **pare**: a política não está restrita; desfaça com o item g e revise.
+
+**f. Limpar os aliases** (removem a credencial raiz da pasta pessoal do contêiner):
+
+```bash
+docker exec $M sh -c 'mc alias rm i7test; mc alias rm local'
+```
+
+**Esperado:** ``Removed `i7test` successfully.`` e ``Removed `local` successfully.``
+
+**g. Rollback deste passo** (só se o i7Ai não vai usar o MinIO). Refaça o alias (item b) e rode — ⚠ **altera a VPS**:
+
+```bash
+docker exec $M sh -c 'mc admin user remove local i7ai-app; mc admin policy remove local i7ai-app'
+# só se o bucket estiver vazio/sem uso (confira com "mc ls local/i7ai-documents"):
+docker exec $M mc rb --force local/i7ai-documents
+docker exec $M sh -c 'mc alias rm local'
+```
+
+Nunca toque em outros buckets do MinIO; o `--force` apaga tudo do bucket indicado.
 
 ---
 
@@ -290,7 +371,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://sgdm.com.br/login
 curl -s -o /dev/null -w "%{http_code}\n" https://api.sgdm.com.br/api/v1/auth/me
 ```
 
-**Esperado:** `{"service":"i7ai-api","status":"ok","dependencies":{"database":true,"queue":true,"storage":true},...}`; `200`; `301` (redireciona para `/i7ai/`); `200` e `401` — o SGDM segue respondendo, a rota nova (`i7ai_plataforma`, prioridade 100) só pega `/i7ai`. Se o health responder `503` com `"status":"degraded"`, o item `false` em `dependencies` diz o que falhou (`database` = Postgres, `queue` = Redis, `storage` = MinIO).
+**Esperado:** `{"service":"i7ai-api","status":"ok","dependencies":{"database":true,"queue":true,"storage":true},...}`; `200`; `301` (redireciona para `/i7ai/`); `200` e `401` — o SGDM segue respondendo, a rota nova (`i7ai_plataforma`, prioridade 100) só pega `/i7ai`. Se o health responder `503` com `"status":"degraded"`, o item `false` em `dependencies` diz o que falhou (`database` = Postgres, `queue` = Redis, `storage` = MinIO do SGDM, com o usuário e o bucket do passo 6.1).
 
 Deploy automático: GitHub → Actions → **Deploy VPS** → Run workflow (branch `main`). ⚠ **altera a VPS** (atualiza backend e frontend).
 
@@ -381,7 +462,7 @@ ss -tulpn | grep LISTEN
 free -h
 ```
 
-**Esperado:** comparado ao passo 2, nenhuma porta nova em `0.0.0.0` ou `[::]` (a pilha não publica portas; só o Traefik expõe 80/443). A memória livre caiu no máximo uns 3 GB (limites: Postgres 512M, Redis 128M, MinIO 256M, LiteLLM 1200M, backend 768M, frontend 128M). Opcional, da sua máquina: `nmap -Pn -p 4000,5432,6379,9000,9001 162.141.109.168` → todas `filtered` ou `closed`.
+**Esperado:** comparado ao passo 2, nenhuma porta nova em `0.0.0.0` ou `[::]` (a pilha não publica portas; só o Traefik expõe 80/443). A memória livre caiu no máximo uns 3 GB (limites: Postgres 512M, Redis 128M, LiteLLM 1200M, backend 768M, frontend 128M). Opcional, da sua máquina: `nmap -Pn -p 4000,5432,6379,9000,9001 162.141.109.168` → todas `filtered` ou `closed`.
 
 ---
 
@@ -401,7 +482,7 @@ docker stack ls
 docker volume ls | grep i7ai-plataforma
 ```
 
-**Esperado:** `i7ai-plataforma` some da lista (`i7ai`, `sgdm-app` e `postgres` continuam); os volumes `i7ai-plataforma_i7ai_postgres`, `i7ai-plataforma_i7ai_redis` e `i7ai-plataforma_i7ai_minio` **continuam existindo** — `docker stack rm` remove serviços, não dados. Um novo deploy da stack (passo 7) volta com os mesmos dados e chaves. Os volumes só são apagados de propósito, com `docker volume rm <nome>`, depois de decidir que os dados do i7Ai não serão mais usados.
+**Esperado:** `i7ai-plataforma` some da lista (`i7ai`, `sgdm-app` e `postgres` continuam); os volumes `i7ai-plataforma_i7ai_postgres` e `i7ai-plataforma_i7ai_redis` **continuam existindo** — `docker stack rm` remove serviços, não dados. Os documentos ficam no bucket `i7ai-documents` do MinIO do SGDM, que o `docker stack rm` também não toca (para removê-lo, veja o item g do passo 6.1). Um novo deploy da stack (passo 7) volta com os mesmos dados e chaves. Os volumes só são apagados de propósito, com `docker volume rm <nome>`, depois de decidir que os dados do i7Ai não serão mais usados.
 
 ### Desligar a integração no SGDM
 

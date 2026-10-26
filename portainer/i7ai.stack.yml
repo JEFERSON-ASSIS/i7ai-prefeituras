@@ -14,12 +14,15 @@ version: "3.8"
 #   2. Imagens no GHCR (GitHub Actions)
 #   3. Variáveis no Portainer — use portainer/stack.env.example
 #
-# Nenhuma porta é publicada: só o Traefik expõe 80/443. Postgres, Redis e
-# MinIO do i7Ai ficam só na rede "interna" (sem rota para fora). Os nomes
-# postgres/redis/minio na SGDMNET são do SGDM — aqui usamos i7ai-*.
+# Nenhuma porta é publicada: só o Traefik expõe 80/443. Postgres e Redis do
+# i7Ai (i7ai-*) ficam só na rede "interna" (sem rota para fora). Os nomes
+# postgres/redis na SGDMNET são do SGDM e não são usados aqui. O armazenamento
+# é o MinIO compartilhado do SGDM (serviço "minio" na SGDMNET), com bucket
+# e usuário próprios do i7Ai criados antes do deploy (docs/DEPLOY_VPS.md, 6.1).
 #
 # Migrations e bucket: o entrypoint do i7ai-backend roda
-# "prisma migrate deploy" e cria o bucket antes de subir a API.
+# "prisma migrate deploy" e confere que o bucket existe antes de subir a API
+# (o usuário do MinIO não tem permissão para criá-lo: se faltar, falha fechado).
 # =============================================================================
 
 x-placement: &placement
@@ -76,24 +79,6 @@ services:
         limits:
           memory: 128M
 
-  i7ai-minio:
-    # Mesma tag já usada pelo SGDM nesta VPS (build compatível com a CPU do host).
-    image: quay.io/minio/minio:RELEASE.2024-01-13T07-53-03Z-cpuv1
-    command: [server, /data, --console-address, ':9001']
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
-    volumes:
-      - i7ai_minio:/data
-    networks:
-      - interna
-    deploy:
-      replicas: 1
-      placement: *placement
-      resources:
-        limits:
-          memory: 256M
-
   litellm:
     # Gateway de IA privado. O SGDM e o backend chamam http://litellm:4000 pela
     # SGDMNET. As chaves dos provedores ficam criptografadas no banco "litellm"
@@ -132,10 +117,11 @@ services:
       PORT: '3000'
       DATABASE_URL: postgresql://i7ai:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@i7ai-postgres:5432/i7ai?schema=public
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@i7ai-redis:6379
-      S3_ENDPOINT: http://i7ai-minio:9000
-      # Credenciais raiz do MinIO privado do i7Ai (só na rede interna da pilha).
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      # MinIO compartilhado do SGDM (resolve só na SGDMNET). Usuário restrito
+      # ao bucket i7ai-documents, criado no passo 6.1 do runbook.
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${I7AI_S3_ACCESS_KEY:?Set I7AI_S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${I7AI_S3_SECRET_KEY:?Set I7AI_S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET:-i7ai-documents}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       CORS_ORIGINS: https://${WEB_HOST:?Set WEB_HOST}
@@ -253,4 +239,3 @@ networks:
 volumes:
   i7ai_postgres:
   i7ai_redis:
-  i7ai_minio:

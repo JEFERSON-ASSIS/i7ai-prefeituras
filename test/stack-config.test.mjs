@@ -27,12 +27,13 @@ test('a pilha renderiza com o exemplo e não publica portas', () => {
   const out = result.stdout;
   for (const expected of [
     'SGDMNET', 'litellm', 'start-first',
-    'i7ai-postgres', 'i7ai-redis', 'i7ai-minio',
+    'i7ai-postgres', 'i7ai-redis',
     'i7ai-backend', 'i7ai-frontend', 'traefik.http.routers.i7ai_plataforma.rule: Host(`sgdm.com.br`) && (Path(`/i7ai`) || PathPrefix(`/i7ai/`))',
     'traefik.swarm.network: SGDMNET', 'traefik.docker.network: SGDMNET',
     'ghcr.io/berriai/litellm@sha256:c169fb3adc514fcf210377c203f3de406d54f10bfdacf13948a4a839db9af7de',
     'OMNIROUTER_BASE_URL: http://litellm:4000/v1', 'SGDM_API_URL: http://sgdm-api:3001/api/v1',
-    '@i7ai-postgres:5432/i7ai', '@i7ai-postgres:5432/litellm', 'S3_ENDPOINT: http://i7ai-minio:9000',
+    '@i7ai-postgres:5432/i7ai', '@i7ai-postgres:5432/litellm', 'S3_ENDPOINT: http://minio:9000',
+    'S3_ACCESS_KEY: i7ai-app', 'S3_BUCKET: i7ai-documents',
   ]) assert.ok(out.includes(expected), `missing ${expected}`);
   // Depending on the CLI version, 1200M renders as-is or in bytes.
   assert.match(out, /memory: "?(1200M|1258291200)"?/);
@@ -46,11 +47,24 @@ test('a pilha renderiza com o exemplo e não publica portas', () => {
   }
   // The marketing site's router and the shared names on SGDMNET must stay untouched.
   assert.ok(!/routers\.i7ai\./.test(out), 'router name must not collide with the marketing site');
-  assert.ok(!/@postgres:|redis:\/\/[^@]*@redis:|http:\/\/minio:/.test(out), 'must not target SGDM data services');
+  assert.ok(!/@postgres:|redis:\/\/[^@]*@redis:/.test(out), 'must not target SGDM postgres/redis');
+  // Storage is the SGDM's shared MinIO; the stack must not ship a MinIO of its own.
+  assert.ok(out.includes('http://minio:9000'), 'storage must be the shared minio:9000');
+  assert.ok(!/^  i7ai-minio:$/m.test(out), 'no i7ai-minio service');
+  assert.ok(!/quay\.io\/minio|minio\/minio|i7ai_minio|MINIO_ROOT/.test(out), 'no MinIO image, volume or root credentials');
 });
 
 test('variável obrigatória ausente derruba a renderização', () => {
-  const result = renderStack({ LITELLM_SALT_KEY: undefined });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /LITELLM_SALT_KEY/);
+  for (const name of ['LITELLM_SALT_KEY', 'I7AI_S3_ACCESS_KEY', 'I7AI_S3_SECRET_KEY']) {
+    const result = renderStack({ [name]: undefined });
+    assert.notEqual(result.status, 0, name);
+    assert.match(result.stderr, new RegExp(name));
+  }
+});
+
+test('o exemplo de variáveis não traz credenciais raiz do MinIO', () => {
+  const vars = exampleEnv();
+  assert.ok(!Object.keys(vars).some((key) => key.startsWith('MINIO_ROOT')));
+  assert.ok('I7AI_S3_ACCESS_KEY' in vars && 'I7AI_S3_SECRET_KEY' in vars);
+  assert.match(vars.I7AI_S3_SECRET_KEY, /^change-/);
 });

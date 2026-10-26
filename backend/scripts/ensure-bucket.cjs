@@ -1,4 +1,5 @@
-// Ensures the S3 bucket exists (HeadBucket, CreateBucket on 404).
+// Ensures the S3 bucket exists (HeadBucket, CreateBucket on 404). On the VPS the bucket is
+// pre-created and the app user cannot create buckets, so a missing bucket fails closed.
 // Same env names and client options as backend/src (MinIO needs path style).
 const { S3Client, HeadBucketCommand, CreateBucketCommand } = require('@aws-sdk/client-s3');
 
