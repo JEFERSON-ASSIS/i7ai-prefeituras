@@ -80,3 +80,17 @@ test('README documenta secrets e pacotes públicos', () => {
   assert.match(readme, /públicos/);
   assert.match(readme, /docker login ghcr\.io/);
 });
+
+test('limpeza de imagens antigas: após o frontend, restrita às imagens do i7Ai, tolerante a falha', () => {
+  const f = deploy.indexOf('atualizar "${STACK_NAME}_i7ai-frontend"');
+  const c = deploy.indexOf('--- limpeza ---');
+  assert.ok(c > f, 'limpeza depois da atualização do frontend');
+  const limpeza = deploy.slice(c, deploy.indexOf('--- estado final ---'));
+  assert.match(limpeza, /ghcr\.io\/jeferson-assis\/i7ai-backend/);
+  assert.match(limpeza, /ghcr\.io\/jeferson-assis\/i7ai-frontend/);
+  assert.match(limpeza, /docker rmi/);
+  assert.match(limpeza, /docker ps/);
+  assert.match(limpeza, /\|\| true/);
+  assert.doesNotMatch(deploy, /image prune|system prune/);
+  assert.doesNotMatch(limpeza, /sgdm|ghcr\.io\/jeferson-assis\/\*/);
+});

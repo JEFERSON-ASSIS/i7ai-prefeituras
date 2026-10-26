@@ -89,6 +89,24 @@ jobs:
             atualizar "${STACK_NAME}_i7ai-backend" "$BACKEND_IMAGE"
             atualizar "${STACK_NAME}_i7ai-frontend" "$FRONTEND_IMAGE"
 
+            # Cada deploy deixa a imagem anterior sem uso, e a VPS hospeda outras
+            # stacks: sem limpeza o disco enche. Remove só imagens do i7Ai que
+            # nenhum container usa. Nada de `prune -a`: apagaria imagens alheias.
+            # Limpeza é higiene, não deploy: o bloco inteiro tolera falha.
+            echo "--- limpeza ---"
+            {
+              for servico in "${STACK_NAME}_i7ai-backend" "${STACK_NAME}_i7ai-frontend"; do
+                docker container prune -f \
+                  --filter "label=com.docker.swarm.service.name=$servico" >/dev/null || true
+              done
+              EM_USO="$(docker ps --format '{{.Image}}' | xargs -r -n1 docker image inspect --format '{{.Id}}' 2>/dev/null | sort -u)"
+              for id in $(docker images 'ghcr.io/jeferson-assis/i7ai-backend' --format '{{.ID}}'; docker images 'ghcr.io/jeferson-assis/i7ai-frontend' --format '{{.ID}}'); do
+                if ! printf '%s\n' "$EM_USO" | grep -q "$id"; then
+                  docker rmi "$id" >/dev/null 2>&1 || true
+                fi
+              done
+            } || true
+
             echo "--- estado final ---"
             docker stack services "$STACK_NAME" --format '{{.Name}} {{.Replicas}} {{.Image}}'
 
