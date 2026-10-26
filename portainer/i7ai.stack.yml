@@ -1,0 +1,247 @@
+version: "3.8"
+
+# =============================================================================
+# i7Ai — Central de IA + LiteLLM (Docker Swarm / Portainer Stack)
+#
+# Nome da stack no Portainer: i7ai-plataforma  (NÃO use "i7ai": já é o site).
+# Portainer: Stacks → Add stack → Repository
+#   Compose path: portainer/i7ai.stack.yml
+#   (os "configs" abaixo leem arquivos do repositório por caminho relativo,
+#    por isso o método precisa ser Repository, não Web editor)
+#
+# Pré-requisitos:
+#   1. Rede externa SGDMNET (Traefik e sgdm-api já nela)
+#   2. Imagens no GHCR (GitHub Actions)
+#   3. Variáveis no Portainer — use portainer/stack.env.example
+#
+# Nenhuma porta é publicada: só o Traefik expõe 80/443. Postgres, Redis e
+# MinIO do i7Ai ficam só na rede "interna" (sem rota para fora). Os nomes
+# postgres/redis/minio na SGDMNET são do SGDM — aqui usamos i7ai-*.
+#
+# Migrations e bucket: o entrypoint do i7ai-backend roda
+# "prisma migrate deploy" e cria o bucket antes de subir a API.
+# =============================================================================
+
+x-placement: &placement
+  constraints:
+    - node.role == manager
+
+services:
+
+  i7ai-postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: i7ai
+      POSTGRES_DB: i7ai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - i7ai_postgres:/var/lib/postgresql/data
+    configs:
+      # Cria o banco "litellm" só na primeira inicialização do volume.
+      - source: litellm_db
+        target: /docker-entrypoint-initdb.d/10-litellm.sql
+    networks:
+      - interna
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U i7ai -d i7ai']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      replicas: 1
+      placement: *placement
+      resources:
+        limits:
+          memory: 512M
+
+  i7ai-redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    command: [sh, -ec, 'exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"']
+    volumes:
+      - i7ai_redis:/data
+    networks:
+      - interna
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      replicas: 1
+      placement: *placement
+      resources:
+        limits:
+          memory: 128M
+
+  i7ai-minio:
+    # Mesma tag já usada pelo SGDM nesta VPS (build compatível com a CPU do host).
+    image: quay.io/minio/minio:RELEASE.2024-01-13T07-53-03Z-cpuv1
+    command: [server, /data, --console-address, ':9001']
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+    volumes:
+      - i7ai_minio:/data
+    networks:
+      - interna
+    deploy:
+      replicas: 1
+      placement: *placement
+      resources:
+        limits:
+          memory: 256M
+
+  litellm:
+    # Gateway de IA privado. O SGDM e o backend chamam http://litellm:4000 pela
+    # SGDMNET. As chaves dos provedores ficam criptografadas no banco "litellm"
+    # com LITELLM_SALT_KEY — nunca troque essa chave depois de salvar chaves.
+    image: ghcr.io/berriai/litellm@sha256:c169fb3adc514fcf210377c203f3de406d54f10bfdacf13948a4a839db9af7de
+    command: [--config, /app/config.yaml, --port, '4000']
+    environment:
+      DATABASE_URL: postgresql://i7ai:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@i7ai-postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY}
+      STORE_MODEL_IN_DB: 'True'
+    configs:
+      - source: litellm_config
+        target: /app/config.yaml
+    networks:
+      - interna
+      - SGDMNET
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      replicas: 1
+      placement: *placement
+      resources:
+        limits:
+          memory: 1200M
+
+  i7ai-backend:
+    image: ghcr.io/jeferson-assis/i7ai-backend:${I7AI_IMAGE_TAG:-main}
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      DATABASE_URL: postgresql://i7ai:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@i7ai-postgres:5432/i7ai?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@i7ai-redis:6379
+      S3_ENDPOINT: http://i7ai-minio:9000
+      # Credenciais raiz do MinIO privado do i7Ai (só na rede interna da pilha).
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-i7ai-documents}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      CORS_ORIGINS: https://${WEB_HOST:?Set WEB_HOST}
+      # Atrás do Traefik (rede overlay privada): confia só em proxies de rede privada.
+      TRUST_PROXY: uniquelocal
+      # Identidade do SGDM: mesmo valor do JWT_SECRET da stack sgdm-app.
+      SGDM_JWT_SECRET: ${SGDM_JWT_SECRET:?Set SGDM_JWT_SECRET}
+      SGDM_API_URL: http://sgdm-api:3001/api/v1
+      SGDM_INTERNAL_HOSTS: sgdm-api
+      # Mesmo valor do I7AI_INTEGRACAO_CHAVE da stack sgdm-app.
+      SGDM_INTEGRATION_KEY: ${SGDM_INTEGRATION_KEY:?Set SGDM_INTEGRATION_KEY}
+      # Gateway de IA (LiteLLM desta pilha).
+      OMNIROUTER_BASE_URL: http://litellm:4000/v1
+      OMNIROUTER_API_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY}
+      OMNIROUTER_INTERNAL_HOSTS: litellm
+      OMNIROUTER_ALLOWED_PREFIXES: ${OMNIROUTER_ALLOWED_PREFIXES:-}
+      CHAT_ATTACHMENT_MAX_BYTES: ${CHAT_ATTACHMENT_MAX_BYTES:-20971520}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+    networks:
+      - interna
+      - SGDMNET
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health',{signal:AbortSignal.timeout(8000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      replicas: 1
+      placement: *placement
+      resources:
+        limits:
+          memory: 768M
+      # Sobe a versão nova antes de derrubar a antiga; se ela não ficar
+      # saudável (ex.: migration falhou), o Swarm volta para a anterior.
+      update_config:
+        order: start-first
+        failure_action: rollback
+        monitor: 90s
+      rollback_config:
+        order: start-first
+
+  i7ai-frontend:
+    image: ghcr.io/jeferson-assis/i7ai-frontend:${I7AI_IMAGE_TAG:-main}
+    networks:
+      - SGDMNET
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1:8080/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 1
+      placement: *placement
+      resources:
+        limits:
+          memory: 128M
+      update_config:
+        order: start-first
+        failure_action: rollback
+        monitor: 30s
+      rollback_config:
+        order: start-first
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=SGDMNET
+        - traefik.swarm.network=SGDMNET
+        - traefik.http.routers.i7ai_plataforma.rule=Host(`${WEB_HOST:?Set WEB_HOST}`) && PathPrefix(`/i7ai`)
+        - traefik.http.routers.i7ai_plataforma.priority=100
+        - traefik.http.routers.i7ai_plataforma.entrypoints=websecure
+        - traefik.http.routers.i7ai_plataforma.tls=true
+        - traefik.http.routers.i7ai_plataforma.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.i7ai_plataforma.service=i7ai_plataforma
+        - traefik.http.services.i7ai_plataforma.loadbalancer.server.port=8080
+        - traefik.http.services.i7ai_plataforma.loadbalancer.passHostHeader=true
+
+# Configs do Swarm são imutáveis: ao alterar deploy/litellm/config.yaml,
+# troque o sufixo do "name" (v1 → v2) no mesmo commit, senão o redeploy falha.
+configs:
+  litellm_config:
+    name: i7ai_litellm_config_v1
+    file: ../deploy/litellm/config.yaml
+  litellm_db:
+    file: ./litellm-db.sql
+
+networks:
+  # Dados e tráfego interno da pilha; sem rota para fora.
+  interna:
+    driver: overlay
+    internal: true
+  SGDMNET:
+    external: true
+    name: SGDMNET
+
+volumes:
+  i7ai_postgres:
+  i7ai_redis:
+  i7ai_minio:
