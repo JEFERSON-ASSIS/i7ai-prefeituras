@@ -223,7 +223,7 @@ services:
         - traefik.enable=true
         - traefik.docker.network=SGDMNET
         - traefik.swarm.network=SGDMNET
-        - traefik.http.routers.i7ai_plataforma.rule=Host(`${WEB_HOST:?Set WEB_HOST}`) && PathPrefix(`/i7ai`)
+        - traefik.http.routers.i7ai_plataforma.rule=Host(`${WEB_HOST:?Set WEB_HOST}`) && (Path(`/i7ai`) || PathPrefix(`/i7ai/`))
         - traefik.http.routers.i7ai_plataforma.priority=100
         - traefik.http.routers.i7ai_plataforma.entrypoints=websecure
         - traefik.http.routers.i7ai_plataforma.tls=true

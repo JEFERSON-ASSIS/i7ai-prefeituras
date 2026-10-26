@@ -28,7 +28,7 @@ test('a pilha renderiza com o exemplo e não publica portas', () => {
   for (const expected of [
     'SGDMNET', 'litellm', 'start-first',
     'i7ai-postgres', 'i7ai-redis', 'i7ai-minio',
-    'i7ai-backend', 'i7ai-frontend', 'traefik.http.routers.i7ai_plataforma.rule: Host(`sgdm.com.br`) && PathPrefix(`/i7ai`)',
+    'i7ai-backend', 'i7ai-frontend', 'traefik.http.routers.i7ai_plataforma.rule: Host(`sgdm.com.br`) && (Path(`/i7ai`) || PathPrefix(`/i7ai/`))',
     'traefik.swarm.network: SGDMNET', 'traefik.docker.network: SGDMNET',
     'ghcr.io/berriai/litellm@sha256:c169fb3adc514fcf210377c203f3de406d54f10bfdacf13948a4a839db9af7de',
     'OMNIROUTER_BASE_URL: http://litellm:4000/v1', 'SGDM_API_URL: http://sgdm-api:3001/api/v1',

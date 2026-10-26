@@ -34,6 +34,7 @@ test('docker-publish publica backend e frontend no GHCR', () => {
   }
   assert.doesNotMatch(publish, /build-args/);
   assert.match(publish, /packages: write/);
+  assert.equal((publish.match(/^    if: github\.ref == 'refs\/heads\/main'$/gm) || []).length, 2, 'both jobs guarded to main');
 });
 
 test('deploy-vps dispara após Docker Publish e atualiza as duas imagens', () => {

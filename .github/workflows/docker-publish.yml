@@ -13,6 +13,8 @@ env:
 
 jobs:
   build-backend:
+    # workflow_dispatch from another branch must not overwrite :main/:latest.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,6 +39,7 @@ jobs:
             ${{ env.BACKEND_IMAGE }}:main
 
   build-frontend:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read

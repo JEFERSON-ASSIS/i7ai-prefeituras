@@ -11,8 +11,9 @@ COPY prisma ./prisma
 RUN npm ci --include=optional --no-audit --no-fund
 COPY . .
 RUN npm run prisma:generate && npm run build
-# The Prisma CLI is a devDependency; keep it (and its engines) across the prune
-# so the entrypoint can run `migrate deploy` in the runtime image.
+# Keep the Prisma CLI and its engines across the prune (belt and braces: they are
+# regular dependencies today, but the entrypoint needs `migrate deploy` at runtime
+# even if the CLI is ever moved to devDependencies).
 RUN mkdir -p /prisma-cli/@prisma \
  && cp -r node_modules/prisma /prisma-cli/prisma \
  && cp -r node_modules/@prisma/engines /prisma-cli/@prisma/engines \
