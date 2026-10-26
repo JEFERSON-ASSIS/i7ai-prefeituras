@@ -178,7 +178,11 @@ services:
         condition: service_completed_successfully
       litellm:
         condition: service_healthy
-    networks: [app, data, ai]
+    networks:
+      app:
+        aliases: [i7ai-backend]
+      data:
+      ai:
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]
