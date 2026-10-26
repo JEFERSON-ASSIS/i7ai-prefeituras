@@ -1,0 +1,99 @@
+# Deploy do i7Ai na VPS.
+#
+# Dispara sozinho quando o "Docker Publish" termina com sucesso na main — as
+# imagens já estão no GHCR; aqui só se manda o Swarm puxar a nova versão.
+# Também pode ser acionado à mão pela aba Actions.
+#
+# As migrations NÃO rodam aqui: o entrypoint da imagem do backend as aplica
+# antes de subir o processo. Por isso o backend é atualizado antes do frontend.
+name: Deploy VPS
+
+on:
+  workflow_run:
+    workflows: ['Docker Publish']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Dois deploys ao mesmo tempo deixariam os serviços em versões diferentes.
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Build quebrado não vai para produção. No disparo manual não há build a conferir.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Verificar secrets
+        run: |
+          faltando=""
+          [ -z "${{ secrets.VPS_HOST }}" ] && faltando="$faltando VPS_HOST"
+          [ -z "${{ secrets.VPS_USER }}" ] && faltando="$faltando VPS_USER"
+          [ -z "${{ secrets.VPS_SSH_KEY }}" ] && faltando="$faltando VPS_SSH_KEY"
+          if [ -n "$faltando" ]; then
+            echo "::error::Configure em Settings → Secrets → Actions:$faltando"
+            exit 1
+          fi
+
+      - name: Deploy na VPS (SSH)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            STACK_NAME="${{ secrets.VPS_STACK_NAME || 'i7ai-plataforma' }}"
+            BACKEND_IMAGE="ghcr.io/jeferson-assis/i7ai-backend:main"
+            FRONTEND_IMAGE="ghcr.io/jeferson-assis/i7ai-frontend:main"
+
+            # Se os pacotes do GHCR forem privados, basta criar o secret.
+            if [ -n "${{ secrets.GHCR_PULL_TOKEN }}" ]; then
+              echo "${{ secrets.GHCR_PULL_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
+            fi
+
+            if ! docker stack ls --format '{{.Name}}' | grep -qx "$STACK_NAME"; then
+              echo "Stack $STACK_NAME não encontrada — crie no Portainer primeiro." >&2
+              exit 1
+            fi
+
+            # A tag é sempre :main, então `--image` sozinho não força troca:
+            # o Swarm só puxa de novo quando a referência muda. O digest resolve.
+            atualizar() {
+              servico="$1"
+              imagem="$2"
+              echo "Atualizando $servico..."
+              docker pull "$imagem"
+              digest=$(docker image inspect "$imagem" --format '{{index .RepoDigests 0}}')
+              # --detach=false espera a convergência; start-first + rollback voltam
+              # sozinhos para a versão anterior se a nova não ficar saudável.
+              docker service update \
+                --image "$digest" \
+                --with-registry-auth \
+                --update-order start-first \
+                --update-failure-action rollback \
+                --update-monitor 45s \
+                --rollback-order start-first \
+                --detach=false \
+                "$servico"
+            }
+
+            # Backend primeiro: o entrypoint dele aplica as migrations.
+            atualizar "${STACK_NAME}_i7ai-backend" "$BACKEND_IMAGE"
+            atualizar "${STACK_NAME}_i7ai-frontend" "$FRONTEND_IMAGE"
+
+            echo "--- estado final ---"
+            docker stack services "$STACK_NAME" --format '{{.Name}} {{.Replicas}} {{.Image}}'
+
+      - name: Falha no deploy
+        if: failure()
+        run: |
+          echo "::error::Deploy falhou. Na VPS, ver o motivo com:" \
+            "docker service ps i7ai-plataforma_i7ai-backend --no-trunc"

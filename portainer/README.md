@@ -108,6 +108,20 @@ Para fixar uma versão, defina `I7AI_IMAGE_TAG` (padrão `main`) nas variáveis 
 
 ---
 
+## Atualizações automáticas (GitHub Actions)
+
+Todo push na `main` roda **Docker Publish** (publica `i7ai-backend` e `i7ai-frontend` no GHCR) e, ao terminar com sucesso, **Deploy VPS** atualiza por SSH `i7ai-plataforma_i7ai-backend` e depois `i7ai-plataforma_i7ai-frontend`. Também dá para rodar à mão em Actions › Deploy VPS.
+
+Em Settings › Secrets › Actions de `JEFERSON-ASSIS/i7ai-prefeituras`, copie do repositório do SGDM:
+
+- `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`
+- `VPS_PORT` (opcional, padrão 22)
+- `VPS_STACK_NAME` (opcional, padrão `i7ai-plataforma`)
+
+Uma vez só, depois do primeiro Docker Publish: GitHub → Packages → tornar `i7ai-backend` e `i7ai-frontend` públicos (ou `docker login ghcr.io` na VPS). Os pacotes do GHCR nascem privados.
+
+---
+
 ## Rollback
 
 | Situação | Comando |
