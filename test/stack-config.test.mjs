@@ -26,7 +26,7 @@ test('a pilha renderiza com o exemplo e não publica portas', () => {
   assert.equal(result.status, 0, result.stderr);
   const out = result.stdout;
   for (const expected of [
-    'SGDMNET', 'litellm', 'start-first', 'memory: "1258291200"', // docker stack config renders 1200M as bytes
+    'SGDMNET', 'litellm', 'start-first',
     'i7ai-postgres', 'i7ai-redis', 'i7ai-minio',
     'i7ai-backend', 'i7ai-frontend', 'traefik.http.routers.i7ai_plataforma.rule: Host(`sgdm.com.br`) && PathPrefix(`/i7ai`)',
     'traefik.swarm.network: SGDMNET', 'traefik.docker.network: SGDMNET',
@@ -34,6 +34,8 @@ test('a pilha renderiza com o exemplo e não publica portas', () => {
     'OMNIROUTER_BASE_URL: http://litellm:4000/v1', 'SGDM_API_URL: http://sgdm-api:3001/api/v1',
     '@i7ai-postgres:5432/i7ai', '@i7ai-postgres:5432/litellm', 'S3_ENDPOINT: http://i7ai-minio:9000',
   ]) assert.ok(out.includes(expected), `missing ${expected}`);
+  // Depending on the CLI version, 1200M renders as-is or in bytes.
+  assert.match(out, /memory: "?(1200M|1258291200)"?/);
   assert.ok(!out.includes('published:'), 'no port may be published');
   // The marketing site's router and the shared names on SGDMNET must stay untouched.
   assert.ok(!/routers\.i7ai\./.test(out), 'router name must not collide with the marketing site');

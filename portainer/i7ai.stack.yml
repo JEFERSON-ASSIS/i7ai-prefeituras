@@ -147,7 +147,8 @@ services:
       SGDM_INTERNAL_HOSTS: sgdm-api
       # Mesmo valor do I7AI_INTEGRACAO_CHAVE da stack sgdm-app.
       SGDM_INTEGRATION_KEY: ${SGDM_INTEGRATION_KEY:?Set SGDM_INTEGRATION_KEY}
-      # Gateway de IA (LiteLLM desta pilha).
+      # Gateway de IA (LiteLLM desta pilha). OPENAI_* e AI_GATEWAY_* ficam de fora
+      # de propósito: chaves de provedor vivem só no LiteLLM, nunca no i7Ai.
       OMNIROUTER_BASE_URL: http://litellm:4000/v1
       OMNIROUTER_API_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY}
       OMNIROUTER_INTERNAL_HOSTS: litellm
