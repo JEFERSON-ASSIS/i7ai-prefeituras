@@ -31,12 +31,12 @@ Referências: [portainer/README.md](../portainer/README.md) (stack), [portainer/
 Atalhos usados abaixo (rode no início de cada sessão SSH; só leem):
 
 ```bash
-PG=$(docker ps -q -f name=postgres_postgres | head -1)                      # Postgres do SGDM
-IPG=$(docker ps -q -f name=i7ai-plataforma_i7ai-postgres | head -1)         # Postgres do i7Ai (após o passo 7)
-LLM=$(docker ps -q -f name=i7ai-plataforma_litellm | head -1)               # LiteLLM (após o passo 7)
+PG=$(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres | head -1)   # Postgres do SGDM
+IPG=$(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-postgres | head -1)   # Postgres do i7Ai (após o passo 7)
+LLM=$(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_litellm | head -1)   # LiteLLM (após o passo 7)
 ```
 
-O `| head -1` evita pegar dois contêineres durante uma atualização `start-first`. Se a variável sair vazia, o serviço não está rodando.
+O filtro pelo rótulo `com.docker.swarm.service.name` (que o Swarm preenche com `<stack>_<serviço>`) casa o nome **exato** do serviço. Não use `-f name=...`: ele casa por trecho do nome e, com várias stacks na VPS, pode pegar o Postgres de outra stack (ex.: `n8n-postgres_postgres...`). O `| head -1` evita pegar dois contêineres durante uma atualização `start-first`. Se a variável sair vazia, o serviço não está rodando.
 
 ---
 
@@ -98,9 +98,13 @@ free -h
 df -h /var/lib/docker
 docker service inspect sgdm-app_sgdm-api --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'
 docker service inspect sgdm-app_sgdm-web --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'
+ATD=$(docker service ls --format '{{.Name}}' | grep -E '_sgdm-atendimento$' | head -1); echo "atendimento=$ATD"
+[ -n "$ATD" ] && docker service inspect "$ATD" --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'
+docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres | wc -l
+docker ps --format '{{.Names}}' -f label=com.docker.swarm.service.name=postgres_postgres
 ```
 
-**Esperado:** `docker stack ls` lista `sgdm-app`, `postgres`, `i7ai` (site) e as demais stacks, **sem** `i7ai-plataforma`. Em `ss`, as portas abertas em `0.0.0.0`/`[::]` ficam anotadas (o ufw só deixa passar 22, 80 e 443). As duas imagens do SGDM saem como `ghcr.io/jeferson-assis/sgdm-api:main@sha256:...` e `...sgdm-web:main@sha256:...`: **guarde esses digests**, são o alvo do rollback do SGDM.
+**Esperado:** `docker stack ls` lista `sgdm-app`, `postgres`, `i7ai` (site) e as demais stacks, **sem** `i7ai-plataforma`. Em `ss`, as portas abertas em `0.0.0.0`/`[::]` ficam anotadas (o ufw só deixa passar 22, 80 e 443). As duas imagens do SGDM saem como `ghcr.io/jeferson-assis/sgdm-api:main@sha256:...` e `...sgdm-web:main@sha256:...`: **guarde esses digests**, são o alvo do rollback do SGDM. Guarde também o nome e a imagem do serviço `*_sgdm-atendimento` (o Deploy VPS do SGDM também o atualiza); se ele não existir, `atendimento=` sai vazio. A contagem do Postgres compartilhado é **exatamente `1`** e o nome do contêiner começa com `postgres_postgres.`; se sair `0` ou mais de `1`, pare: os comandos dos passos 4 e 5 dependem dessa busca.
 
 Fumaça do SGDM:
 
@@ -126,13 +130,15 @@ No i7ai-cloud, rode à mão o backup **"SGDM - banco principal"** e acompanhe at
 A migration roda contra uma cópia do banco `postgres` criada no próprio Postgres do SGDM. Os dados não saem do servidor. Antes, confira o espaço:
 
 ```bash
-docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -Atc "SELECT pg_size_pretty(pg_database_size('postgres'))"
+docker exec -i $(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres) psql -U postgres -Atc "SELECT pg_size_pretty(pg_database_size('postgres'))"
 df -h /var/lib/docker
 ```
 
 **Esperado:** o espaço livre é pelo menos o dobro do tamanho do banco.
 
-Copie o arquivo da migration da sua máquina para a VPS (do checkout do SGDM na branch `feat/i7ai-integracao`):
+Copie o arquivo da migration da sua máquina para a VPS (do checkout do SGDM na branch `feat/i7ai-integracao`).
+
+⚠ **altera a VPS** (grava um arquivo na pasta do usuário):
 
 ```bash
 # na sua máquina
@@ -142,8 +148,8 @@ scp apps/api/prisma/migrations/20261210100000_i7ai_permissoes/migration.sql <VPS
 Na VPS — ⚠ **altera a VPS** (cria e depois apaga o banco `sgdm_teste`; o banco `postgres` só é lido):
 
 ```bash
-docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -c 'CREATE DATABASE sgdm_teste'
-docker exec -i $(docker ps -q -f name=postgres_postgres) sh -c 'pg_dump -U postgres --no-owner --no-privileges -d postgres | psql -q -U postgres -d sgdm_teste' > ~/sgdm_teste_restore.log 2>&1
+docker exec -i $(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres) psql -U postgres -c 'CREATE DATABASE sgdm_teste'
+docker exec -i $(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres) sh -c 'pg_dump -U postgres --no-owner --no-privileges -d postgres | psql -q -U postgres -d sgdm_teste' > ~/sgdm_teste_restore.log 2>&1
 grep -c ERROR ~/sgdm_teste_restore.log
 ```
 
@@ -152,7 +158,7 @@ grep -c ERROR ~/sgdm_teste_restore.log
 Primeira aplicação:
 
 ```bash
-docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgdm_teste -v ON_ERROR_STOP=1 < ~/i7ai_permissoes.sql
+docker exec -i $(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres) psql -U postgres -d sgdm_teste -v ON_ERROR_STOP=1 < ~/i7ai_permissoes.sql
 ```
 
 **Esperado:** `INSERT 0 3` (as três permissões) e `INSERT 0 N`, com N = 3 × número de perfis de sistema (`perfis.sistema = true`: ADMINISTRADOR e DONO_PLATAFORMA). Nenhum `ERROR`.
@@ -160,7 +166,7 @@ docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgd
 Segunda aplicação (prova de idempotência):
 
 ```bash
-docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgdm_teste -v ON_ERROR_STOP=1 < ~/i7ai_permissoes.sql
+docker exec -i $(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres) psql -U postgres -d sgdm_teste -v ON_ERROR_STOP=1 < ~/i7ai_permissoes.sql
 ```
 
 **Esperado:** `INSERT 0 0` e `INSERT 0 0`.
@@ -168,9 +174,9 @@ docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -d sgd
 Limpeza — ⚠ **altera a VPS**:
 
 ```bash
-docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -c 'DROP DATABASE sgdm_teste'
+docker exec -i $(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres) psql -U postgres -c 'DROP DATABASE sgdm_teste'
 rm ~/sgdm_teste_restore.log ~/i7ai_permissoes.sql
-docker exec -i $(docker ps -q -f name=postgres_postgres) psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname = 'sgdm_teste'"
+docker exec -i $(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres) psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname = 'sgdm_teste'"
 ```
 
 **Esperado:** `DROP DATABASE`; a última consulta não imprime nada.
@@ -265,9 +271,9 @@ docker exec -i $IPG psql -U i7ai -d i7ai -Atc "SELECT datname FROM pg_database W
 Raiz somente leitura com `/tmp` gravável (tmpfs do Swarm). O `touch` cria um arquivo no tmpfs do contêiner, que some quando ele reinicia:
 
 ```bash
-docker exec $(docker ps -q -f name=i7ai-plataforma_i7ai-frontend | head -1) sh -c 'touch /tmp/x && echo ok'
-docker exec $(docker ps -q -f name=i7ai-plataforma_i7ai-backend | head -1) sh -c 'touch /tmp/x && echo ok'
-docker exec $(docker ps -q -f name=i7ai-plataforma_i7ai-backend | head -1) sh -c 'touch /app/x'; echo "saida=$?"
+docker exec $(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-frontend | head -1) sh -c 'touch /tmp/x && echo ok'
+docker exec $(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-backend | head -1) sh -c 'touch /tmp/x && echo ok'
+docker exec $(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-backend | head -1) sh -c 'touch /app/x'; echo "saida=$?"
 ```
 
 **Esperado:** `ok`, `ok`; o terceiro falha com `Read-only file system` e `saida=1` (a raiz é `read_only` e o Prisma rodou mesmo assim).
@@ -294,7 +300,9 @@ Deploy automático: GitHub → Actions → **Deploy VPS** → Run workflow (bran
 
 ⚠ **altera a VPS** (reinicia a API do SGDM). Portainer → Stacks → `sgdm-app`:
 
-1. Se a stack for do tipo Web editor, confira que o `environment` do `sgdm-api` tem as três linhas abaixo; se faltarem, cole o `portainer/sgdm-app.stack.yml` atual da `main` do SGDM. O Swarm só repassa ao contêiner as variáveis listadas ali.
+1. Confira o `environment` do `sgdm-api` no Editor da stack. O Swarm só repassa ao contêiner as variáveis listadas ali.
+   - Stack do tipo **Repository**: o arquivo da `main` (após o passo 5) já traz as três linhas abaixo; não edite o compose.
+   - Stack do tipo **Web editor**: **não cole o arquivo inteiro do repositório** (mudaria tudo o que difere do que está no ar). Compare o conteúdo atual com as três linhas abaixo e, se faltarem, acrescente **só elas** dentro do `environment:` do `sgdm-api`, com a mesma indentação das vizinhas (ex.: logo após `SMTP_FROM`). Nada mais muda no compose.
    ```yaml
    I7AI_INTEGRACAO_CHAVE: ${I7AI_INTEGRACAO_CHAVE}
    LITELLM_URL: ${LITELLM_URL}
@@ -332,7 +340,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://api.sgdm.com.br/api/v1/auth/me
 4. **Catálogo e agente.** Uma prefeitura nova não tem modelos nem agentes. Cadastre-os em **Modelos** e **Agentes**, ou pelo script, que lê `/v1/models` do LiteLLM (⚠ **altera a VPS** só com `--apply`):
    ```bash
    docker exec -i $IPG psql -U i7ai -d i7ai -c 'SELECT t.id AS tenant, t.name, u.id AS usuario, u.email FROM tenants t JOIN users u ON u."tenantId" = t.id'
-   docker exec $(docker ps -q -f name=i7ai-plataforma_i7ai-backend | head -1) node scripts/configure-omniroute.cjs --models=openai/gpt-4o-mini,anthropic/claude-haiku-5-5,anthropic/claude-sonnet-5-5 --tenant=<UUID> --user=<UUID>
+   docker exec $(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-backend | head -1) node scripts/configure-omniroute.cjs --models=openai/gpt-4o-mini,anthropic/claude-haiku-5-5,anthropic/claude-sonnet-5-5 --tenant=<UUID> --user=<UUID>
    # confira a saída (mode "review") e repita com --apply
    ```
    **Esperado:** a revisão lista os três modelos; com `--apply`, imprime `configuredModels` e o agente `Assistente da Prefeitura`. Depois ajuste os preços (USD por milhão de tokens) em **Modelos**.
@@ -346,7 +354,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://api.sgdm.com.br/api/v1/auth/me
 
 ```bash
 docker service update --force i7ai-plataforma_litellm
-LLM=$(docker ps -q -f name=i7ai-plataforma_litellm | head -1)
+LLM=$(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_litellm | head -1)
 docker exec $LLM python -c "import json,os,urllib.request as u; r=u.Request('http://127.0.0.1:4000/v1/models',headers={'Authorization':'Bearer '+os.environ['LITELLM_MASTER_KEY']}); print(sorted(m['id'] for m in json.load(u.urlopen(r))['data']))"
 docker exec $LLM python -c "import json,os,urllib.request as u; r=u.Request('http://127.0.0.1:4000/credentials',headers={'Authorization':'Bearer '+os.environ['LITELLM_MASTER_KEY']}); print(sorted(c['credential_name'] for c in json.load(u.urlopen(r)).get('credentials',[])))"
 ```
@@ -390,7 +398,17 @@ docker volume ls | grep i7ai-plataforma
 
 ⚠ **altera a VPS:** Portainer → Stacks → `sgdm-app` → remova os valores de `I7AI_INTEGRACAO_CHAVE`, `LITELLM_URL` e `LITELLM_ADMIN_KEY` (vazias = integração desligada) → **Update the stack**.
 
-Se for preciso voltar também a imagem do SGDM à anterior ao passo 5, defina `SGDM_API_IMAGE` e `SGDM_WEB_IMAGE` com os digests guardados no passo 2 (`ghcr.io/jeferson-assis/sgdm-api:main@sha256:...`) e atualize a stack. Não use `docker service rollback` para isso: ele só desfaz a última mudança do serviço, que pode ser a das variáveis. Lembre que o próximo push na `main` do SGDM volta a implantar a imagem nova.
+Se for preciso voltar também a imagem do SGDM à anterior ao passo 5, fixe nos serviços os digests guardados no passo 2, como faz o Deploy VPS do SGDM — sem mexer nas variáveis da stack (`SGDM_API_IMAGE`/`SGDM_WEB_IMAGE` ficam como estão). ⚠ **altera a VPS:**
+
+```bash
+docker service update --image <imagem do sgdm-api guardada no passo 2> --with-registry-auth sgdm-app_sgdm-api
+docker service update --image <imagem do sgdm-web guardada no passo 2> --with-registry-auth sgdm-app_sgdm-web
+# só se o atendimento existia no passo 2:
+docker service update --image <imagem do atendimento guardada no passo 2> --with-registry-auth <serviço *_sgdm-atendimento do passo 2>
+docker service inspect sgdm-app_sgdm-api --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'
+```
+
+**Esperado:** cada serviço volta a `1/1` e o `inspect` mostra o digest do passo 2. Não use `docker service rollback` para isso: ele só desfaz a última mudança do serviço, que pode ser a das variáveis. A migration `I7AI_*` não é desfeita (a imagem antiga ignora as permissões). O próximo push na `main` do SGDM, ou um **Update the stack** com *Re-pull image* no Portainer, volta a implantar a imagem `:main` — faça isso só com a correção pronta.
 
 **Esperado:** `https://sgdm.com.br/login` → `200`, `https://api.sgdm.com.br/api/v1/auth/me` → `401`, e `docker service ls` igual ao do passo 2. As permissões `I7AI_USAR`, `I7AI_CONSTRUIR` e `I7AI_ADMINISTRAR` **continuam no banco do SGDM, sem efeito** (a migration não muda tabelas e nada as usa sem o i7Ai). Elas não são removidas.
 
