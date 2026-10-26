@@ -11,7 +11,7 @@ O i7Ai (Central de IA) e o LiteLLM sobem como **stack Swarm própria**, `i7ai-pl
 ```mermaid
 flowchart LR
   U[Navegador] --> T[Traefik :443]
-  T -- "Host(sgdm.com.br) && PathPrefix(/i7ai)" --> F[i7ai-frontend :8080]
+  T -- "Host(sgdm.com.br) && Path(/i7ai) || PathPrefix(/i7ai/)" --> F[i7ai-frontend :8080]
   F -- /i7ai/api --> B[i7ai-backend :3000]
   B --> P[(i7ai-postgres)]
   B --> R[(i7ai-redis)]
@@ -48,12 +48,12 @@ Confira em **GitHub → Packages** que os dois pacotes estão **públicos**.
 
 ### 1.2 Variáveis
 
-Copie [`stack.env.example`](./stack.env.example) e gere cada segredo com `openssl rand -hex 32`. Dois valores vêm da stack `sgdm-app`:
+Copie [`stack.env.example`](./stack.env.example) e gere cada segredo com `openssl rand -hex 32` (os valores de exemplo começam com `change-` e o backend os recusa em produção). Um valor vem da stack `sgdm-app` e outro vai para ela:
 
 | Variável do i7Ai | Valor |
 |------------------|-------|
-| `SGDM_JWT_SECRET` | o `JWT_SECRET` da stack `sgdm-app` |
-| `SGDM_INTEGRATION_KEY` | o `I7AI_INTEGRACAO_CHAVE` da stack `sgdm-app` |
+| `SGDM_JWT_SECRET` | copie o `JWT_SECRET` da stack `sgdm-app` |
+| `SGDM_INTEGRATION_KEY` | gere aqui, uma vez; depois copie PARA o `I7AI_INTEGRACAO_CHAVE` da stack `sgdm-app` |
 
 Guarde `LITELLM_SALT_KEY` em local seguro: trocá-la depois deixa ilegíveis as chaves de provedor já cadastradas.
 

@@ -61,7 +61,9 @@ git push origin feat/central-ia:main
 
 GitHub → perfil → **Packages** → `i7ai-backend` → Package settings → Change visibility → **Public**. Repita para `i7ai-frontend`. Os pacotes nascem privados.
 
-Alternativa (se ficarem privados): ⚠ **altera a VPS** — `echo <TOKEN_read:packages> | docker login ghcr.io -u JEFERSON-ASSIS --password-stdin` na VPS, ou crie o secret `GHCR_PULL_TOKEN` no repositório (o Deploy VPS faz o login com ele).
+Os pacotes **precisam ser públicos** (como o repositório): o deploy da stack pelo Portainer puxa as imagens sem credenciais, e um `docker login` na VPS não vale para o deploy Swarm do Portainer.
+
+Alternativa (se ficarem privados): no Portainer, **Registries › Add registry › GitHub/Custom** (`ghcr.io`, usuário `JEFERSON-ASSIS`, token com `read:packages`) e implante a stack com esse registro; para o `docker pull` direto na VPS (e para o Deploy VPS automático), ⚠ **altera a VPS** — `echo <TOKEN_read:packages> | docker login ghcr.io -u JEFERSON-ASSIS --password-stdin`, ou crie o secret `GHCR_PULL_TOKEN` no repositório (o Deploy VPS faz o login com ele).
 
 **Esperado:** da VPS, `docker manifest inspect ghcr.io/jeferson-assis/i7ai-backend:main >/dev/null && echo ok` imprime `ok` (o mesmo para `i7ai-frontend`).
 
@@ -232,7 +234,7 @@ Parta de [portainer/stack.env.example](../portainer/stack.env.example) e preench
 | `CHAT_ATTACHMENT_MAX_BYTES` | `20971520` |
 | `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL` | vazios (base de conhecimento sem embeddings) |
 
-**Esperado:** nenhuma variável obrigatória vazia nem com o texto de exemplo (`TROQUE_...`, `COPIE_...`).
+**Esperado:** nenhuma variável obrigatória vazia nem com o texto de exemplo (`change-...`).
 
 ---
 
@@ -337,14 +339,21 @@ curl -s -o /dev/null -w "%{http_code}\n" https://api.sgdm.com.br/api/v1/auth/me
    - **Chave da prefeitura** (cobrança direta da prefeitura): fica no SGDM, em **Cadastros › Inteligência Artificial** (`/cadastros/ia`, permissão `IA_CONFIGURAR`; a mensagem de erro do i7Ai a chama de "Cadastros › IA"). O i7Ai a busca pela integração.
 
    **Esperado:** **Testar** mostra a resposta do provedor; a tela exibe a chave mascarada (ex.: `sk****88`).
-4. **Catálogo e agente.** Uma prefeitura nova não tem modelos nem agentes. Cadastre-os em **Modelos** e **Agentes**, ou pelo script, que lê `/v1/models` do LiteLLM (⚠ **altera a VPS** só com `--apply`):
+4. **Licença da prefeitura.** Em produção, uma prefeitura sem licença é recusada (*"Prefeitura sem licença ativa"*): sem este passo, criar o agente (passo 5) e o chat (passo 6) falham. O SGDM cria a prefeitura no i7Ai sem licença.
+   - **Pela tela** (a prefeitura do próprio dono): no i7Ai, menu **Organização › Licenciamento › Cadastrar licença** (só o `SUPER_ADMIN`). Preencha **Status** = Ativa, **Início** (agora), **Fim** (vazio = sem prazo) e os limites (**Usuários**, **Agentes**, **Automações**, **Bases de conhecimento**, **Tokens por mês**, **Armazenamento máximo (bytes)**) e clique em **Salvar licença**. A tela licencia só a prefeitura do usuário logado (a do `tenant` que ele tem no SGDM).
+   - **Por script** (outra prefeitura, ou se a tela não servir). Liste as prefeituras e os usuários que já entraram (`$IPG` é o contêiner do Postgres do i7Ai, definido nas seções anteriores) e use o `tenant` e o e-mail de um deles (o slug de uma prefeitura vinda do SGDM é `sgdm-<UUID do tenant>`; o e-mail precisa ser de um usuário dessa prefeitura, senão o script cria outro administrador). ⚠ **altera a VPS** (cria a licença só se não houver nenhuma; nunca altera uma existente):
+     ```bash
+     docker exec -i $IPG psql -U i7ai -d i7ai -c 'SELECT t.id AS tenant, t.name, u.id AS usuario, u.email FROM tenants t JOIN users u ON u."tenantId" = t.id'
+     docker exec -e PROVISION_TENANT_NAME='<nome da prefeitura>' -e PROVISION_TENANT_SLUG='sgdm-<UUID_DO_TENANT>' -e PROVISION_ADMIN_EMAIL='<email do usuário>' -e PROVISION_ADMIN_NAME='<nome do usuário>' -e PROVISION_CREATE_LICENSE=true -e PROVISION_MAX_USERS=50 -e PROVISION_MAX_AGENTS=20 -e PROVISION_MAX_AUTOMATIONS=20 -e PROVISION_MAX_KNOWLEDGE_BASES=20 -e PROVISION_MAX_TOKENS=100000000 -e PROVISION_MAX_STORAGE_BYTES=10737418240 $(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-backend | head -1) node scripts/provision.cjs
+     ```
+   **Esperado:** a tela de Licenciamento mostra a licença **Ativa** com os limites; pelo script, a saída JSON traz `"license": true` em `created` e um `licenseId`.
+5. **Catálogo e agente.** Uma prefeitura nova não tem modelos nem agentes. Cadastre-os em **Modelos** e **Agentes**, ou pelo script, que lê `/v1/models` do LiteLLM (⚠ **altera a VPS** só com `--apply`; o UUID do `tenant` e do `usuario` vêm do `SELECT` do passo 4):
    ```bash
-   docker exec -i $IPG psql -U i7ai -d i7ai -c 'SELECT t.id AS tenant, t.name, u.id AS usuario, u.email FROM tenants t JOIN users u ON u."tenantId" = t.id'
    docker exec $(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-backend | head -1) node scripts/configure-omniroute.cjs --models=openai/gpt-4o-mini,anthropic/claude-haiku-5-5,anthropic/claude-sonnet-5-5 --tenant=<UUID> --user=<UUID>
    # confira a saída (mode "review") e repita com --apply
    ```
    **Esperado:** a revisão lista os três modelos; com `--apply`, imprime `configuredModels` e o agente `Assistente da Prefeitura`. Depois ajuste os preços (USD por milhão de tokens) em **Modelos**.
-5. **Chat.** Abra o agente e envie uma pergunta curta. **Esperado:** a resposta chega. Sem chave válida, a mensagem é *"A chave do provedor de IA não está cadastrada ou foi recusada. Cadastre a chave da prefeitura no SGDM (Cadastros › IA) ou a chave da plataforma em Modelos › Chaves dos provedores de IA."*
+6. **Chat.** Abra o agente e envie uma pergunta curta. **Esperado:** a resposta chega. Sem chave válida, a mensagem é *"A chave do provedor de IA não está cadastrada ou foi recusada. Cadastre a chave da prefeitura no SGDM (Cadastros › IA) ou a chave da plataforma em Modelos › Chaves dos provedores de IA."*
 
 ---
 
