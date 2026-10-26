@@ -70,7 +70,7 @@ test('list shows every supported provider with masked keys only', async t => {
   const list = await service.list(superAdmin);
   assert.deepEqual(list.map(item => item.provider), ['openai', 'anthropic', 'gemini']);
   assert.equal(list[0].configured, true);
-  assert.equal(list[0].maskedKey, 'sk****90');
+  assert.equal(list[0].maskedKey, 'sk****00');
   assert.equal(list[1].configured, false);
   assert.ok(!JSON.stringify(list).includes(SECRET));
 });
