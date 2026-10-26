@@ -1,15 +1,36 @@
-import { SelectableList, EmptyState, IconTile, Chip, Alert, Card, IconButton, Select, Textarea, FileButton, Button } from '@sgdm/design';
+import { SelectableList, EmptyState, Chip, Alert, IconButton, Select, Textarea, FileButton, Button, Spinner } from '@sgdm/design';
 import { useEffect, useRef, useState } from 'react';
-import { Plus, Send, Bot, Square, X, Download } from 'lucide-react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
+import { Plus, Send, Bot, Square, X, Download, Cpu, Paperclip, FileText, FileSpreadsheet, Image, AlertCircle, FileDown } from 'lucide-react';
 import { apiRequest } from '../api/client';
 import { consumeChatEvents } from '../api/event-stream.mjs';
 import { usePermission } from '../api/permissions';
 import { useApi } from '../hooks/useApi';
-import { State, dateTime } from '../components/Common';
+import { State } from '../components/Common';
 
 const imageExtensions = ['png', 'jpg', 'jpeg', 'webp'];
 const statusLabels = { UPLOADING: 'Enviando', PROCESSING: 'Processando', READY: 'Pronto', FAILED: 'Falhou' };
 const fileSize = size => Number(size) >= 1024 * 1024 ? (Number(size) / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' MB' : Math.ceil(Number(size) / 1024) + ' KB';
+const shortDate = value => value ? new Date(value).toLocaleString('pt-BR', { timeZone: 'America/Cuiaba', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+const suggestions = [
+  'Resuma o edital anexado: objeto, valor estimado, prazos e exigências de habilitação.',
+  'Confira a planilha anexada e aponte contratos com vigência terminando nos próximos 90 dias.',
+  'Redija um ofício à Secretaria de Educação solicitando o relatório de frequência escolar.'
+];
+function fileIcon(file) {
+  const name = file.name?.toLowerCase() || '';
+  if (file.mimeType?.startsWith('image/')) return Image;
+  if (/\.(xlsx|csv)$/.test(name)) return FileSpreadsheet;
+  return FileText;
+}
+// Model output is untrusted: no raw HTML (react-markdown default) and no remote images.
+function AnswerText({ children }) {
+  return <div className="message-markdown"><Markdown remarkPlugins={[remarkGfm, remarkBreaks]} disallowedElements={['img']} unwrapDisallowed components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{children}</Markdown></div>;
+}
+const exportFormats = [['pdf', 'PDF'], ['docx', 'Word'], ['xlsx', 'Excel']];
+const hasMarkdownTable = text => /^\s*\|?.+\|.+\n\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/m.test(text || '');
 function messageAttachments(message) {
   const relations = message.attachments?.map(item => item.document || item) || [];
   const files = relations.length ? relations : message.metadata?.attachments || [];
@@ -47,6 +68,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
   const [pending, setPending] = useState(null);
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [exporting, setExporting] = useState('');
   const [error, setError] = useState('');
   const end = useRef(null);
   const request = useRef(null);
@@ -207,16 +229,26 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     if (scope.current !== removalScope) return;
     updateAttachments(current => current.filter(item => item.clientId !== file.clientId));
   }
+  async function saveResponse(response, fallbackName) {
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = encoded ? decodeURIComponent(encoded) : fallbackName;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
   async function download(file) {
-    try {
-      const response = await apiRequest('/chat/attachments/' + file.id + '/download', { token, raw: true });
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = file.name;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (caught) { setError(caught.message); }
+    try { await saveResponse(await apiRequest('/chat/attachments/' + file.id + '/download', { token, raw: true }), file.name); }
+    catch (caught) { setError(caught.message); }
+  }
+  async function exportAnswer(message, format) {
+    setExporting(message.id + format);
+    setError('');
+    try { await saveResponse(await apiRequest('/conversations/' + conversationId + '/messages/' + message.id + '/export?format=' + format, { token, raw: true }), 'documento.' + format); }
+    catch (caught) { setError(caught.message); }
+    finally { setExporting(''); }
   }
   async function send(event) {
     event?.preventDefault();
@@ -259,52 +291,86 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     setError('Resposta interrompida. Sua pergunta e seus anexos continuam disponíveis para tentar novamente.');
   }
   const activeAgentName = agent?.name || conversation?.agent?.name;
+  const visibleAgents = agents.filter(item => item.status !== 'ARCHIVED');
+  const title = conversation?.title || (messages.length ? 'Conversa' : 'Nova conversa');
+  const empty = !loadingHistory && !messages.length && !pending;
   return <State loading={catalog.loading} error={catalog.error} retry={catalog.reload}>
-    <div className="toolbar chat-selectors">
-      <Select aria-label="Agente da conversa" label="Agente" value={selectedAgentId || ''} onChange={event => selectAgent(event.target.value)} disabled={sending}>
-        <option value="">Selecione um agente</option>
-        {agents.filter(item => item.status !== 'ARCHIVED').map(item => <option key={item.id} value={item.id}>{item.name}{item.status === 'DRAFT' ? ' (rascunho)' : ''}</option>)}
-        {(!agent || agent.status === 'ARCHIVED') && conversation?.agent && <option value={conversation.agentId}>{conversation.agent.name}</option>}
-      </Select>
-      <Select aria-label="Modelo da conversa" label="Modelo" value={modelId} onChange={event => setModelId(event.target.value)} disabled={sending || loadingHistory || !canSend}>
-        <option value="">Selecione um modelo</option>
-        {models.map(item => <option key={item.id} value={item.id}>{item.name} · {item.provider?.name}</option>)}
-        {modelId && !models.some(item => item.id === modelId) && <option value={modelId}>{model?.name || 'Modelo usado nesta conversa'}</option>}
-      </Select>
-    </div>
     <div className="chat-layout">
-      <aside className="chat-list"><Card><div className="chat-list-head"><b>Conversas</b><IconButton aria-label="Nova conversa" disabled={sending} onClick={() => resetChat()} icon={<Plus size={18} />} type="button" /></div>
-        {canReadHistory ? <State loading={conversations.loading} error={conversations.error} retry={conversations.reload} empty={!conversations.data.length && 'Suas conversas aparecerão aqui.'}>
-          <SelectableList bare label="Suas conversas" items={conversations.data.map(item => ({ id: item.id, title: item.title || 'Nova conversa', description: [item.agent?.name, dateTime(item.updatedAt)].filter(Boolean).join(' · '), disabled: sending }))} value={conversationId} onChange={openConversation} />
-        </State> : <p>Seu perfil não permite consultar o histórico de conversas.</p>}
-      </Card></aside>
-      <div className="chat-window"><Card title={activeAgentName || 'Nova conversa'} description={model ? model.name + (model.provider?.name ? ' · ' + model.provider.name : '') : 'Selecione o agente e o modelo para conversar.'} action={<IconTile icon={Bot} tone="primary" />}>
-        <div className="messages" aria-live="polite">
-          {loadingHistory ? <p role="status">Carregando conversa...</p> : !messages.length && !pending ? <EmptyState icon={Bot} title={activeAgentName ? 'Converse com ' + activeAgentName : 'Selecione um agente'} description={activeAgentName ? 'As respostas utilizarão as instruções e as bases vinculadas a este agente.' : 'Escolha um agente e um modelo para iniciar uma conversa.'} /> : messages.map(message => <div key={message.id} className={'message ' + (message.role === 'user' ? 'user' : 'agent')}><div>
-            <span className="message-text">{message.content}</span>
-            {!!messageAttachments(message).length && <div className="chat-message-files">{messageAttachments(message).map(file => <div className="chat-file" key={file.id}><span>{file.name}</span><IconButton type="button" aria-label={'Baixar ' + file.name} disabled={!canSend} icon={<Download size={15} />} onClick={() => download(file)} /></div>)}</div>}
-            {message.metadata?.sources?.length > 0 && <div className="source-chips">{message.metadata.sources.map((source, index) => <Chip key={source.id || index}>Fonte: {source.documentName}</Chip>)}</div>}
-            {message.role === 'assistant' && message.metadata?.model && <small>{message.metadata.modelName || message.metadata.model}{message.metadata.providerName ? ' · ' + message.metadata.providerName : ''}</small>}
-            <small>{dateTime(message.createdAt)}</small>
-          </div></div>)}
-          {pending && <><div className="message user"><div><span className="message-text">{pending.question}</span>{!!pending.attachments.length && <div className="source-chips">{pending.attachments.map(file => <Chip key={file.id}>{file.name}</Chip>)}</div>}</div></div>{pending.answer && <div className="message agent"><div><span className="message-text">{pending.answer}</span><small>Respondendo...</small></div></div>}</>}
-          {sending && !pending?.answer && <p role="status">O agente está preparando a resposta...</p>}<div ref={end} />
+      <aside className="chat-panel chat-list" aria-label="Histórico de conversas">
+        <div className="chat-list-head"><h2>Conversas</h2><IconButton aria-label="Nova conversa" variant="secondary" disabled={sending} onClick={() => resetChat()} icon={<Plus size={18} />} type="button" /></div>
+        <div className="chat-list-body">
+          {canReadHistory ? <State loading={conversations.loading} error={conversations.error} retry={conversations.reload} empty={!conversations.data.length && 'Suas conversas aparecerão aqui.'}>
+            <SelectableList bare label="Suas conversas" items={conversations.data.map(item => ({ id: item.id, title: item.title || 'Nova conversa', description: [item.agent?.name, shortDate(item.updatedAt)].filter(Boolean).join(', '), disabled: sending }))} value={conversationId} onChange={openConversation} />
+          </State> : <p className="muted">Seu perfil não permite consultar o histórico de conversas.</p>}
         </div>
-        {error && <Alert tone="danger">{error}</Alert>}
-        {!canSend && <p className="panel-note">Seu perfil permite consultar as conversas.</p>}
-        {agent && agent.status !== 'ACTIVE' && <p className="panel-note">Ative o agente nas configurações para conversar.</p>}
-        {canUseAgent && incompatibleImage && <Alert tone="danger">{historicalImages ? 'Esta conversa contém imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou inicie uma nova conversa.' : 'Os anexos incluem imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou remova esses arquivos.'}</Alert>}
-        {canUseAgent && uploadCapabilities.error && <Alert tone="danger" actions={<Button type="button" variant="secondary" onClick={uploadCapabilities.reload}>Tentar carregar opções de anexo</Button>}>{uploadCapabilities.error}</Alert>}
-        {!!attachments.length && <div className="chat-draft-files" aria-label="Anexos da mensagem">{attachments.map(file => <div key={file.clientId} className="chat-draft-file"><div><b>{file.name}</b><small>{fileSize(file.sizeBytes)} · {statusLabels[file.status] || file.status}</small>{file.errorMessage && <span className="document-error">{file.errorMessage}</span>}</div><IconButton type="button" aria-label={'Remover ' + file.name} disabled={sending} onClick={() => removeAttachment(file)} icon={<X size={16} />} /></div>)}</div>}
-        <form className="chat-composer" onSubmit={send}>
-          <FileButton onFiles={upload} accept={[...documentExtensions, ...(supportsImages ? supportedImages : [])].map(extension => '.' + extension).join(',')} multiple disabled={composerDisabled || attachments.length >= maxFiles || !modelId || uploadCapabilities.loading || !!uploadCapabilities.error} icon={<Plus size={18} />} variant="ghost"><span className="sr-only">Anexar arquivos</span></FileButton>
-          <Textarea aria-label="Mensagem" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); }
-          }} placeholder="Digite sua mensagem..." disabled={composerDisabled} maxLength={16000} rows={2} />
-          {sending ? <IconButton key="stop" type="button" aria-label="Interromper resposta" onClick={stop} icon={<Square size={15} />} /> : <IconButton key="send" type="submit" aria-label="Enviar mensagem" disabled={sendDisabled} icon={<Send size={16} />} />}
-        </form>
-        {canUseAgent && <p className="chat-hint">Enter para enviar · Shift+Enter para nova linha. Até {maxFiles} arquivos: documentos de até {fileSize(maxBytes)}{supportsImages ? ' e imagens de até ' + fileSize(Math.min(imageMaxBytes, maxBytes)) : ''}.</p>}
-      </Card></div>
+      </aside>
+
+      <section className="chat-panel chat-window" aria-label="Conversa">
+        <header className="chat-window-head">
+          <h2 title={title}>{title}</h2>
+          <div className="chat-selectors">
+            <Select aria-label="Agente da conversa" size="compact" icon={<Bot size={14} />} value={selectedAgentId || ''} onChange={event => selectAgent(event.target.value)} disabled={sending}>
+              <option value="">Selecione um agente</option>
+              {visibleAgents.map(item => <option key={item.id} value={item.id}>{item.name}{item.status === 'DRAFT' ? ' (rascunho)' : ''}</option>)}
+              {(!agent || agent.status === 'ARCHIVED') && conversation?.agent && <option value={conversation.agentId}>{conversation.agent.name}</option>}
+            </Select>
+            <Select aria-label="Modelo da conversa" size="compact" icon={<Cpu size={14} />} value={modelId} onChange={event => setModelId(event.target.value)} disabled={sending || loadingHistory || !canSend}>
+              <option value="">Selecione um modelo</option>
+              {models.map(item => <option key={item.id} value={item.id}>{item.name} · {item.provider?.name}</option>)}
+              {modelId && !models.some(item => item.id === modelId) && <option value={modelId}>{model?.name || 'Modelo usado nesta conversa'}</option>}
+            </Select>
+          </div>
+        </header>
+
+        <div className="messages" aria-live="polite">
+          {loadingHistory && <p className="chat-status" role="status"><Spinner size="sm" tone="muted" /> Carregando conversa...</p>}
+          {empty && <div className="chat-empty">
+            <EmptyState icon={Bot} title={activeAgentName ? 'Pergunte ao ' + activeAgentName : 'Escolha um agente para começar'} description={activeAgentName ? 'Anexe editais, planilhas ou documentos e pergunte em linguagem simples. As respostas seguem as instruções e as bases deste agente.' : 'Use o seletor acima. Cada agente tem instruções e bases de conhecimento próprias.'} />
+            {canUseAgent && <div className="chat-suggestions">{suggestions.map(text => <Button key={text} type="button" variant="secondary" size="sm" onClick={() => setQuery(text)}>{text}</Button>)}</div>}
+          </div>}
+          {!loadingHistory && messages.map(message => <article key={message.id} className={'message ' + (message.role === 'user' ? 'user' : 'agent')}>
+            {message.role === 'user' ? <span className="message-text">{message.content}</span> : <AnswerText>{message.content}</AnswerText>}
+            {!!messageAttachments(message).length && <div className="chat-message-files">{messageAttachments(message).map(file => { const Icon = fileIcon(file); return <div className="chat-file" key={file.id}><Icon size={15} aria-hidden="true" /><span>{file.name}</span><IconButton type="button" size="xs" aria-label={'Baixar ' + file.name} disabled={!canSend} icon={<Download size={14} />} onClick={() => download(file)} /></div>; })}</div>}
+            {message.metadata?.sources?.length > 0 && <div className="source-chips">{message.metadata.sources.map((source, index) => <Chip key={source.id || index} variant="outline">Fonte: {source.documentName}</Chip>)}</div>}
+            <div className="message-meta">
+              {message.role === 'assistant' && message.metadata?.model && <small>{message.metadata.modelName || message.metadata.model}{message.metadata.providerName ? ' · ' + message.metadata.providerName : ''}</small>}
+              <small>{shortDate(message.createdAt)}</small>
+            </div>
+            {message.role === 'assistant' && canReadHistory && conversationId && message.content?.trim() && <div className="message-actions" role="group" aria-label="Baixar esta resposta">
+              {exportFormats.filter(([format]) => format !== 'xlsx' || hasMarkdownTable(message.content)).map(([format, label]) => <Button key={format} type="button" variant="secondary" size="sm" aria-label={'Baixar resposta em ' + label} disabled={!!exporting} onClick={() => exportAnswer(message, format)}>{exporting === message.id + format ? <Spinner size="xs" tone="current" /> : <FileDown size={14} aria-hidden="true" />} {label}</Button>)}
+            </div>}
+          </article>)}
+          {pending && <>
+            <article className="message user"><span className="message-text">{pending.question}</span>{!!pending.attachments.length && <div className="source-chips">{pending.attachments.map(file => <Chip key={file.id} variant="outline">{file.name}</Chip>)}</div>}</article>
+            {pending.answer && <article className="message agent"><AnswerText>{pending.answer}</AnswerText><div className="message-meta"><small>Respondendo...</small></div></article>}
+          </>}
+          {sending && !pending?.answer && <p className="chat-status" role="status"><Spinner size="sm" tone="accent" /> O agente está preparando a resposta...</p>}
+          <div ref={end} />
+        </div>
+
+        <div className="chat-footer">
+          {error && <Alert tone="danger">{error}</Alert>}
+          {!canSend && <p className="panel-note">Seu perfil permite consultar as conversas.</p>}
+          {agent && agent.status !== 'ACTIVE' && <p className="panel-note">Ative o agente nas configurações para conversar.</p>}
+          {canUseAgent && incompatibleImage && <Alert tone="danger">{historicalImages ? 'Esta conversa contém imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou inicie uma nova conversa.' : 'Os anexos incluem imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou remova esses arquivos.'}</Alert>}
+          {canUseAgent && uploadCapabilities.error && <Alert tone="danger" actions={<Button type="button" variant="secondary" onClick={uploadCapabilities.reload}>Tentar carregar opções de anexo</Button>}>{uploadCapabilities.error}</Alert>}
+          <form className="chat-composer" onSubmit={send}>
+            {!!attachments.length && <div className="chat-draft-files" aria-label="Anexos da mensagem">{attachments.map(file => { const Icon = file.status === 'FAILED' ? AlertCircle : fileIcon(file); return <div key={file.clientId} className={'chat-draft-file' + (file.status === 'FAILED' ? ' is-failed' : '')}>
+              {['UPLOADING', 'PROCESSING'].includes(file.status) ? <Spinner size="xs" tone="muted" /> : <Icon size={16} aria-hidden="true" />}
+              <div><b>{file.name}</b><small>{fileSize(file.sizeBytes)} · {statusLabels[file.status] || file.status}</small>{file.errorMessage && <span className="document-error">{file.errorMessage}</span>}</div>
+              <IconButton type="button" size="xs" variant="danger" aria-label={'Remover ' + file.name} disabled={sending} onClick={() => removeAttachment(file)} icon={<X size={14} />} />
+            </div>; })}</div>}
+            <Textarea aria-label="Mensagem" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); }
+            }} placeholder={canUseAgent ? 'Escreva sua pergunta ou peça um rascunho...' : 'Escolha um agente ativo para escrever.'} disabled={composerDisabled} maxLength={16000} rows={3} />
+            <div className="chat-composer-actions">
+              <FileButton onFiles={upload} accept={[...documentExtensions, ...(supportsImages ? supportedImages : [])].map(extension => '.' + extension).join(',')} multiple disabled={composerDisabled || attachments.length >= maxFiles || !modelId || uploadCapabilities.loading || !!uploadCapabilities.error} icon={<Paperclip size={16} />} variant="ghost" size="sm">Anexar arquivos</FileButton>
+              {canUseAgent && <p className="chat-hint">Shift+Enter quebra a linha. Até {maxFiles} arquivos de {fileSize(maxBytes)}{supportsImages ? ', imagens até ' + fileSize(Math.min(imageMaxBytes, maxBytes)) : ''}.</p>}
+              {sending ? <Button key="stop" type="button" variant="secondary" size="sm" aria-label="Interromper resposta" onClick={stop}><Square size={13} aria-hidden="true" /> Parar</Button> : <Button key="send" type="submit" size="sm" aria-label="Enviar mensagem" disabled={sendDisabled}>Enviar <Send size={14} aria-hidden="true" /></Button>}
+            </div>
+          </form>
+        </div>
+      </section>
     </div>
   </State>;
 }

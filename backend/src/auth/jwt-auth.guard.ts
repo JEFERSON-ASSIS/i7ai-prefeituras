@@ -1,19 +1,21 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { validClaims } from './auth-policy';
 import { tokenVerificationOptions } from './jwt-policy';
+import { SgdmIdentityService } from './sgdm-identity.service';
 const authenticated = Symbol('i7ai-authenticated');
 
 export type AuthenticatedRequest = {
   headers: Record<string, string | undefined>;
+  ip?: string;
   user?: { sub: string; tenantId: string; email: string; name: string; roles: string[]; permissions: string[] };
   [authenticated]?: boolean;
 };
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(private readonly jwt: JwtService, private readonly prisma: PrismaService) {}
+  constructor(private readonly jwt: JwtService, private readonly prisma: PrismaService, @Optional() private readonly sgdm?: SgdmIdentityService) {}
 
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -25,11 +27,18 @@ export class JwtAuthGuard implements CanActivate {
     if (!token) throw new UnauthorizedException('Bearer token is required');
 
     let claims: unknown;
-    try {
-      // The decoded issuer only selects a policy; signature verification remains mandatory.
-      claims = await this.jwt.verifyAsync(token, tokenVerificationOptions(this.jwt.decode(token)));
-    } catch {
-      throw new UnauthorizedException('Invalid or expired token');
+    if (this.sgdm?.enabled()) {
+      // SGDM validates the session (signature, expiry, logout, deactivation) and
+      // provides fresh permissions; the local mirror is refreshed from it.
+      const identity = await this.sgdm.resolve(token, request.ip);
+      claims = { sub: identity.id, tenantId: identity.tenantId };
+    } else {
+      try {
+        // The decoded issuer only selects a policy; signature verification remains mandatory.
+        claims = await this.jwt.verifyAsync(token, tokenVerificationOptions(this.jwt.decode(token)));
+      } catch {
+        throw new UnauthorizedException('Invalid or expired token');
+      }
     }
     if (!validClaims(claims)) throw new UnauthorizedException('Token sem identificação válida de usuário e prefeitura.');
     const user = await this.prisma.user.findFirst({

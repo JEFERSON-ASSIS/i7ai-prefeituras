@@ -11,6 +11,19 @@ export function getSgdmContext() {
   return { ...parsed, ...injected };
 }
 
+/**
+ * Served at /i7ai on the SGDM domain, the module shares the browser storage of
+ * the SGDM web app, which keeps its session in localStorage['sgdm-auth'].
+ */
+export function getSgdmStoredToken() {
+  try {
+    const token = JSON.parse(localStorage.getItem('sgdm-auth') || 'null')?.state?.accessToken;
+    return typeof token === 'string' ? token : '';
+  } catch {
+    return '';
+  }
+}
+
 export function getSgdmToken() {
-  return getSgdmContext().accessToken || sessionStorage.getItem('sgdm-access-token') || '';
+  return getSgdmContext().accessToken || sessionStorage.getItem('sgdm-access-token') || getSgdmStoredToken();
 }

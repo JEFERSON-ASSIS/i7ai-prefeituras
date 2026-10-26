@@ -19,3 +19,5 @@ deploy/.env.*
 /playwright-report/
 coverage/
 *.tsbuildinfo
+
+.superpowers/

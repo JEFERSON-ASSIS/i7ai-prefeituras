@@ -40,6 +40,37 @@ services:
     volumes:
       - i7ai_minio_data:/data
 
+  litellm-db-init:
+    image: pgvector/pgvector:pg16
+    restart: "no"
+    environment:
+      PGPASSWORD: i7ai_dev
+    entrypoint: ["sh", "-ec"]
+    command:
+      - psql -h postgres -U i7ai -d i7ai -tAc "SELECT 1 FROM pg_database WHERE datname='litellm'" | grep -q 1 || psql -h postgres -U i7ai -d i7ai -c "CREATE DATABASE litellm"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  litellm:
+    # Gateway de IA local. As chaves dos provedores são cadastradas em Modelos (SUPER_ADMIN).
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}
+    container_name: i7ai-litellm
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      DATABASE_URL: postgresql://i7ai:i7ai_dev@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-i7ai-dev-local}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-i7ai-dev-salt}
+      STORE_MODEL_IN_DB: "True"
+    volumes:
+      - ./deploy/litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      litellm-db-init:
+        condition: service_completed_successfully
+
 volumes:
   i7ai_postgres_data:
   i7ai_redis_data:

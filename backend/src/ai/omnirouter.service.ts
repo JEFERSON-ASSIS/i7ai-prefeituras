@@ -1,6 +1,8 @@
-import { BadGatewayException, BadRequestException, HttpException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, HttpException, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { AgentFunction, AgentToolCall, AgentToolsService } from './agent-tools.service';
 import { AiQuotaService, QuotaScope, QuotaUsage } from './ai-quota.service';
+import { gatewayBaseAllowed, isAllowedRoute, routePolicyMessage } from '../catalog/model-route-policy';
+import { TenantAiKeyService } from './tenant-ai-key.service';
 
 export type OmniRouterInput = {
   agent: { id: string; tenantId: string; systemPrompt?: string | null; temperature: unknown; maxTokens: number; advancedReasoning: boolean };
@@ -75,7 +77,7 @@ function functionCall(value: unknown): ChatToolCall {
 
 @Injectable()
 export class OmniRouterService {
-  constructor(private readonly agentTools: AgentToolsService, private readonly quota: AiQuotaService) {}
+  constructor(private readonly agentTools: AgentToolsService, private readonly quota: AiQuotaService, @Optional() private readonly tenantKeys?: TenantAiKeyService) {}
 
   async generate(input: OmniRouterInput): Promise<OmniRouterAnswer> {
     input.signal?.throwIfAborted();
@@ -83,6 +85,7 @@ export class OmniRouterService {
     const apiKey = process.env.OMNIROUTER_API_KEY?.trim();
     if (!apiKey || /[\r\n]/.test(apiKey)) throw new ServiceUnavailableException('Configure OMNIROUTER_API_KEY no servidor para usar o OmniRouter.');
     if (!input.model.slug?.trim()) throw new BadRequestException('Selecione um modelo válido no catálogo.');
+    if (!isAllowedRoute(input.model.slug)) throw new BadRequestException(routePolicyMessage(input.model.slug));
     if (input.agent.advancedReasoning) {
       // Model reasoning capability alone does not specify a gateway parameter
       // for changing reasoning intensity. Do not silently ignore this setting.
@@ -104,6 +107,8 @@ export class OmniRouterService {
     const supportsTemperature = capability(input.model.capabilities, 'supportsTemperature') ?? capability(input.model.provider?.config, 'supportsTemperature') ?? false;
     const temperature = Number(input.agent.temperature);
     if (supportsTemperature && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) throw new BadRequestException('A temperatura do agente deve estar entre 0 e 2.');
+    // The prefeitura's own key from SGDM, sent only on the wire (never in the quota or logs).
+    const providerKey = await this.tenantKeys?.forModel(input.agent.tenantId, input.model.slug);
     const messages: ChatMessage[] = [{ role: 'system', content: input.instructions }, ...this.history(input.history), { role: 'user', content: this.userContent(input) }];
     const usedCalls: { callId: string; name: string }[] = [];
     let inputTokens = 0; let outputTokens = 0; let measured = true;
@@ -125,7 +130,7 @@ export class OmniRouterService {
       // Vision accounting is model-specific. The verified catalog window bounds
       // the complete accepted request; reserve it rather than guessing image cost.
       const inputUpperBound = hasImages ? contextWindow! - input.agent.maxTokens : undefined;
-      const generated = await this.quota.runRound(input.quotaScope, request, input.agent.maxTokens, record => this.round(endpoint, apiKey, request, input, record), inputUpperBound);
+      const generated = await this.quota.runRound(input.quotaScope, request, input.agent.maxTokens, record => this.round(endpoint, apiKey, request, input, record, providerKey), inputUpperBound);
       input.signal?.throwIfAborted();
       inputTokens += generated.usage.inputTokens; outputTokens += generated.usage.outputTokens; measured = measured && generated.usage.measured;
       if (inputTokens > 2_147_483_647 || outputTokens > 2_147_483_647) throw protocolError('O consumo acumulado do OmniRouter excedeu o limite permitido.');
@@ -160,9 +165,8 @@ export class OmniRouterService {
     if (!configured) throw new ServiceUnavailableException('Configure OMNIROUTER_BASE_URL no servidor com a URL oficial da sua conta OmniRouter.');
     let base: URL;
     try { base = new URL(configured); } catch { throw new ServiceUnavailableException('OMNIROUTER_BASE_URL deve ser uma URL válida.'); }
-    const localHttp = process.env.NODE_ENV !== 'production' && base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname);
-    if ((base.protocol !== 'https:' && !localHttp) || base.username || base.password || base.search || base.hash) {
-      throw new ServiceUnavailableException('OMNIROUTER_BASE_URL deve usar HTTPS, sem credenciais ou parâmetros na URL. HTTP local é permitido somente no desenvolvimento.');
+    if (!gatewayBaseAllowed(base)) {
+      throw new ServiceUnavailableException('OMNIROUTER_BASE_URL deve usar HTTPS, sem credenciais ou parâmetros na URL. HTTP é permitido somente para localhost no desenvolvimento ou serviços internos em OMNIROUTER_INTERNAL_HOSTS.');
     }
     return configured.replace(/\/+$/, '') + '/chat/completions';
   }
@@ -196,19 +200,17 @@ export class OmniRouterService {
     return [{ type: 'text', text: input.message }, ...images];
   }
 
-  private async round(endpoint: string, apiKey: string, request: unknown, input: OmniRouterInput, record: UsageReporter): Promise<ChatRound> {
+  private async round(endpoint: string, apiKey: string, request: unknown, input: OmniRouterInput, record: UsageReporter, providerKey?: string): Promise<ChatRound> {
     const timeout = AbortSignal.timeout(60000);
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
     try {
       const response = await fetch(endpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: input.onDelta ? 'text/event-stream' : 'application/json', Authorization: 'Bearer ' + apiKey },
-        body: JSON.stringify(request), signal, redirect: 'error',
+        // `user` = prefeitura: the gateway groups spend by it (Relatórios › Custos de IA).
+        body: JSON.stringify({ ...(request as object), user: input.agent.tenantId, ...(providerKey ? { api_key: providerKey } : {}) }), signal, redirect: 'error',
       });
       input.signal?.throwIfAborted();
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw this.httpError(response.status);
-      }
+      if (!response.ok) throw this.httpError(response.status, await this.gatewayReason(response));
       if (input.onDelta) {
         if (!/^text\/event-stream(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) {
           await response.body?.cancel();
@@ -238,13 +240,29 @@ export class OmniRouterService {
     }
   }
 
-  private httpError(status: number): HttpException {
-    const message = status === 401 || status === 403 ? 'A credencial do OmniRouter é inválida ou não tem acesso ao modelo.'
-      : status === 402 ? 'O saldo da conta OmniRouter é insuficiente. Recarregue a conta para continuar.'
-      : status === 429 ? 'O OmniRouter atingiu o limite de uso. Tente novamente mais tarde.'
-      : status === 400 || status === 404 || status === 422 ? 'O OmniRouter recusou o modelo, os anexos, as ferramentas ou seus parâmetros. Verifique o catálogo e as configurações do agente.'
-      : 'O OmniRouter está indisponível. Tente novamente mais tarde.';
-    const error = [400, 404, 422].includes(status) ? new BadGatewayException(message) : new ServiceUnavailableException(message);
+  /** First line of the gateway error, used only to classify the failure. */
+  private async gatewayReason(response: Response): Promise<string> {
+    try {
+      const text = (await response.text()).slice(0, 4000);
+      const message = (JSON.parse(text) as { error?: { message?: unknown } })?.error?.message;
+      return typeof message === 'string' ? message.split(String.fromCharCode(10))[0].replace(/^(?:litellm\.\w+:\s*)+/, '').replace(/\s+/g, ' ').trim().slice(0, 240) : '';
+    } catch {
+      return '';
+    }
+  }
+
+  private httpError(status: number, reason = ''): HttpException {
+    const missingKey = /api_key client option must be set|api key|x-api-key|authentication/i.test(reason);
+    const unknownModel = /invalid model name|model.*not found|does not exist/i.test(reason);
+    const message = missingKey ? 'A chave do provedor de IA não está cadastrada ou foi recusada. Cadastre a chave da prefeitura no SGDM (Cadastros › IA) ou a chave da plataforma em Modelos › Chaves dos provedores de IA.'
+      : unknownModel ? 'O modelo escolhido não está disponível no gateway de IA. Escolha outro modelo ou peça ao SUPER_ADMIN para revisar o catálogo.'
+      : status === 401 || status === 403 ? 'A credencial do gateway de IA é inválida ou não tem acesso ao modelo.'
+      : status === 402 ? 'O saldo da conta do provedor de IA é insuficiente.'
+      : status === 429 ? 'O provedor de IA atingiu o limite de uso. Tente novamente mais tarde.'
+      : status === 400 || status === 404 || status === 422 ? 'O gateway de IA recusou o modelo, os anexos, as ferramentas ou seus parâmetros. Verifique o catálogo e as configurações do agente.'
+      : 'O gateway de IA está indisponível. Tente novamente mais tarde.';
+    // The reason only selects a message: provider text may echo the request and is never shown.
+    const error = [400, 404, 422].includes(status) || missingKey || unknownModel ? new BadGatewayException(message) : new ServiceUnavailableException(message);
     return Object.assign(error, { providerStatus: status });
   }
 
@@ -310,7 +328,12 @@ export class OmniRouterService {
       }
       const choice = object(payload.choices[0]); const delta = object(choice?.delta);
       if (!choice || choice.index !== 0 || !delta || (delta.role !== undefined && delta.role !== 'assistant')) throw protocolError('O OmniRouter retornou um frame SSE inválido.');
-      if (finishReason) throw protocolError('O OmniRouter enviou conteúdo após concluir a resposta.');
+      if (finishReason) {
+        // LiteLLM sends the usage frame after the finish with an empty delta; only real content is refused.
+        const empty = (value: unknown) => value === undefined || value === null || value === '' || (Array.isArray(value) && !value.length);
+        if (empty(delta.content) && empty(delta.refusal) && empty(delta.tool_calls) && (choice.finish_reason === undefined || choice.finish_reason === null)) return;
+        throw protocolError('O gateway de IA enviou conteúdo após concluir a resposta.');
+      }
       if (delta.content !== undefined && delta.content !== null && typeof delta.content !== 'string') throw protocolError();
       if (delta.refusal !== undefined && delta.refusal !== null && typeof delta.refusal !== 'string') throw protocolError();
       const text = (delta.content ?? delta.refusal ?? '') as string;

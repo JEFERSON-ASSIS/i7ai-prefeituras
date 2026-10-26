@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: i7ai-prefeituras-local-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: i7ai
+      POSTGRES_PASSWORD: i7ai_dev
+      POSTGRES_DB: i7ai
+    ports:
+      - "127.0.0.1:5435:5432"
+    volumes:
+      - i7ai_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U i7ai -d i7ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: i7ai-prefeituras-local-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6381:6379"
+    volumes:
+      - i7ai_redis_data:/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: i7ai-prefeituras-local-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: i7ai
+      MINIO_ROOT_PASSWORD: i7ai_dev_minio
+    ports:
+      - "127.0.0.1:9004:9000"
+      - "127.0.0.1:9005:9001"
+    volumes:
+      - i7ai_minio_data:/data
+
+  # Cria o banco do LiteLLM no mesmo Postgres (também em volumes já existentes).
+  litellm-db-init:
+    image: pgvector/pgvector:pg16
+    restart: "no"
+    environment:
+      PGPASSWORD: i7ai_dev
+    entrypoint: ["sh", "-ec"]
+    command:
+      - psql -h postgres -U i7ai -d i7ai -tAc "SELECT 1 FROM pg_database WHERE datname='litellm'" | grep -q 1 || psql -h postgres -U i7ai -d i7ai -c "CREATE DATABASE litellm"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  litellm:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}
+    container_name: i7ai-prefeituras-local-litellm
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      DATABASE_URL: postgresql://i7ai:i7ai_dev@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-i7ai-dev-local}
+      # Criptografa as chaves salvas no banco. Nunca altere depois de cadastrar chaves.
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-i7ai-dev-salt}
+      # Recarrega do banco as chaves cadastradas pelo i7Ai ao iniciar.
+      STORE_MODEL_IN_DB: "True"
+    volumes:
+      - ./deploy/litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      litellm-db-init:
+        condition: service_completed_successfully
+
+volumes:
+  i7ai_postgres_data:
+  i7ai_redis_data:
+  i7ai_minio_data:

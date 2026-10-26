@@ -21,6 +21,10 @@ for (const width of [1440,390]) {
       await expect(page.getByLabel('Área do i7Ai')).toHaveCount(0);
       await expect(page.getByRole('banner')).toHaveCount(0);
       expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+      expect(await page.evaluate(()=>({
+        documentOverflow:getComputedStyle(document.documentElement).overflowY,
+        mainOverflow:getComputedStyle(document.querySelector('main')).overflowY,
+      }))).toEqual({documentOverflow:'hidden',mainOverflow:'auto'});
       await page.screenshot({path:`output/verification/sgdm/screenshots-embedded/host-${route}-${width}.png`,fullPage:true});
     }
     if(width===390)await page.getByLabel('Área da prévia').selectOption('departments');

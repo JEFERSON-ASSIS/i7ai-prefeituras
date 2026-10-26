@@ -37,7 +37,7 @@ function fixture(functions = []) {
   };
   const input = {
     agent: { id: 'agent-a', tenantId: 'tenant-a', temperature: 0.2, maxTokens: 500, advancedReasoning: false },
-    model: { slug: 'model-from-catalog', capabilities: null, provider: { config: null } },
+    model: { slug: 'openai/model-from-catalog', capabilities: null, provider: { config: null } },
     instructions: 'Responda em português. O agente é um analista administrativo.',
     message: 'Analise o orçamento.', history: [{ role: 'user', content: 'Contexto anterior' }, { role: 'assistant', content: 'Resposta anterior' }],
     functions, userId: 'user-a',
@@ -71,7 +71,7 @@ async function provider(t, handler) {
 }
 function completion(text = 'O orçamento é 42.', options = {}) {
   return {
-    id: 'fixture-completion', object: 'chat.completion', model: 'model-from-catalog',
+    id: 'fixture-completion', object: 'chat.completion', model: 'openai/model-from-catalog',
     choices: [{ index: 0, finish_reason: options.finishReason || 'stop', message: { role: 'assistant', content: text, ...(options.calls ? { tool_calls: options.calls } : {}) } }],
     ...(options.usage === false ? {} : { usage: options.usage || { prompt_tokens: 30, completion_tokens: 10 } }),
   };
@@ -431,4 +431,46 @@ test('tool results are rechecked against the context window before the next paid
   await assert.rejects(service.generate(input), /ferramentas excedem o contexto/);
   assert.equal(local.requests.length, 1); assert.equal(records.reservations.length, 1); assert.equal(records.executed.length, 1);
   assert.equal(records.usage[0].usageMeasured, true); assert.equal(records.usage[0].inputTokens, 30);
+});
+
+test('gateway reasons pick a clear message without exposing the provider text', async t => {
+  let reason = 'litellm.AuthenticationError: OpenAIException - The api_key client option must be set';
+  await provider(t, (_body, response) => json(response, { error: { message: reason } }, reason.includes('Invalid model') ? 400 : 401));
+  const missing = fixture();
+  await assert.rejects(missing.service.generate(missing.input), error => { assert.match(error.message, /Chaves dos provedores de IA/); assert.doesNotMatch(error.message, /OpenAIException/); return true; });
+  reason = '/chat/completions: Invalid model name passed in model=openai/x';
+  const unknown = fixture();
+  await assert.rejects(unknown.service.generate(unknown.input), /não está disponível no gateway/);
+});
+
+test('the prefeitura key from SGDM goes only on the wire, for models of its provider', async t => {
+  const { requests } = await provider(t, (_body, response) => json(response, completion()));
+  const { input, records, quota, runtime } = fixture();
+  const asked = [];
+  const tenantKeys = { forModel: async (tenantId, slug) => { asked.push([tenantId, slug]); return 'sk-prefeitura-123'; } };
+  const service = new OmniRouterService(runtime, quota, tenantKeys);
+  await service.generate(input);
+  assert.deepEqual(asked, [['tenant-a', 'openai/model-from-catalog']]);
+  assert.equal(requests[0].body.api_key, 'sk-prefeitura-123');
+  assert.ok(!JSON.stringify(records, (_key, value) => typeof value === 'bigint' ? String(value) : value).includes('sk-prefeitura-123'));
+  const without = new OmniRouterService(runtime, quota, { forModel: async () => undefined });
+  await without.generate(input);
+  assert.equal('api_key' in requests[1].body, false);
+});
+
+test('LiteLLM stream shape: an empty usage frame after the finish is accepted; text after it is not', async t => {
+  let trailing = {};
+  await provider(t, (_body, response) => sse(response, [
+    frame({ choices: [{ index: 0, delta: { role: 'assistant', content: 'o' } }] }),
+    frame({ choices: [{ index: 0, delta: { content: 'k' } }] }),
+    frame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+    frame({ choices: [{ index: 0, delta: trailing }], usage: { prompt_tokens: 9, completion_tokens: 2, total_tokens: 11 } }),
+    frame('[DONE]'),
+  ]));
+  const ok = fixture(); const deltas = []; ok.input.onDelta = text => deltas.push(text);
+  const result = await ok.service.generate(ok.input);
+  assert.equal(result.answer, 'ok'); assert.equal(result.inputTokens, 9); assert.equal(result.measured, true);
+  trailing = { content: 'extra' };
+  const bad = fixture(); bad.input.onDelta = () => {};
+  await assert.rejects(bad.service.generate(bad.input), /após concluir/);
 });

@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateModelDto, CreateUserDto, DepartmentDto, LicenseDto, SettingsDto, UpdateDepartmentDto, UpdateModelDto, UpdateUserDto } from './catalog.dto';
 import { assertLicenseCapacity } from './license-policy';
 import { publicModelCapabilities } from './model-capabilities';
+import { gatewayRoutingActive, isAllowedRoute, routePolicyMessage } from './model-route-policy';
 
 const userSelect = {
   id: true, tenantId: true, departmentId: true, name: true, email: true, status: true,
@@ -123,6 +124,7 @@ export class CatalogService {
     const inputPrice = validateModelPrice(input.inputPrice, 'inputPrice');
     const outputPrice = validateModelPrice(input.outputPrice, 'outputPrice');
     if (!input.name?.trim() || !input.slug?.trim()) throw new BadRequestException('Informe nome e identificador do modelo');
+    if (gatewayRoutingActive() && !isAllowedRoute(input.slug)) throw new BadRequestException(routePolicyMessage(input.slug.trim()));
     try {
       return await this.prisma.$transaction(async (tx) => {
         await this.requireSupportedProvider(tx, input.providerId);
@@ -140,6 +142,7 @@ export class CatalogService {
     const inputPrice = validateModelPrice(input.inputPrice, 'inputPrice');
     const outputPrice = validateModelPrice(input.outputPrice, 'outputPrice');
     if ((input.name !== undefined && !input.name?.trim()) || (input.slug !== undefined && !input.slug?.trim())) throw new BadRequestException('Informe nome e identificador do modelo');
+    if (input.slug !== undefined && gatewayRoutingActive() && !isAllowedRoute(input.slug)) throw new BadRequestException(routePolicyMessage(input.slug.trim()));
     try {
       return await this.prisma.$transaction(async (tx) => {
         const existing = await tx.aiModel.findUnique({ where: { id } });

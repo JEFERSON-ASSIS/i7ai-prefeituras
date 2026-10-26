@@ -1,5 +1,6 @@
 const configured = import.meta.env.VITE_API_URL;
-export const API_URL = (configured || (import.meta.env.DEV ? 'http://localhost:3000/api' : '/api')).replace(/\/$/, '');
+// In production the module lives under its base path (/i7ai/), so its API is /i7ai/api.
+export const API_URL = (configured || (import.meta.env.DEV ? 'http://localhost:3000/api' : import.meta.env.BASE_URL.replace(/\/$/, '') + '/api')).replace(/\/$/, '');
 export class ApiError extends Error {
   constructor(message, status) { super(message); this.name = 'ApiError'; this.status = status; }
 }

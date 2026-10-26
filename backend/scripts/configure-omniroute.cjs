@@ -3,6 +3,7 @@ const path = require('node:path');
 require('reflect-metadata');
 const { PrismaClient } = require('@prisma/client');
 const { AgentsService } = require('../dist/agents/agents.service');
+const { gatewayBaseAllowed, isAllowedRoute, routePolicyMessage } = require('../dist/catalog/model-route-policy');
 
 const envFile = [path.resolve('.env'), path.resolve('../.env')].find(file => fs.existsSync(file));
 if (envFile) process.loadEnvFile(envFile);
@@ -35,8 +36,7 @@ async function main() {
   const systemPrompt = preset === 'general' ? generalInstructions : fs.readFileSync(path.join(__dirname, '../presets', preset + '.pt-BR.txt'), 'utf8').trim();
   if (!systemPrompt || systemPrompt.length > 50000) throw new Error('O preset deve conter instruções de até 50 mil caracteres.');
   const base = new URL(process.env.OMNIROUTER_BASE_URL || '');
-  const localHttp = process.env.NODE_ENV !== 'production' && base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname);
-  if ((base.protocol !== 'https:' && !localHttp) || base.username || base.password || base.search || base.hash) throw new Error('Configure uma base HTTPS válida no ambiente privado.');
+  if (!gatewayBaseAllowed(base)) throw new Error('Configure uma base HTTPS válida no ambiente privado.');
   const key = process.env.OMNIROUTER_API_KEY?.trim();
   if (!key || /[\r\n]/.test(key)) throw new Error('Configure a credencial somente no ambiente privado do backend.');
   const response = await fetch(base.href.replace(/\/+$/, '') + '/models', { headers: { Authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(15000), redirect: 'error' });
@@ -46,8 +46,11 @@ async function main() {
   const models = ids.map(id => {
     const model = payload.data.find(item => item.id === id);
     if (!model || (model.type && !['chat', 'text', 'llm'].includes(model.type))) throw new Error('Modelo de chat não encontrado: ' + id);
-    const provider = /claude|sonnet|haiku/i.test(id) ? 'anthropic' : /gemini/i.test(id) ? 'google' : /gpt/i.test(id) ? 'openai' : null;
-    if (!provider) throw new Error('Família de modelo não reconhecida: ' + id);
+    if (!isAllowedRoute(id)) throw new Error(routePolicyMessage(id));
+    // Multi-family connections (antigravity/, kiro/) are attributed by model family.
+    const provider = { openai: 'openai', anthropic: 'anthropic', gemini: 'google', xai: 'xai' }[id.split('/')[0].toLowerCase()]
+      || (/claude|sonnet|opus|haiku/i.test(id) ? 'anthropic' : /gemini/i.test(id) ? 'google' : /grok/i.test(id) ? 'xai' : /gpt|\/o\d/i.test(id) ? 'openai' : undefined);
+    if (!provider) throw new Error('Provedor não mapeado para a rota: ' + id);
     const capabilities = {};
     for (const [remote, local] of [['vision', 'supportsVision'], ['tool_calling', 'supportsTools'], ['reasoning', 'supportsReasoning'], ['temperature', 'supportsTemperature']]) {
       if (typeof model.capabilities?.[remote] === 'boolean') capabilities[local] = model.capabilities[remote];
@@ -55,7 +58,7 @@ async function main() {
     const window = model.context_length || model.max_input_tokens;
     if (Number.isSafeInteger(window) && window >= 4096 && window <= 2000000) capabilities.contextWindow = window;
     if (Number.isSafeInteger(model.max_output_tokens) && model.max_output_tokens >= 1 && model.max_output_tokens <= 200000) capabilities.maxOutputTokens = model.max_output_tokens;
-    return { id, name: model.name || id, provider, capabilities };
+    return { id, name: (model.name || id).replace(/^[a-z0-9-]+\//i, ''), provider, capabilities };
   });
   const tenantId = option('--tenant');
   const tenants = await prisma.tenant.findMany({ where: tenantId ? { id: tenantId } : {}, select: { id: true, name: true } });

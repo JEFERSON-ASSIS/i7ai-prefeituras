@@ -1,8 +1,1 @@
 /* Feature appearance is owned by @sgdm/design. Layout: styles.css. */
-.chat-selectors > div { flex: 1; }
-.chat-draft-files, .chat-message-files { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-.chat-draft-file, .chat-file { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
-.chat-draft-file > div, .chat-file > span { min-width: 0; overflow-wrap: anywhere; }
-.chat-draft-file small { display: block; margin-top: 4px; }
-.chat-hint { margin: 12px 0 0; font-size: 12px; color: rgb(var(--sd-color-text-muted)); }
-.chat-composer { align-items: flex-end; }

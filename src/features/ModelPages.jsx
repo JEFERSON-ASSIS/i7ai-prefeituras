@@ -1,6 +1,6 @@
 import { Alert, Button, Card, Checkbox, Input, Select } from "@sgdm/design";
 import { useState } from 'react';
-import { Pencil, Save } from 'lucide-react';
+import { KeyRound, Pencil, PlugZap, Save, Trash2 } from 'lucide-react';
 import { apiRequest } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import { usePermission } from '../api/permissions';
@@ -28,10 +28,11 @@ export function ModelPage({
     {canEdit && <PageActions label="Novo modelo" onCreate={!providers.loading && !providers.error && availableProviders.length ? () => setEditor({}) : undefined} />}
     <p className="panel-note">Este catálogo é compartilhado pelas organizações da plataforma. Preços em USD por milhão de tokens; os valores cadastrados serão usados nos próximos registros de consumo.</p>
     <State loading={providers.loading} error={providers.error} retry={providers.reload}>
-      <div><Card title={<>Provedores disponíveis</>} description={<>A integração e as credenciais são configuradas pelo administrador no servidor.</>}>
+      <div><Card title={<>Provedores disponíveis</>} description={<>A integração com o gateway de IA é configurada no servidor.</>}>
         {providers.data.length ? <Table headers={['Provedor', 'Integração', 'Disponibilidade']} rows={providers.data.map(provider => [<b>{provider.name}</b>, provider.capabilities?.gatewayIntegration ? 'Gateway de IA' : provider.capabilities?.directIntegration ? 'Integração direta' : 'Gateway necessário', !provider.capabilities?.supported ? 'Configure um gateway para usar este provedor' : provider.capabilities?.integrationConfigured ? 'Acesso configurado no servidor' : 'Configuração de acesso pendente'])} /> : <p className="panel-note">Nenhum provedor cadastrado na plataforma.</p>}
       </Card></div>
     </State>
+    {canEdit && <ProviderKeys token={token} notify={notify} onChanged={refresh} />}
     <State loading={models.loading} error={models.error} retry={models.reload} empty={!models.data.length && 'Nenhum modelo cadastrado. Configure um modelo para selecionar nos agentes.'}>
       <div><Card><Table headers={['Modelo', 'Provedor', 'Identificador', 'Entrada · USD / milhão', 'Saída · USD / milhão', 'Agentes', ...(canEdit ? ['Ações'] : [])]} rows={models.data.map(model => [<b>{model.name}</b>, model.provider?.name || '—', model.slug, price(model.inputPrice), price(model.outputPrice), model._count?.agents || 0, ...(canEdit ? [<Button type="button" disabled={providers.loading || Boolean(providers.error)} onClick={() => setEditor(model)} variant="link" icon={<Pencil size={14} />}>Configurar</Button>] : [])])} /></Card></div>
     </State>
@@ -156,4 +157,81 @@ function ModelEditor({
       {selectedProvider && <p>{selectedProvider.capabilities?.integrationConfigured ? 'O acesso a este provedor está configurado no servidor.' : 'Cadastre o modelo e solicite ao administrador a configuração de acesso antes de conversar com o agente.'}</p>}
     </div><div className="modal-actions"><Button type="button" onClick={onClose} variant="secondary">Cancelar</Button><Button disabled={!canWrite || saving || !selectedProvider?.capabilities?.supported} variant="primary" icon={<Save size={15} />} type="submit">{saving ? 'Salvando...' : 'Salvar modelo'}</Button></div></form>
   </Modal>;
+}
+
+// SUPER_ADMIN: provider API keys are sent once to the AI gateway (LiteLLM) and never shown again.
+function ProviderKeys({
+  token,
+  notify,
+  onChanged
+}) {
+  const keys = useApi('/ai-credentials', token);
+  const [editing, setEditing] = useState(null),
+    [busy, setBusy] = useState(''),
+    [result, setResult] = useState(null);
+  const run = async (provider, action) => {
+    setBusy(provider + action);
+    setResult(null);
+    try {
+      if (action === 'test') {
+        const outcome = await apiRequest('/ai-credentials/' + provider + '/test', { token, method: 'POST' });
+        setResult({ tone: outcome.ok ? 'success' : 'danger', text: (outcome.ok ? 'Teste com ' : 'Falha no teste com ') + outcome.model + ': ' + outcome.message });
+      } else {
+        await apiRequest('/ai-credentials/' + provider, { token, method: 'DELETE' });
+        notify('Chave removida.');
+        keys.reload();
+        onChanged();
+      }
+    } catch (error) {
+      setResult({ tone: 'danger', text: error.message });
+    } finally {
+      setBusy('');
+    }
+  };
+  return <State loading={keys.loading} error={keys.error} retry={keys.reload}>
+    <div><Card title={<>Chaves dos provedores de IA</>} description={<>Somente SUPER_ADMIN. As chaves ficam criptografadas no gateway de IA e não voltam a ser exibidas.</>}>
+      {result && <Alert tone={result.tone}>{result.text}</Alert>}
+      <Table headers={['Provedor', 'Chave', 'Ações']} rows={keys.data.map(item => [<b>{item.name}</b>, item.configured ? 'Configurada · ' + (item.maskedKey || '••••') : 'Não configurada', <div className="page-actions">
+        <Button type="button" variant="link" icon={<KeyRound size={14} />} onClick={() => setEditing(item)}>{item.configured ? 'Trocar chave' : 'Cadastrar chave'}</Button>
+        {item.configured && <Button type="button" variant="link" icon={<PlugZap size={14} />} disabled={Boolean(busy)} onClick={() => run(item.provider, 'test')}>{busy === item.provider + 'test' ? 'Testando...' : 'Testar'}</Button>}
+        {item.configured && <Button type="button" variant="link" icon={<Trash2 size={14} />} disabled={Boolean(busy)} onClick={() => run(item.provider, 'remove')}>{busy === item.provider + 'remove' ? 'Removendo...' : 'Remover'}</Button>}
+      </div>])} />
+    </Card></div>
+    {editing && <ProviderKeyEditor token={token} item={editing} onClose={() => setEditing(null)} onSaved={() => {
+      setEditing(null);
+      setResult(null);
+      keys.reload();
+      onChanged();
+      notify('Chave salva. Use Testar para confirmar.');
+    }} />}
+  </State>;
+}
+function ProviderKeyEditor({
+  token,
+  item,
+  onClose,
+  onSaved
+}) {
+  const [apiKey, setApiKey] = useState(''),
+    [saving, setSaving] = useState(false),
+    [error, setError] = useState('');
+  const save = async event => {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      await apiRequest('/ai-credentials/' + item.provider, { token, method: 'PUT', body: { apiKey } });
+      setApiKey('');
+      onSaved();
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <Modal title={'Chave de API · ' + item.name} onClose={onClose} busy={saving}><form onSubmit={save}><div className="form">
+    {error && <Alert tone="danger">{error}</Alert>}
+    <Alert tone="info">A chave é enviada uma única vez ao gateway de IA. Depois, só os últimos caracteres aparecem.</Alert>
+    <Input required type="password" autoComplete="off" spellCheck={false} maxLength={512} value={apiKey} onChange={event => setApiKey(event.target.value)} label={<>Nova chave de API</>} placeholder={item.provider === 'anthropic' ? 'sk-ant-...' : 'sk-...'} />
+  </div><div className="modal-actions"><Button type="button" onClick={onClose} variant="secondary">Cancelar</Button><Button disabled={saving || !apiKey.trim()} variant="primary" type="submit" icon={<Save size={16} />}>{saving ? 'Salvando...' : 'Salvar chave'}</Button></div></form></Modal>;
 }

@@ -37,6 +37,8 @@ Para revisar o visual sem conectar uma prefeitura, abra `http://localhost:5173/p
 
 O host de desenvolvimento em `preview/local.jsx` apresenta o site completo com o menu SGDM e as 16 áreas usando a API real, sem a faixa superior adicional. No celular, um seletor oficial permite navegar e um botão permite sair. Ele recebe uma sessão fornecida pelo ambiente local, respeita as permissões retornadas pela API e permite alterações. Só funciona no servidor de desenvolvimento em `localhost` ou `127.0.0.1`; o ponto de entrada de produção continua integrado ao SGDM. Durante a revisão local, o servidor específico de acesso usa `http://127.0.0.1:5173/`, com configuração e sessão temporária em `output/preview-server/`, ignorado pelo Git.
 
+Para testar a plataforma real sem depender do SGDM durante o desenvolvimento, execute `npm run local:session` na raiz e abra `http://127.0.0.1:5173/preview/local.html`. A sessão temporária expira em oito horas e deve ser gerada novamente quando necessário. O comando recusa produção, usa um usuário ativo do banco local e grava o JWT somente em `output/preview-server/`, ignorado pelo Git. Se houver mais de um usuário ativo, defina `LOCAL_PREVIEW_USER_EMAIL` no `.env`. A página `preview/sgdm.html` continua sendo apenas a prévia com dados fictícios e chamadas de IA desabilitadas.
+
 ## Fluxo funcional
 
 1. Cadastre departamentos e confira os modelos disponíveis.
@@ -50,7 +52,7 @@ O servidor verifica limites de usuários, agentes, bases, automações e armazen
 
 ## IA e documentos
 
-O chat permite escolher agente e modelo separadamente, reabrir o histórico e enviar anexos privados. A integração central OmniRouter usa `OMNIROUTER_BASE_URL` e `OMNIROUTER_API_KEY` somente no backend. Os modelos são cadastrados no catálogo existente com os identificadores da conta do gateway. Consulte a [implementação e configuração do chat](docs/CHAT_OMNIROUTER.md), incluindo migration aditiva, formatos suportados e capacidades por modelo.
+O chat permite escolher agente e modelo separadamente, reabrir o histórico e enviar anexos privados. A integração central OmniRouter usa `OMNIROUTER_BASE_URL` e `OMNIROUTER_API_KEY` somente no backend. Os modelos são cadastrados no catálogo existente com os identificadores da conta do gateway. O gateway recomendado é o LiteLLM na mesma VPS, com chaves próprias da OpenAI e da Anthropic; veja [LiteLLM como gateway de IA](docs/LITELLM.md). Consulte a [implementação e configuração do chat](docs/CHAT_OMNIROUTER.md), incluindo migration aditiva, formatos suportados e capacidades por modelo.
 
 Em ambientes anteriores sem OmniRouter, `OPENAI_API_KEY` mantém a Responses API com o modelo selecionado. Raciocínio avançado exige modelo compatível. Preços são cadastrados pelo administrador da plataforma, em USD por milhão de tokens; preços ausentes aparecem como não configurados.
 
