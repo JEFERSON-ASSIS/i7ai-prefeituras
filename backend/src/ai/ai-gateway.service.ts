@@ -15,7 +15,10 @@ import { publicModelCapabilities } from '../catalog/model-capabilities';
 import { SgdmAccessService } from '../sgdm/sgdm-access.service';
 import { SgdmOptimizationService } from '../sgdm/sgdm-optimization.service';
 import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
-import { CHAT_EXPORT_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedInstructions, variableInstructions } from './instructions';
+import { CHAT_EXPORT_INSTRUCTIONS, RESEARCH_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedInstructions, variableInstructions } from './instructions';
+import { ResearchConfigService } from '../research/research-config.service';
+import { ResearchSession, builtinResearchFunctions, researchRecorder, userMinuteCheck } from '../research/research-tools';
+import { SgdmLimitsService } from '../sgdm/sgdm-limits.service';
 import { EXPORT_MIME, ExportFormat, exportFileName, exportTitle, parseAnswer, renderExport } from './chat-export';
 import { ConversationSummaryService } from './conversation-summary.service';
 import { SUMMARY_MAX_REJECTIONS, estimateTokens, historyWindow, summaryMessage, summaryThreshold } from './history-summary';
@@ -49,7 +52,7 @@ export { calculateUsageCost };
 
 @Injectable()
 export class AiGatewayService {
-  constructor(private readonly prisma: PrismaService, private readonly rag: RagService, private readonly agentTools: AgentToolsService, private readonly quota: AiQuotaService, @Optional() private readonly knowledge?: KnowledgeService, @Optional() private readonly omni?: OmniRouterService, private readonly access?: SgdmAccessService, @Optional() private readonly optimization?: SgdmOptimizationService, @Optional() private readonly summaries?: ConversationSummaryService) {}
+  constructor(private readonly prisma: PrismaService, private readonly rag: RagService, private readonly agentTools: AgentToolsService, private readonly quota: AiQuotaService, @Optional() private readonly knowledge?: KnowledgeService, @Optional() private readonly omni?: OmniRouterService, private readonly access?: SgdmAccessService, @Optional() private readonly optimization?: SgdmOptimizationService, @Optional() private readonly summaries?: ConversationSummaryService, @Optional() private readonly researchConfig?: ResearchConfigService, @Optional() private readonly limits?: SgdmLimitsService) {}
 
   private omniConfigured() { return Boolean(process.env.OMNIROUTER_BASE_URL || process.env.OMNIROUTER_API_KEY); }
 
@@ -265,7 +268,11 @@ export class AiGatewayService {
     const optimization = preread ?? (this.optimization ? await this.optimization.effective(tenantId, agentId) : structuredClone(OPTIMIZATION_DEFAULTS));
     // Only the OmniRouter path moves the sources to the last user message; the other paths keep today's single string.
     const cacheOn = omniConfigured && optimization.cachePrompt.ligado;
-    const instructions: SplitInstructions = { fixed: fixedInstructions(agent, Boolean(input.automationId), cacheOn), variable: variableInstructions(context, input.attachmentContext?.text) };
+    // Built-in research: only on the OmniRouter path, with the switch on and a model that calls tools.
+    const research = await this.researchFor(omniConfigured, optimization, model.capabilities, tenantId, agentId, input);
+    const allFunctions = research ? [...functions, ...research.functions] : functions;
+    const fixed = fixedInstructions(agent, Boolean(input.automationId), cacheOn) + (research ? '\n\n' + RESEARCH_INSTRUCTIONS : '');
+    const instructions: SplitInstructions = { fixed, variable: variableInstructions(context, input.attachmentContext?.text) };
     const joined = joinedInstructions(instructions);
     // The platform's per-agent output cap only lowers agent.maxTokens, never raises it.
     const outputCap = optimization.limiteSaida.ligado && Number.isSafeInteger(optimization.limiteSaida.tokens) && optimization.limiteSaida.tokens! >= 1 ? optimization.limiteSaida.tokens! : Infinity;
@@ -295,7 +302,7 @@ export class AiGatewayService {
     const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice ?? model.inputPrice) || 0, cacheWriteInputPrice: Number(model.cacheWriteInputPrice ?? model.inputPrice) || 0, conversationId: input.conversationId, kind: 'resposta' });
     try {
     const generated = omniConfigured
-      ? await this.runOmniRouter(executionAgent, model, instructions, message, history, historyComplete, functions, input, quotaScope, optimization, outputCapApplied, onDelta, historySavedTokens)
+      ? await this.runOmniRouter(executionAgent, model, instructions, message, history, historyComplete, allFunctions, input, quotaScope, optimization, outputCapApplied, onDelta, historySavedTokens, research?.session)
       : process.env.AI_GATEWAY_URL
         ? await this.externalGateway(executionAgent, model.slug, provider, joined, message, history, sources, settings, functions, input, quotaScope)
         : await this.openAi(executionAgent, tenantId, model, joined, message, history, functions, input, quotaScope, onDelta);
@@ -308,9 +315,25 @@ export class AiGatewayService {
     } catch (error) { await this.quota.finish(quotaScope, 'FAILED'); throw error; }
   }
 
-  private async runOmniRouter(agent: LoadedAgent, model: LoadedModel, instructions: SplitInstructions, message: string, history: HistoryItem[], historyComplete: boolean, functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, optimization: OtimizacaoEfetiva, outputCapApplied: boolean, onDelta?: (text: string) => void, historySavedTokens = 0): Promise<ProviderAnswer> {
+  private async runOmniRouter(agent: LoadedAgent, model: LoadedModel, instructions: SplitInstructions, message: string, history: HistoryItem[], historyComplete: boolean, functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, optimization: OtimizacaoEfetiva, outputCapApplied: boolean, onDelta?: (text: string) => void, historySavedTokens = 0, research?: ResearchSession): Promise<ProviderAnswer> {
     if (!this.omni) throw new ServiceUnavailableException('O adaptador OmniRouter está indisponível.');
-    return this.omni.generate({ agent, model, instructions, message, history, historyComplete, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, quotaScope, optimization, outputCapApplied, ...(input.summary ? { summary: input.summary, historySavedTokens } : {}) });
+    return this.omni.generate({ agent, model, instructions, message, history, historyComplete, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, quotaScope, optimization, outputCapApplied, ...(input.summary ? { summary: input.summary, historySavedTokens } : {}), ...(research ? { research } : {}) });
+  }
+
+  /**
+   * The research functions and the session that runs them for this answer, or undefined when research is off, the
+   * path is not the OmniRouter or the model has no tool calls. Without a Serper key only the PNCP function is offered.
+   */
+  private async researchFor(omniConfigured: boolean, optimization: OtimizacaoEfetiva, capabilities: unknown, tenantId: string, agentId: string, input: AgentExecutionInput): Promise<{ functions: AgentFunction[]; session: ResearchSession } | undefined> {
+    if (!omniConfigured || optimization.pesquisaInternet?.ligado !== true) return undefined;
+    const supportsTools = capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities) && (capabilities as Record<string, unknown>).supportsTools === true;
+    if (!supportsTools) return undefined;
+    const config = this.researchConfig ? await this.researchConfig.get() : { serperKey: null, costPerSearchUsd: 0 };
+    const session = new ResearchSession(
+      { tenantId, userId: input.userId, agentId, conversationId: input.conversationId, serperKey: config.serperKey, costPerSearchUsd: config.costPerSearchUsd, signal: input.signal },
+      { record: researchRecorder(this.prisma), withinUserLimit: userMinuteCheck(this.prisma, this.limits, tenantId, input.userId) },
+    );
+    return { functions: builtinResearchFunctions({ web: Boolean(config.serperKey), pncp: true }), session };
   }
 
   private async openAi(agent: LoadedAgent, tenantId: string, selectedModel: LoadedModel, instructions: string, message: string, history: HistoryItem[], functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, onDelta?: (text: string) => void): Promise<ProviderAnswer> {

@@ -8,6 +8,7 @@ import { LIMIT_MESSAGES } from './limit-messages';
 import type { OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
 import { SplitInstructions, joinedInstructions, neutralizeTags } from './instructions';
 import { historyWindow } from './history-summary';
+import { ResearchSession, appendSourcesIfMissing, isBuiltinResearch } from '../research/research-tools';
 
 export type OmniRouterInput = {
   agent: { id: string; tenantId: string; systemPrompt?: string | null; temperature: unknown; maxTokens: number; advancedReasoning: boolean };
@@ -34,6 +35,8 @@ export type OmniRouterInput = {
   outputCapApplied?: boolean;
   /** Estimated prompt tokens the conversation summary saved; the history is resent every round, so each row carries it. */
   historySavedTokens?: number;
+  /** Executes the built-in research functions (`builtin:*` in `functions`) of this answer; never agentTools. */
+  research?: ResearchSession;
 };
 
 export type OmniRouterAnswer = {
@@ -180,7 +183,10 @@ export class OmniRouterService {
       if (!generated.calls.length) {
         const answer = generated.content.trim();
         if (!answer) throw protocolError('O OmniRouter retornou uma resposta sem texto.');
-        return { answer, inputTokens, outputTokens, measured, cost, toolCalls: usedCalls };
+        // Research links the answer does not cite are added at the end; streaming gets them as the last delta.
+        const final = input.research ? appendSourcesIfMissing(answer, input.research.sources) : answer;
+        if (final !== answer && input.onDelta) input.onDelta(final.slice(answer.length));
+        return { answer: final, inputTokens, outputTokens, measured, cost, toolCalls: usedCalls };
       }
       if (round === 7 || usedCalls.length + generated.calls.length > 8) throw protocolError('O agente atingiu o limite de oito chamadas/rodadas de ferramentas sem concluir a resposta.');
       const roundIds = new Set<string>();
@@ -193,7 +199,14 @@ export class OmniRouterService {
       for (const call of generated.calls) {
         input.signal?.throwIfAborted();
         const localCall: AgentToolCall = { callId: call.id, name: call.function.name, arguments: call.function.arguments };
-        const result = await this.agentTools.execute(input.agent.tenantId, input.agent.id, localCall, input.functions, input.userId, input.signal);
+        const selected = input.functions.find(item => item.definition.name === call.function.name);
+        let result;
+        if (isBuiltinResearch(selected)) {
+          if (!input.research) throw protocolError('O OmniRouter solicitou uma ferramenta que não está vinculada a este agente.');
+          result = await input.research.execute(localCall);
+        } else {
+          result = await this.agentTools.execute(input.agent.tenantId, input.agent.id, localCall, input.functions, input.userId, input.signal);
+        }
         input.signal?.throwIfAborted();
         usedCalls.push({ callId: call.id, name: call.function.name });
         messages.push({ role: 'tool', tool_call_id: result.callId, content: result.output });

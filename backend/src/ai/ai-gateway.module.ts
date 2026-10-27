@@ -17,6 +17,7 @@ import { SgdmModule } from '../sgdm/sgdm.module';
 import { TenantAiKeyService } from './tenant-ai-key.service';
 import { ModelPricingSyncService } from './model-pricing-sync.service';
 import { ConversationSummaryService } from './conversation-summary.service';
+import { ResearchModule } from '../research/research.module';
 
-@Module({ imports: [AuthModule, KnowledgeModule, ToolsModule, McpModule, AgentsModule, CatalogModule, SgdmModule], controllers: [AiGatewayController, ConversationsController, ChatAttachmentsController, ChatCatalogController], providers: [AiGatewayService, AgentToolsService, AiQuotaService, OmniRouterService, TenantAiKeyService, ModelPricingSyncService, ConversationSummaryService], exports: [AiGatewayService] })
+@Module({ imports: [AuthModule, KnowledgeModule, ToolsModule, McpModule, AgentsModule, CatalogModule, SgdmModule, ResearchModule], controllers: [AiGatewayController, ConversationsController, ChatAttachmentsController, ChatCatalogController], providers: [AiGatewayService, AgentToolsService, AiQuotaService, OmniRouterService, TenantAiKeyService, ModelPricingSyncService, ConversationSummaryService], exports: [AiGatewayService] })
 export class AiGatewayModule {}

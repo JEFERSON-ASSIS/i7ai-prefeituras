@@ -903,3 +903,79 @@ test('requestHash: sha256 hexadecimal da requisição, igual para corpos iguais 
   assert.equal(second.records.usage[0].requestHash, hash);
   assert.notEqual(other.records.usage[0].requestHash, hash);
 });
+
+// Built-in research functions (pesquisar_internet / pesquisar_compras_publicas).
+const { ResearchSession, builtinResearchFunctions } = require('../dist/research/research-tools');
+function researchFixture() {
+  const functions = [localFunction(), ...builtinResearchFunctions({ web: true, pncp: true })];
+  const context = fixture(functions);
+  const rows = []; const queries = [];
+  context.input.model.capabilities = { supportsTools: true };
+  context.input.optimization.cacheExato = { ligado: true, chat: true, ttlSegundos: 600 };
+  context.input.research = new ResearchSession(
+    { tenantId: 'tenant-a', userId: 'user-a', agentId: 'agent-a', serperKey: 'serper-secret', costPerSearchUsd: 0.001 },
+    { record: async row => { rows.push(row); }, web: async query => { queries.push(query); return { resultados: [{ titulo: 'IBGE — IPCA', link: 'https://www.ibge.gov.br/ipca', trecho: '0,44%' }] }; } },
+  );
+  return { ...context, rows, queries };
+}
+const webCall = (id, consulta = 'ipca setembro 2026') => ({ id, type: 'function', function: { name: 'pesquisar_internet', arguments: JSON.stringify({ consulta }) } });
+
+test('research: built-in calls run in the session, agent tools still run through agentTools, and Fontes is appended', async t => {
+  const { service, input, records, rows, queries } = researchFixture();
+  const local = await provider(t, (_body, response, round) => json(response,
+    round === 1 ? completion(null, { finishReason: 'tool_calls', calls: [webCall('call-web')] })
+      : round === 2 ? completion(null, { finishReason: 'tool_calls', calls: [call()] })
+        : completion('O IPCA de setembro foi 0,44%.')));
+  const result = await service.generate(input);
+  assert.equal(result.answer, 'O IPCA de setembro foi 0,44%.\n\n**Fontes**\n- [IBGE — IPCA](https://www.ibge.gov.br/ipca)');
+  assert.deepEqual(result.toolCalls.map(item => item.name), ['pesquisar_internet', 'lookup_budget']);
+  assert.deepEqual(records.executed.map(item => item.name), ['lookup_budget']);
+  assert.deepEqual(queries, ['ipca setembro 2026']);
+  assert.deepEqual(rows.map(row => [row.source, row.status, row.costUsd]), [['web', 'ok', 0.001]]);
+  assert.deepEqual(local.requests[0].body.tools.map(tool => tool.function.name), ['lookup_budget', 'pesquisar_internet', 'pesquisar_compras_publicas']);
+  assert.ok(local.requests.every(request => request.body.cache === undefined), 'requests with functions never use the exact cache');
+  assert.match(local.requests[1].body.messages.at(-1).content, /ibge\.gov\.br/);
+  assert.ok(!JSON.stringify(local.requests).includes('serper-secret'));
+});
+
+test('research: an answer that already cites a collected link is left as is', async t => {
+  const { service, input } = researchFixture();
+  await provider(t, (_body, response, round) => json(response, round === 1
+    ? completion(null, { finishReason: 'tool_calls', calls: [webCall('call-web')] })
+    : completion('IPCA 0,44% (https://www.ibge.gov.br/ipca).')));
+  assert.equal((await service.generate(input)).answer, 'IPCA 0,44% (https://www.ibge.gov.br/ipca).');
+});
+
+test('research: streaming sends the appended Fontes as the last delta', async t => {
+  const { service, input } = researchFixture(); const deltas = [];
+  input.onDelta = text => deltas.push(text);
+  await provider(t, (_body, response, round) => {
+    if (round === 1) return sse(response, [
+      frame(chunk({ tool_calls: [{ index: 0, id: 'call-web', type: 'function', function: { name: 'pesquisar_internet', arguments: '{"consulta":"ipca setembro"}' } }] })),
+      frame(chunk({}, 'tool_calls')), frame({ choices: [], usage: { prompt_tokens: 40, completion_tokens: 5 } }), frame('[DONE]'),
+    ]);
+    return sse(response, [frame(chunk({ content: 'O IPCA foi ' })), frame(chunk({ content: '0,44%.' })), frame(chunk({}, 'stop')), frame({ choices: [], usage: { prompt_tokens: 50, completion_tokens: 3 } }), frame('[DONE]')]);
+  });
+  const result = await service.generate(input);
+  assert.equal(deltas.at(-1), '\n\n**Fontes**\n- [IBGE — IPCA](https://www.ibge.gov.br/ipca)');
+  assert.equal(deltas.join(''), result.answer);
+  assert.ok(result.answer.startsWith('O IPCA foi 0,44%.'));
+});
+
+test('research: the 6th search gets the per-answer limit and the answer still completes within 8 rounds', async t => {
+  const { service, input, rows, queries } = researchFixture();
+  const local = await provider(t, (_body, response, round) => json(response, round <= 6
+    ? completion(null, { finishReason: 'tool_calls', calls: [webCall('call-' + round, 'ipca ' + round)] })
+    : completion('Encontrei o IPCA em https://www.ibge.gov.br/ipca.')));
+  const result = await service.generate(input);
+  assert.equal(result.answer, 'Encontrei o IPCA em https://www.ibge.gov.br/ipca.');
+  assert.equal(queries.length, 5);
+  assert.deepEqual(rows.map(row => row.status), ['ok', 'ok', 'ok', 'ok', 'ok', 'limite']);
+  assert.deepEqual(JSON.parse(local.requests[6].body.messages.at(-1).content), { erro: 'Limite de 5 pesquisas desta resposta atingido. Responda com o que já encontrou.' });
+});
+
+test('research: a built-in call without a research session is refused as unbound', async t => {
+  const { service, input } = researchFixture(); delete input.research;
+  await provider(t, (_body, response) => json(response, completion(null, { finishReason: 'tool_calls', calls: [webCall('call-web')] })));
+  await assert.rejects(service.generate(input), /não está vinculada/);
+});
