@@ -326,3 +326,119 @@ test('corte por length culpa a plataforma só quando o limite de saída é o que
     } finally { delete process.env.OMNIROUTER_BASE_URL; }
   }
 });
+
+// History summary (Entrega 4, Task 6).
+function summaryGateway({ summaryDisabled = false, ligado = true, cachePrompt = true, summaries } = {}) {
+  const { prisma, records, agent } = fixture(); agent.models[1].model.slug = 'anthropic/claude-sonnet-5-5';
+  const quota = quotaFixture(prisma, records);
+  const cfg = JSON.parse(JSON.stringify(OPTIMIZATION_DEFAULTS)); cfg.resumoHistorico.ligado = ligado; cfg.cachePrompt.ligado = cachePrompt;
+  const optimization = { calls: 0, effective: async () => { optimization.calls++; return cfg; } };
+  const omni = new OmniRouterService({ execute: async () => { throw new Error('sem ferramentas'); } }, quota);
+  const service = new AiGatewayService(prisma, { searchForAgent: async () => [] }, { load: async () => [] }, quota, undefined, omni, undefined, optimization, summaries);
+  process.env.NODE_ENV = 'test'; process.env.OMNIROUTER_BASE_URL = 'https://omni.invalid/v1'; process.env.OMNIROUTER_API_KEY = 'synthetic-fixture';
+  // 50 stored messages (more than the 40-message window); the summary covers the first 40 (through m40).
+  const stored = Array.from({ length: 50 }, (_, index) => ({ id: 'm' + (index + 1), role: index % 2 ? 'assistant' : 'user', content: 'Turno longo número ' + (index + 1) + ' ' + 'x'.repeat(400), createdAt: new Date(1_000 + index), attachments: [] }));
+  const conversation = { id: 'owned', summary: 'Resumo: art. 75 da Lei nº 14.133/2021.', summaryThroughMessageId: 'm40', summaryDisabled, summaryUpdatedAt: new Date(5_000), summaryModelId: 'haiku' };
+  prisma.conversation.findFirst = async ({ include }) => ({ ...conversation, messages: include ? [...stored].reverse().slice(0, include.messages.take) : [] });
+  prisma.message.findFirst = async ({ where }) => { const row = stored.find(item => item.id === where.id); return row ? { createdAt: row.createdAt } : null; };
+  prisma.message.findMany = async ({ where, take }) => stored.filter(item => item.createdAt > where.createdAt.gt).reverse().slice(0, take);
+  prisma.message.count = async () => stored.length;
+  const requests = [];
+  global.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Resposta.' } }], usage: { prompt_tokens: 10, completion_tokens: 2 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  return { service, prisma, records, requests, optimization };
+}
+const SUMMARY_MESSAGE = 'Resumo das mensagens anteriores desta conversa (gerado automaticamente; números, datas, leis e valores foram preservados literalmente):\nResumo: art. 75 da Lei nº 14.133/2021.';
+const text = item => (typeof item.content === 'string' ? item.content : item.content[0].text);
+const settle = () => new Promise(resolve => setImmediate(resolve));
+
+test('resumo ativo: mensagem de sistema do resumo, só as mensagens depois do corte, historySavedTokens > 0 e segunda marcação de cache', async () => {
+  const enqueued = [];
+  const { service, records, requests, optimization } = summaryGateway({ summaries: { enqueue: async (...args) => { enqueued.push(args); } } });
+  await service.chat('agent-a', 'tenant-a', { message: 'Continue', conversationId: 'owned' }, 'user-a');
+  const body = requests[0];
+  assert.equal(optimization.calls, 1);
+  assert.equal(body.messages[1].role, 'system');
+  assert.equal(body.messages[1].content, SUMMARY_MESSAGE);
+  const turns = body.messages.slice(2, -1);
+  assert.equal(turns.length, 10);
+  assert.match(text(turns[0]), /^Turno longo número 41 /);
+  // The summary covers the older messages: the history end gets the second cache marker.
+  assert.deepEqual(turns.at(-1).content[0].cache_control, { type: 'ephemeral' });
+  assert.ok(records.usage[0].historySavedTokens > 0);
+  // 10 unsummarized + 2 new = 12 < 20: no job yet.
+  await settle();
+  assert.deepEqual(enqueued, []);
+});
+
+test('resumo ativo com o cache de prompt desligado: o resumo vai logo depois da parte fixa', async () => {
+  const { service, requests } = summaryGateway({ cachePrompt: false });
+  await service.chat('agent-a', 'tenant-a', { message: 'Continue', conversationId: 'owned' }, 'user-a');
+  assert.equal(requests[0].messages[0].role, 'system'); assert.equal(typeof requests[0].messages[0].content, 'string');
+  assert.equal(requests[0].messages[1].content, SUMMARY_MESSAGE);
+  assert.equal(requests[0].messages.length, 2 + 10 + 1);
+});
+
+test('summaryDisabled ou resumo desligado na Central: histórico completo como hoje, sem economia nem job', async () => {
+  for (const options of [{ summaryDisabled: true }, { ligado: false }]) {
+    const enqueued = [];
+    const { service, records, requests } = summaryGateway({ ...options, summaries: { enqueue: async (...args) => { enqueued.push(args); } } });
+    await service.chat('agent-a', 'tenant-a', { message: 'Continue', conversationId: 'owned' }, 'user-a');
+    const body = requests[0];
+    assert.ok(!body.messages.some(item => typeof item.content === 'string' && item.content.startsWith('Resumo das mensagens')));
+    assert.equal(body.messages.length, 1 + 40 + 1);
+    assert.equal(records.usage[0].historySavedTokens, 0);
+    await settle();
+    assert.deepEqual(enqueued, []);
+  }
+});
+
+test('resumo ligado sem resumo ainda: 30 + 2 mensagens ≥ 20 agenda o job depois de gravar a resposta', async () => {
+  const enqueued = [];
+  const { service, prisma, records } = summaryGateway({ summaries: { enqueue: async (...args) => { enqueued.push([...args, records.messages.length]); } } });
+  prisma.conversation.findFirst = async ({ include }) => ({ id: 'owned', summary: null, summaryThroughMessageId: null, summaryDisabled: false, messages: Array.from({ length: include ? Math.min(30, include.messages.take) : 0 }, (_, index) => ({ id: 'x' + index, role: index % 2 ? 'assistant' : 'user', content: 'T' + index, createdAt: new Date(index), attachments: [] })) });
+  await service.chat('agent-a', 'tenant-a', { message: 'Continue', conversationId: 'owned' }, 'user-a');
+  await settle();
+  assert.deepEqual(enqueued, [['tenant-a', 'owned', 2]]);
+});
+
+test('getConversation devolve o resumo e summaryDisabled; disable/enable só para o dono, com auditoria', async () => {
+  const { service, prisma, records } = fixture();
+  const updatedAt = new Date(9_000);
+  const row = { id: 'owned', tenantId: 'tenant-a', userId: 'user-a', agent: { id: 'agent-a', name: 'Analista' }, model: null, summary: 'Resumo.', summaryThroughMessageId: 'm20', summaryModelId: 'haiku', summaryUpdatedAt: new Date(5_000), summaryDisabled: false, updatedAt, messages: [] };
+  prisma.conversation.findFirst = async ({ where }) => (where.id === 'owned' && where.tenantId === 'tenant-a' && where.userId === 'user-a' ? row : null);
+  const updates = [];
+  prisma.conversation.update = async ({ where, data }) => { updates.push({ where, data }); return {}; };
+  const got = await service.getConversation('tenant-a', 'user-a', 'owned');
+  assert.deepEqual(got.summary, { content: 'Resumo.', throughMessageId: 'm20', updatedAt: new Date(5_000) });
+  assert.equal(got.summaryDisabled, false); assert.equal('summaryModelId' in got, false); assert.equal('summaryThroughMessageId' in got, false);
+  await assert.rejects(() => service.setSummaryDisabled('tenant-a', 'user-b', 'owned', true), error => error.getStatus() === 404);
+  await assert.rejects(() => service.getConversation('tenant-a', 'user-b', 'owned'), error => error.getStatus() === 404);
+  assert.equal(updates.length, 0);
+  assert.deepEqual(await service.setSummaryDisabled('tenant-a', 'user-a', 'owned', true), { id: 'owned', summaryDisabled: true });
+  assert.deepEqual(updates[0].data, { summaryDisabled: true, summary: null, summaryThroughMessageId: null, summaryModelId: null, summaryUpdatedAt: null, updatedAt });
+  await service.setSummaryDisabled('tenant-a', 'user-a', 'owned', false);
+  assert.deepEqual(updates[1].data, { summaryDisabled: false, updatedAt });
+  assert.deepEqual(records.audit.map(item => [item.event, item.resourceId, JSON.stringify(item.metadata)]), [['conversation.summary_disabled', 'owned', '{}'], ['conversation.summary_enabled', 'owned', '{}']]);
+  // Without a summary the field is null.
+  row.summary = null; row.summaryThroughMessageId = null;
+  assert.equal((await service.getConversation('tenant-a', 'user-a', 'owned')).summary, null);
+});
+
+test('rotas POST conversations/:id/summary/disable|enable com a permissão de leitura de conversas', () => {
+  const { ConversationsController } = require('../dist/ai/conversations.controller');
+  const { PERMISSION_KEY } = require('../dist/auth/permissions.decorator');
+  const calls = [];
+  const controller = new ConversationsController({ setSummaryDisabled: async (...args) => { calls.push(args); return {}; } });
+  const request = { user: { tenantId: 'tenant-a', sub: 'user-a' } };
+  controller.disableSummary(request, 'owned'); controller.enableSummary(request, 'owned');
+  assert.deepEqual(calls, [['tenant-a', 'user-a', 'owned', true], ['tenant-a', 'user-a', 'owned', false]]);
+  for (const [name, path] of [['disableSummary', ':id/summary/disable'], ['enableSummary', ':id/summary/enable']]) {
+    const handler = ConversationsController.prototype[name];
+    assert.equal(Reflect.getMetadata('path', handler), path);
+    assert.equal(Reflect.getMetadata('method', handler), 1); // RequestMethod.POST
+    assert.equal(Reflect.getMetadata(PERMISSION_KEY, handler), 'conversations:read');
+  }
+});

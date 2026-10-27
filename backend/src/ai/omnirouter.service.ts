@@ -21,7 +21,7 @@ export type OmniRouterInput = {
   images?: { name: string; mimeType: string; dataUrl: string }[];
   functions: AgentFunction[];
   userId?: string;
-  origin: 'i7ai-chat' | 'i7ai-automacao';
+  origin: 'i7ai-chat' | 'i7ai-automacao' | 'i7ai-resumo';
   conversationId?: string;
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
@@ -30,6 +30,8 @@ export type OmniRouterInput = {
   optimization: OtimizacaoEfetiva;
   /** True when the platform output cap (not the agent or the model) is what bounds max_tokens. */
   outputCapApplied?: boolean;
+  /** Estimated prompt tokens the conversation summary saved; the history is resent every round, so each row carries it. */
+  historySavedTokens?: number;
 };
 
 export type OmniRouterAnswer = {
@@ -225,7 +227,8 @@ export class OmniRouterService {
     const history = this.history(input.history);
     // Off: exactly the layout before prompt caching (one system string with the sources inline).
     if (!input.optimization.cachePrompt.ligado) {
-      return [{ role: 'system', content: joinedInstructions({ ...input.instructions, variable: neutralizeTags(input.instructions.variable, ['fontes_e_arquivos']) }) }, ...history, { role: 'user', content: this.userContent(input) }];
+      return [{ role: 'system', content: joinedInstructions({ ...input.instructions, variable: neutralizeTags(input.instructions.variable, ['fontes_e_arquivos']) }) },
+        ...(input.summary ? [{ role: 'system' as const, content: input.summary }] : []), ...history, { role: 'user', content: this.userContent(input) }];
     }
     // On: the fixed part stays alone at the top so the prefix repeats; Anthropic needs explicit markers
     // (at most 2), the other providers cache prefixes on their own.
@@ -277,7 +280,8 @@ export class OmniRouterService {
   private async round(endpoint: string, apiKey: string, request: unknown, input: OmniRouterInput, report: UsageReporter, providerKey?: string): Promise<ChatRound> {
     // Every round resends the user's images, so each ai_usage row carries the request's image count and detail.
     const images = input.images?.length ?? 0; const low = input.optimization.imagensBaixa.ligado;
-    const record: UsageReporter = usage => report({ ...usage, lowDetailImages: low ? images : 0, highDetailImages: low ? 0 : images });
+    const saved = Number.isSafeInteger(input.historySavedTokens) && input.historySavedTokens! > 0 ? input.historySavedTokens! : 0;
+    const record: UsageReporter = usage => report({ ...usage, lowDetailImages: low ? images : 0, highDetailImages: low ? 0 : images, ...(saved ? { historySavedTokens: saved } : {}) });
     const timeout = AbortSignal.timeout(60000);
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
     try {

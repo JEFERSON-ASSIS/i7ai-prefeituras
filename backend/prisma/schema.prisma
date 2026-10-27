@@ -378,6 +378,12 @@ model Conversation {
   agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
   model     AiModel?  @relation(fields: [modelId], references: [id], onDelete: SetNull)
   messages  Message[]
+  /// Summary of the older messages (Central de IA). Messages are never deleted; the summary only replaces them in the prompt.
+  summary                 String?   @db.Text
+  summaryThroughMessageId String?   @db.Uuid
+  summaryModelId          String?   @db.Uuid
+  summaryUpdatedAt        DateTime?
+  summaryDisabled         Boolean   @default(false)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
