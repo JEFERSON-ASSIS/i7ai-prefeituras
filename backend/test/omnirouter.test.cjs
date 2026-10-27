@@ -979,3 +979,29 @@ test('research: a built-in call without a research session is refused as unbound
   await provider(t, (_body, response) => json(response, completion(null, { finishReason: 'tool_calls', calls: [webCall('call-web')] })));
   await assert.rejects(service.generate(input), /não está vinculada/);
 });
+
+function httpFn() { const fn = localFunction(); fn.definition.name = 'http_toola'; return fn; }
+test('research: after a research call the agent http_* functions are withdrawn from later rounds', async t => {
+  const { service, input } = researchFixture();
+  input.functions.push(httpFn());
+  const local = await provider(t, (_body, response, round) => json(response, round === 1
+    ? completion(null, { finishReason: 'tool_calls', calls: [webCall('call-web')] })
+    : completion('IPCA 0,44% (https://www.ibge.gov.br/ipca).')));
+  await service.generate(input);
+  assert.ok(local.requests[0].body.tools.some(tool => tool.function.name === 'http_toola'));
+  assert.ok(!local.requests[1].body.tools.some(tool => tool.function.name === 'http_toola'));
+  assert.ok(local.requests[1].body.tools.some(tool => tool.function.name === 'lookup_budget'));
+});
+
+test('research: a forced http_* call after a research call is not executed and does not count as a search', async t => {
+  const { service, input, records, rows } = researchFixture();
+  input.functions.push(httpFn());
+  const local = await provider(t, (_body, response, round) => json(response, round === 1
+    ? completion(null, { finishReason: 'tool_calls', calls: [webCall('call-web')] })
+    : round === 2 ? completion(null, { finishReason: 'tool_calls', calls: [call('call-http', 'http_toola')] })
+      : completion('Sem dados (https://www.ibge.gov.br/ipca).')));
+  await service.generate(input);
+  assert.deepEqual(records.executed, []);
+  assert.equal(local.requests[2].body.messages.at(-1).content, 'Ferramenta indisponível depois de uma pesquisa nesta resposta.');
+  assert.deepEqual(rows.map(row => row.source), ['web']);
+});

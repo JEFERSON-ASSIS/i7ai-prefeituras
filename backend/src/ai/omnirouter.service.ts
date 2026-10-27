@@ -152,13 +152,17 @@ export class OmniRouterService {
     const providerKey = await this.tenantKeys?.forModel(input.agent.tenantId, input.model.slug);
     const messages = this.messagesFor(input);
     const usedCalls: { callId: string; name: string }[] = [];
+    // After a built-in research result is in the transcript, the agent's own http_*/mcp_* functions are withdrawn (prompt-injection guard).
+    let researched = false;
+    const offered = () => researched ? input.functions.filter(({ definition }) => !/^(http|mcp)_/.test(definition.name)) : input.functions;
     let inputTokens = 0; let outputTokens = 0; let measured = true; let cost = 0;
     for (let round = 0; round < 8; round++) {
       input.signal?.throwIfAborted();
+      const roundFunctions = offered();
       const request = {
         model: input.model.slug, messages, max_tokens: input.agent.maxTokens,
         ...(supportsTemperature ? { temperature } : {}),
-        ...(input.functions.length ? { tools: input.functions.map(({ definition }) => ({
+        ...(roundFunctions.length ? { tools: roundFunctions.map(({ definition }) => ({
           type: 'function', function: { name: definition.name, description: definition.description, parameters: definition.parameters, strict: definition.strict },
         })), parallel_tool_calls: false } : {}),
         stream: Boolean(input.onDelta), ...(input.onDelta ? { stream_options: { include_usage: true } } : {}),
@@ -201,9 +205,15 @@ export class OmniRouterService {
         const localCall: AgentToolCall = { callId: call.id, name: call.function.name, arguments: call.function.arguments };
         const selected = input.functions.find(item => item.definition.name === call.function.name);
         let result;
+        if (researched && !isBuiltinResearch(selected) && /^(http|mcp)_/.test(call.function.name)) {
+          usedCalls.push({ callId: call.id, name: call.function.name });
+          messages.push({ role: 'tool', tool_call_id: call.id, content: 'Ferramenta indisponível depois de uma pesquisa nesta resposta.' });
+          continue;
+        }
         if (isBuiltinResearch(selected)) {
           if (!input.research) throw protocolError('O OmniRouter solicitou uma ferramenta que não está vinculada a este agente.');
           result = await input.research.execute(localCall);
+          researched = true;
         } else {
           result = await this.agentTools.execute(input.agent.tenantId, input.agent.id, localCall, input.functions, input.userId, input.signal);
         }

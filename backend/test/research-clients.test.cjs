@@ -135,3 +135,31 @@ test('corpo que não é JSON vira erro', async () => {
   await assert.rejects(searchWeb('x', 'k', undefined, bad), /SERPER_FALHOU/);
   await assert.rejects(searchPurchases({ termo: 'arroz' }, undefined, bad), /PNCP_FALHOU/);
 });
+
+test('PNCP limita /resultados a 3 simultâneas e 20 por busca (o restante fica sem preço contratado)', async () => {
+  const hits = Array.from({ length: 5 }, (_, i) => ({ ...fixture('pncp-search.json').items[0], item_url: `/compras/11111111000111/2025/${i + 1}` }));
+  const items = Array.from({ length: 8 }, (_, i) => ({ numeroItem: i + 1, descricao: 'ARROZ ' + i, unidadeMedida: 'KG', quantidade: 1, valorUnitarioEstimado: 5, temResultado: true }));
+  let active = 0; let peak = 0; let results = 0;
+  const out = await searchPurchases({ termo: 'arroz' }, undefined, async (url) => {
+    if (url.includes('/api/search/')) return json({ items: hits });
+    if (url.includes('/itens?')) return json(items);
+    results++; active++; peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active--;
+    return json([{ valorUnitarioHomologado: 4.5 }]);
+  });
+  assert.equal(results, 20);
+  assert.ok(peak <= 3, 'pico ' + peak);
+  const prices = out.compras.flatMap((c) => c.itens.map((i) => i.precoContratado));
+  assert.equal(prices.filter((p) => p === 4.5).length, 20);
+  assert.ok(prices.filter((p) => p === null).length > 0);
+});
+
+test('redirecionamento 3xx é tratado como falha (redirect: error)', async () => {
+  const { requestJson } = require('../dist/research/research-text');
+  let seen;
+  await assert.rejects(requestJson(async (_url, init) => { seen = init; throw new TypeError('fetch failed'); }, 'https://x.test', {}));
+  assert.equal(seen.redirect, 'error');
+  const real = await requestJson(async () => new Response('{}', { status: 302 }), 'https://x.test', {});
+  assert.equal(real.ok, false);
+});

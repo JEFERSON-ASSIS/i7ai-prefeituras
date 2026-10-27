@@ -15,7 +15,7 @@ import { publicModelCapabilities } from '../catalog/model-capabilities';
 import { SgdmAccessService } from '../sgdm/sgdm-access.service';
 import { SgdmOptimizationService } from '../sgdm/sgdm-optimization.service';
 import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
-import { CHAT_EXPORT_INSTRUCTIONS, RESEARCH_INSTRUCTIONS, RESEARCH_NO_TOOLS_INSTRUCTIONS, RESEARCH_OFF_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedInstructions, variableInstructions } from './instructions';
+import { CHAT_EXPORT_INSTRUCTIONS, RESEARCH_INSTRUCTIONS, RESEARCH_NO_TOOLS_INSTRUCTIONS, RESEARCH_OFF_INSTRUCTIONS, RESEARCH_PNCP_ONLY_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedInstructions, variableInstructions } from './instructions';
 import { ResearchConfigService } from '../research/research-config.service';
 import { ResearchSession, builtinResearchFunctions, researchRecorder, userMinuteCheck } from '../research/research-tools';
 import { SgdmLimitsService } from '../sgdm/sgdm-limits.service';
@@ -272,10 +272,10 @@ export class AiGatewayService {
     const research = await this.researchFor(omniConfigured, optimization, model.capabilities, tenantId, agentId, input);
     const allFunctions = research.offered ? [...functions, ...research.offered.functions] : functions;
     // OmniRouter only: the research block when offered, otherwise one line telling the model why it cannot search
-    // ("off" is skipped when the agent has a search tool of its own).
-    const researchLine = research.offered ? RESEARCH_INSTRUCTIONS
+    // ("off" is skipped when the agent has any function of its own).
+    const researchLine = research.offered ? (research.offered.functions.some(fn => fn.definition.name === 'pesquisar_internet') ? RESEARCH_INSTRUCTIONS : RESEARCH_PNCP_ONLY_INSTRUCTIONS)
       : research.reason === 'noTools' ? RESEARCH_NO_TOOLS_INSTRUCTIONS
-        : research.reason === 'off' && !functions.some(fn => fn.definition.name.startsWith('search_')) ? RESEARCH_OFF_INSTRUCTIONS : '';
+        : research.reason === 'off' && functions.length === 0 ? RESEARCH_OFF_INSTRUCTIONS : '';
     const fixed = fixedInstructions(agent, Boolean(input.automationId), cacheOn, researchLine);
     const instructions: SplitInstructions = { fixed, variable: variableInstructions(context, input.attachmentContext?.text) };
     const joined = joinedInstructions(instructions);

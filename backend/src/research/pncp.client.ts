@@ -22,6 +22,8 @@ export type CompraPncp = {
 const PNCP = 'https://pncp.gov.br';
 const MAX_COMPRAS = 5;
 const MAX_ITENS_POR_COMPRA = 10;
+const RESULT_POOL = 3;
+const MAX_RESULT_CALLS = 20;
 const GET = { method: 'GET', headers: { Accept: 'application/json' } };
 
 const num = (value: unknown): number | null =>
@@ -49,7 +51,26 @@ function linkOf(id: Ref): string {
   return `${PNCP}/app/editais/${id.cnpj}/${id.ano}/${id.seq}`;
 }
 
-async function detail(hit: any, tipo: string, words: string[], signal: AbortSignal | undefined, fetchFn: FetchLike): Promise<CompraPncp | null> {
+/** Shared by one searchPurchases call: at most 3 /resultados in flight and 20 in total. */
+type ResultBudget = { used: number; active: number; waiting: (() => void)[] };
+
+async function resultPrice(url: string, signal: AbortSignal | undefined, fetchFn: FetchLike, budget: ResultBudget): Promise<number | null> {
+  if (budget.used >= MAX_RESULT_CALLS) return null;
+  budget.used++;
+  while (budget.active >= RESULT_POOL) await new Promise<void>((resolve) => budget.waiting.push(resolve));
+  budget.active++;
+  try {
+    const result = await requestJson(fetchFn, url, GET, signal);
+    return result.ok && Array.isArray(result.data) ? num(result.data[0]?.valorUnitarioHomologado) : null;
+  } catch {
+    return null;
+  } finally {
+    budget.active--;
+    budget.waiting.shift()?.();
+  }
+}
+
+async function detail(hit: any, tipo: string, words: string[], signal: AbortSignal | undefined, fetchFn: FetchLike, budget: ResultBudget): Promise<CompraPncp | null> {
   const id = identify(hit, tipo);
   if (!id) return null;
   const head = {
@@ -78,15 +99,7 @@ async function detail(hit: any, tipo: string, words: string[], signal: AbortSign
     .slice(0, MAX_ITENS_POR_COMPRA);
   const itens: ItemCompra[] = await Promise.all(
     kept.map(async (item: any) => {
-      let precoContratado: number | null = null;
-      if (item?.temResultado) {
-        try {
-          const result = await requestJson(fetchFn, `${base}/${item.numeroItem}/resultados`, GET, signal);
-          if (result.ok && Array.isArray(result.data)) precoContratado = num(result.data[0]?.valorUnitarioHomologado);
-        } catch {
-          precoContratado = null;
-        }
-      }
+      const precoContratado = item?.temResultado ? await resultPrice(`${base}/${item.numeroItem}/resultados`, signal, fetchFn, budget) : null;
       return {
         descricao: String(item.descricao ?? '').slice(0, 200),
         unidade: String(item.unidadeMedida ?? ''),
@@ -112,6 +125,7 @@ export async function searchPurchases(
   if (!search.ok) throw new Error('PNCP_FALHOU');
   const hits: any[] = Array.isArray(search.data?.items) ? search.data.items.slice(0, MAX_COMPRAS) : [];
   const words = searchWords(input.termo);
-  const details = await Promise.all(hits.map((hit) => detail(hit, tipo, words, signal, fetchFn).catch(() => null)));
+  const budget: ResultBudget = { used: 0, active: 0, waiting: [] };
+  const details = await Promise.all(hits.map((hit) => detail(hit, tipo, words, signal, fetchFn, budget).catch(() => null)));
   return { compras: details.filter((c): c is CompraPncp => c !== null) };
 }

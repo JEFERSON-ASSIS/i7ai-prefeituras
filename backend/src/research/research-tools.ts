@@ -8,7 +8,7 @@ import { searchPurchases } from './pncp.client';
 import { Fonte, clip } from './research-text';
 import { searchWeb } from './serper.client';
 
-export { RESEARCH_INSTRUCTIONS } from '../ai/instructions';
+export { RESEARCH_INSTRUCTIONS, RESEARCH_PNCP_ONLY_INSTRUCTIONS } from '../ai/instructions';
 
 export const BUILTIN_WEB = 'pesquisar_internet';
 export const BUILTIN_PNCP = 'pesquisar_compras_publicas';

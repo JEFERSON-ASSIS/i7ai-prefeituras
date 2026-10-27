@@ -50,7 +50,7 @@ export async function requestJson(
   init: Record<string, unknown>,
   caller?: AbortSignal,
 ): Promise<{ status: number; ok: boolean; data: any }> {
-  const response = await fetchFn(url, { ...init, signal: requestSignal(caller) });
+  const response = await fetchFn(url, { ...init, redirect: 'error', signal: requestSignal(caller) });
   const text = await readLimited(response);
   let data: any = null;
   let parsed = true;
