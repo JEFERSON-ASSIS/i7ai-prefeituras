@@ -20,3 +20,9 @@ test('supports multiline data and rejects malformed completion',async()=>{
   assert.deepEqual(events,[{event:'sample',data:{value:1}}]);
   await assert.rejects(consumeChatEvents(body('event: complete\ndata: {"answer":"not committed"}\n\n')),/não foi confirmada/);
 });
+test('progress events report the stage; unknown events are ignored',async()=>{
+  const stages=[];
+  const result=await consumeChatEvents(body('event: progress\ndata: {"etapa":"pesquisa_compras"}\n\nevent: novidade\ndata: {"x":1}\n\nevent: complete\ndata: '+JSON.stringify(complete)+'\n\n',7),()=>{},etapa=>stages.push(etapa));
+  assert.deepEqual(stages,['pesquisa_compras']);assert.deepEqual(result,complete);
+  assert.deepEqual(await consumeChatEvents(body('event: progress\ndata: {"etapa":"ferramenta"}\n\nevent: complete\ndata: '+JSON.stringify(complete)+'\n\n')),complete);
+});

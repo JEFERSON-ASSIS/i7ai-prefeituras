@@ -1,9 +1,9 @@
 import { SelectableList, EmptyState, Chip, Alert, IconButton, Select, Textarea, FileButton, Button, Spinner } from '@sgdm/design';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
-import { Plus, Send, Bot, Square, X, Download, Cpu, Paperclip, FileText, FileSpreadsheet, Image, AlertCircle, FileDown } from 'lucide-react';
+import { Plus, Send, Bot, Square, X, Download, Cpu, Paperclip, FileText, FileSpreadsheet, Image, AlertCircle, FileDown, Clock } from 'lucide-react';
 import { apiRequest } from '../api/client';
 import { consumeChatEvents } from '../api/event-stream.mjs';
 import { usePermission } from '../api/permissions';
@@ -14,6 +14,15 @@ const imageExtensions = ['png', 'jpg', 'jpeg', 'webp'];
 const statusLabels = { UPLOADING: 'Enviando', PROCESSING: 'Processando', READY: 'Pronto', FAILED: 'Falhou' };
 const fileSize = size => Number(size) >= 1024 * 1024 ? (Number(size) / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' MB' : Math.ceil(Number(size) / 1024) + ' KB';
 const shortDate = value => value ? new Date(value).toLocaleString('pt-BR', { timeZone: 'America/Cuiaba', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+// Live stage of the answer (SSE `progress`); only the stage arrives, never the search terms.
+const stageLabels = {
+  pesquisa_internet: 'Pesquisando na internet…',
+  pesquisa_compras: 'Pesquisando em compras públicas (PNCP)…',
+  ferramenta: 'Usando uma ferramenta do agente…',
+  documentos: 'Lendo os documentos anexados…',
+};
+const pastedExtension = type => ({ 'image/jpeg': 'jpg', 'image/webp': 'webp' })[type] || 'png';
+const preview = text => text.length > 60 ? text.slice(0, 57) + '...' : text;
 const suggestions = [
   'Resuma o edital anexado: objeto, valor estimado, prazos e exigências de habilitação.',
   'Confira a planilha anexada e aponte contratos com vigência terminando nos próximos 90 dias.',
@@ -72,6 +81,15 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
   const [error, setError] = useState('');
   const [showSummary, setShowSummary] = useState(false);
   const [summaryBusy, setSummaryBusy] = useState(false);
+  const [queue, setQueue] = useState([]);
+  const [stage, setStage] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const queueState = useRef([]);
+  const queryRef = useRef('');
+  const textarea = useRef(null);
+  const dragDepth = useRef(0);
+  const pastedCount = useRef(0);
+  const localIds = useRef(0);
   const conversationIdRef = useRef('');
   const end = useRef(null);
   const request = useRef(null);
@@ -95,15 +113,36 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
   const contextualAttachments = contextAttachments(attachments, messages);
   const historicalImages = contextualAttachments.some(file => file.mimeType?.startsWith('image/') && !attachments.some(current => current.id === file.id));
   const incompatibleImage = contextualAttachments.some(file => file.mimeType?.startsWith('image/')) && !supportsImages;
-  const composerDisabled = sending || loadingHistory || !canUseAgent;
-  const sendDisabled = composerDisabled || !query.trim() || !models.some(item => item.id === modelId) || attachmentsBusy || incompatibleImage;
+  // The composer stays editable while an answer streams: Enter then queues the message.
+  const composerLocked = loadingHistory || !canUseAgent;
+  const modelReady = models.some(item => item.id === modelId);
+  const draftReady = !composerLocked && !!query.trim() && modelReady && !attachmentsBusy && !incompatibleImage;
+  // After an error or Parar the queue waits; Enviar with an empty composer sends its first item.
+  const queueResumable = !sending && !composerLocked && modelReady && !query.trim() && !attachments.length && queue.length > 0 && !incompatibleImage;
+  const sendDisabled = !(draftReady || queueResumable);
+  const attachAllowed = !composerLocked && !!modelId && !uploadCapabilities.loading && !uploadCapabilities.error;
+  queryRef.current = query;
 
   function updateAttachments(update) {
     const next = typeof update === 'function' ? update(attachmentState.current) : update;
     attachmentState.current = next;
     setAttachments(next);
   }
+  function updateQueue(update) {
+    const next = typeof update === 'function' ? update(queueState.current) : update;
+    queueState.current = next;
+    setQueue(next);
+  }
+  function deleteFiles(files) {
+    for (const file of files) if (file.id) apiRequest('/chat/attachments/' + file.id, { token, method: 'DELETE' }).catch(() => {});
+  }
+  function removeQueued(item) {
+    deleteFiles(item.files);
+    updateQueue(current => current.filter(entry => entry.id !== item.id));
+  }
   function discardAttachments() {
+    deleteFiles(queueState.current.flatMap(item => item.files));
+    updateQueue([]);
     scope.current++;
     for (const controller of uploadRequests.current.values()) controller.abort();
     uploadRequests.current.clear();
@@ -124,6 +163,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     setQuery('');
     setError('');
     setSending(false);
+    setStage('');
     setLoadingHistory(false);
     const next = agents.find(item => item.id === nextAgentId);
     setModelId(initialModelId(next));
@@ -216,7 +256,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     }
   }
   async function upload(files) {
-    if (composerDisabled || uploadCapabilities.loading || uploadCapabilities.error) return;
+    if (composerLocked || uploadCapabilities.loading || uploadCapabilities.error) return;
     setError('');
     const uploadScope = scope.current;
     const accepted = [];
@@ -285,46 +325,140 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     catch (caught) { setError(caught.message); }
     finally { setExporting(''); }
   }
-  async function send(event) {
+  // A message that got no answer goes back to the composer when it is empty, otherwise to the head of the queue.
+  function restore(item) {
+    if (!queryRef.current.trim() && !attachmentState.current.length) {
+      setQuery(item.text);
+      updateAttachments(item.files);
+    } else updateQueue(current => [item, ...current]);
+  }
+  function takeDraft() {
+    const item = { id: crypto.randomUUID(), text: query.trim(), files: [...attachmentState.current] };
+    setQuery('');
+    updateAttachments([]);
+    return item;
+  }
+  function submit(event) {
     event?.preventDefault();
-    if (sendDisabled) return;
-    const question = query.trim();
-    const files = [...attachments];
+    if (sending) {
+      if (draftReady) updateQueue(current => [...current, takeDraft()]);
+      return;
+    }
+    if (draftReady) { dispatch(takeDraft(), conversationId); return; }
+    if (queueResumable) {
+      const [next, ...rest] = queueState.current;
+      updateQueue(rest);
+      dispatch(next, conversationId);
+    }
+  }
+  function sendQueuedNow(item) {
+    if (sending || composerLocked || !modelReady) return;
+    updateQueue(current => current.filter(entry => entry.id !== item.id));
+    dispatch(item, conversationId);
+  }
+  async function dispatch(item, targetConversationId) {
     const controller = new AbortController();
     request.current?.abort();
     request.current = controller;
+    const active = () => !controller.signal.aborted && request.current === controller;
     setSending(true);
+    setStage('');
     setError('');
-    setPending({ question, answer: '', attachments: files });
+    setPending({ question: item.text, answer: '', attachments: item.files });
     try {
       const response = await apiRequest('/agents/' + agent.id + '/chat/stream', {
-        token, method: 'POST', body: { message: question, modelId, ...(conversationId ? { conversationId } : {}), ...(files.length ? { attachmentIds: files.map(file => file.id) } : {}) }, signal: controller.signal, raw: true
+        token, method: 'POST', body: { message: item.text, modelId, ...(targetConversationId ? { conversationId: targetConversationId } : {}), ...(item.files.length ? { attachmentIds: item.files.map(file => file.id) } : {}) }, signal: controller.signal, raw: true
       });
       const result = await consumeChatEvents(response.body, text => {
-        if (!controller.signal.aborted && request.current === controller) setPending(current => current ? { ...current, answer: current.answer + text } : null);
-      });
-      if (controller.signal.aborted || request.current !== controller) return;
+        if (!active()) return;
+        setStage('');
+        setPending(current => current ? { ...current, answer: current.answer + text } : null);
+      }, etapa => { if (active() && stageLabels[etapa]) setStage(etapa); });
+      if (!active()) return;
       setConversationId(result.conversationId);
       setConversation(current => ({ ...current, agentId: agent.id, agent: { id: agent.id, name: agent.name }, modelId, model }));
       setMessages(current => [...current, ...result.messages]);
-      setQuery('');
-      updateAttachments([]);
       conversations.reload();
+      // Only a confirmed answer releases the next queued message; errors and Parar leave the queue waiting.
+      const [next, ...rest] = queueState.current;
+      if (next) {
+        updateQueue(rest);
+        request.current = null; // this answer is done; the next one must not abort it
+        dispatch(next, result.conversationId);
+      }
     } catch (caught) {
-      if (caught.name !== 'AbortError' && request.current === controller) setError(caught.message);
+      if (caught.name !== 'AbortError' && request.current === controller) {
+        setError(caught.message);
+        restore(item);
+      }
     } finally {
-      if (request.current === controller) { setSending(false); setPending(null); }
+      if (request.current === controller) { request.current = null; setSending(false); setPending(null); setStage(''); }
     }
   }
   function stop(event) {
     // The composer replaces this button with submit; suppress click activation first.
     event?.preventDefault();
+    if (!sending) return;
+    const current = pending;
     request.current?.abort();
     request.current = null;
     setSending(false);
     setPending(null);
-    setError('Resposta interrompida. Sua pergunta e seus anexos continuam disponíveis para tentar novamente.');
+    setStage('');
+    if (!current) return;
+    // The server saves nothing for a cancelled answer: this exchange exists only on this screen.
+    const id = ++localIds.current;
+    const createdAt = new Date().toISOString();
+    setMessages(list => [...list,
+      { id: 'local-question-' + id, role: 'user', content: current.question, localFiles: current.attachments, interrupted: true, createdAt },
+      { id: 'local-answer-' + id, role: 'assistant', content: current.answer, interrupted: true, createdAt }]);
+    restore({ id: crypto.randomUUID(), text: current.question, files: current.attachments });
   }
+  function onPaste(event) {
+    const data = event.clipboardData;
+    const files = [...(data?.files || [])];
+    // Text (even text copied along with a picture of it, as Office does) pastes as text.
+    if (!files.length || data.getData('text/plain')) return;
+    event.preventDefault();
+    if (!attachAllowed) return;
+    upload(files.map(file => file.type.startsWith('image/') ? new File([file], 'imagem-colada-' + (++pastedCount.current) + '.' + pastedExtension(file.type), { type: file.type }) : file));
+  }
+  const draggingFiles = event => [...(event.dataTransfer?.types || [])].includes('Files');
+  function onDragEnter(event) {
+    if (!draggingFiles(event) || !attachAllowed) return;
+    event.preventDefault();
+    dragDepth.current++;
+    setDragging(true);
+  }
+  function onDragOver(event) {
+    if (!draggingFiles(event) || !attachAllowed) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }
+  function onDragLeave(event) {
+    if (!draggingFiles(event)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (!dragDepth.current) setDragging(false);
+  }
+  function onDrop(event) {
+    if (!draggingFiles(event)) return;
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    if (attachAllowed && event.dataTransfer.files.length) upload([...event.dataTransfer.files]);
+  }
+  useLayoutEffect(() => {
+    // Grows with the text up to about ten lines, then scrolls.
+    const element = textarea.current;
+    if (!element) return;
+    const style = getComputedStyle(element);
+    const borders = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    const max = (parseFloat(style.lineHeight) || 20) * 10 + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + borders;
+    element.style.height = 'auto';
+    const wanted = element.scrollHeight + borders;
+    element.style.height = Math.min(wanted, max) + 'px';
+    element.style.overflowY = wanted > max ? 'auto' : 'hidden';
+  }, [query]);
   conversationIdRef.current = conversationId;
   const activeAgentName = agent?.name || conversation?.agent?.name;
   const visibleAgents = agents.filter(item => item.status !== 'ARCHIVED');
@@ -341,7 +475,8 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
         </div>
       </aside>
 
-      <section className="chat-panel chat-window" aria-label="Conversa">
+      <section className={'chat-panel chat-window' + (dragging ? ' is-dragging' : '')} aria-label="Conversa" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} onKeyDown={event => { if (event.key === 'Escape' && sending) stop(event); }}>
+        {dragging && <div className="chat-drop-overlay" aria-hidden="true"><Paperclip size={22} aria-hidden="true" /> Solte para anexar</div>}
         <header className="chat-window-head">
           <h2 title={title}>{title}</h2>
           <div className="chat-selectors">
@@ -377,14 +512,15 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
             <div className="chat-summary-actions"><Button type="button" variant="secondary" size="sm" disabled={summaryBusy} onClick={() => changeSummary('enable')}>Permitir resumo</Button></div>
           </div>}
           {!loadingHistory && messages.map(message => <article key={message.id} className={'message ' + (message.role === 'user' ? 'user' : 'agent')}>
-            {message.role === 'user' ? <span className="message-text">{message.content}</span> : <AnswerText>{message.content}</AnswerText>}
+            {message.role === 'user' ? <span className="message-text">{message.content}</span> : message.content && <AnswerText>{message.content}</AnswerText>}
+            {!!message.localFiles?.length && <div className="source-chips">{message.localFiles.map(file => <Chip key={file.id || file.clientId} variant="outline">{file.name}</Chip>)}</div>}
             {!!messageAttachments(message).length && <div className="chat-message-files">{messageAttachments(message).map(file => { const Icon = fileIcon(file); return <div className="chat-file" key={file.id}><Icon size={15} aria-hidden="true" /><span>{file.name}</span><IconButton type="button" size="xs" aria-label={'Baixar ' + file.name} disabled={!canSend} icon={<Download size={14} />} onClick={() => download(file)} /></div>; })}</div>}
             {message.metadata?.sources?.length > 0 && <div className="source-chips">{message.metadata.sources.map((source, index) => <Chip key={source.id || index} variant="outline">Fonte: {source.documentName}</Chip>)}</div>}
             <div className="message-meta">
               {message.role === 'assistant' && message.metadata?.model && <small>{message.metadata.modelName || message.metadata.model}{message.metadata.providerName ? ' · ' + message.metadata.providerName : ''}</small>}
-              <small>{shortDate(message.createdAt)}</small>
+              {message.interrupted && message.role === 'assistant' ? <small className="message-interrupted">Resposta interrompida.</small> : <small>{shortDate(message.createdAt)}</small>}
             </div>
-            {message.role === 'assistant' && canReadHistory && conversationId && message.content?.trim() && <div className="message-actions" role="group" aria-label="Baixar esta resposta">
+            {message.role === 'assistant' && !message.interrupted && canReadHistory && conversationId && message.content?.trim() && <div className="message-actions" role="group" aria-label="Baixar esta resposta">
               {exportFormats.filter(([format]) => format !== 'xlsx' || hasMarkdownTable(message.content)).map(([format, label]) => <Button key={format} type="button" variant="secondary" size="sm" aria-label={'Baixar resposta em ' + label} disabled={!!exporting} onClick={() => exportAnswer(message, format)}>{exporting === message.id + format ? <Spinner size="xs" tone="current" /> : <FileDown size={14} aria-hidden="true" />} {label}</Button>)}
             </div>}
           </article>)}
@@ -392,7 +528,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
             <article className="message user"><span className="message-text">{pending.question}</span>{!!pending.attachments.length && <div className="source-chips">{pending.attachments.map(file => <Chip key={file.id} variant="outline">{file.name}</Chip>)}</div>}</article>
             {pending.answer && <article className="message agent"><AnswerText>{pending.answer}</AnswerText><div className="message-meta"><small>Respondendo...</small></div></article>}
           </>}
-          {sending && !pending?.answer && <p className="chat-status" role="status"><Spinner size="sm" tone="accent" /> O agente está preparando a resposta...</p>}
+          {sending && (stage || !pending?.answer) && <p className="chat-status" role="status"><Spinner size="sm" tone="accent" /> {stageLabels[stage] || 'O agente está preparando a resposta...'}</p>}
           <div ref={end} />
         </div>
 
@@ -403,19 +539,26 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
           {agent && agent.status !== 'ACTIVE' && <p className="panel-note">Ative o agente nas configurações para conversar.</p>}
           {canUseAgent && incompatibleImage && <Alert tone="danger">{historicalImages ? 'Esta conversa contém imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou inicie uma nova conversa.' : 'Os anexos incluem imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou remova esses arquivos.'}</Alert>}
           {canUseAgent && uploadCapabilities.error && <Alert tone="danger" actions={<Button type="button" variant="secondary" onClick={uploadCapabilities.reload}>Tentar carregar opções de anexo</Button>}>{uploadCapabilities.error}</Alert>}
-          <form className="chat-composer" onSubmit={send}>
+          <form className="chat-composer" onSubmit={submit}>
+            {!!queue.length && <ul className="chat-queue" aria-label="Mensagens na fila">{queue.map(item => <li key={item.id} className="chat-queue-item">
+              <span className="chat-queue-tag"><Clock size={12} aria-hidden="true" /> Na fila</span>
+              <span className="chat-queue-text" title={item.text}>{item.text}</span>
+              {!!item.files.length && <small>{item.files.length === 1 ? '1 anexo' : item.files.length + ' anexos'}</small>}
+              {!sending && <IconButton type="button" size="xs" variant="ghost" aria-label={'Enviar agora: ' + preview(item.text)} disabled={composerLocked || !modelReady} onClick={() => sendQueuedNow(item)} icon={<Send size={13} />} />}
+              <IconButton type="button" size="xs" variant="ghost" aria-label={'Remover da fila: ' + preview(item.text)} onClick={() => removeQueued(item)} icon={<X size={14} />} />
+            </li>)}</ul>}
             {!!attachments.length && <div className="chat-draft-files" aria-label="Anexos da mensagem">{attachments.map(file => { const Icon = file.status === 'FAILED' ? AlertCircle : fileIcon(file); return <div key={file.clientId} className={'chat-draft-file' + (file.status === 'FAILED' ? ' is-failed' : '')}>
               {['UPLOADING', 'PROCESSING'].includes(file.status) ? <Spinner size="xs" tone="muted" /> : <Icon size={16} aria-hidden="true" />}
               <div><b>{file.name}</b><small>{fileSize(file.sizeBytes)} · {statusLabels[file.status] || file.status}</small>{file.errorMessage && <span className="document-error">{file.errorMessage}</span>}</div>
-              <IconButton type="button" size="xs" variant="danger" aria-label={'Remover ' + file.name} disabled={sending} onClick={() => removeAttachment(file)} icon={<X size={14} />} />
+              <IconButton type="button" size="xs" variant="danger" aria-label={'Remover ' + file.name} onClick={() => removeAttachment(file)} icon={<X size={14} />} />
             </div>; })}</div>}
-            <Textarea aria-label="Mensagem" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
-              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); }
-            }} placeholder={canUseAgent ? 'Escreva sua pergunta ou peça um rascunho...' : 'Escolha um agente ativo para escrever.'} disabled={composerDisabled} maxLength={16000} rows={3} />
+            <Textarea ref={textarea} aria-label="Mensagem" value={query} onChange={event => setQuery(event.target.value)} onPaste={onPaste} onKeyDown={event => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); }
+            }} placeholder={!canUseAgent ? 'Escolha um agente ativo para escrever.' : sending ? 'Escreva a próxima mensagem; ela entra na fila...' : 'Escreva sua pergunta ou peça um rascunho...'} disabled={composerLocked} maxLength={16000} rows={2} />
             <div className="chat-composer-actions">
-              <FileButton onFiles={upload} accept={[...documentExtensions, ...(supportsImages ? supportedImages : [])].map(extension => '.' + extension).join(',')} multiple disabled={composerDisabled || attachments.length >= maxFiles || !modelId || uploadCapabilities.loading || !!uploadCapabilities.error} icon={<Paperclip size={16} />} variant="ghost" size="sm">Anexar arquivos</FileButton>
-              {canUseAgent && <p className="chat-hint">Shift+Enter quebra a linha. Até {maxFiles} arquivos de {fileSize(maxBytes)}{supportsImages ? ', imagens até ' + fileSize(Math.min(imageMaxBytes, maxBytes)) : ''}.</p>}
-              {sending ? <Button key="stop" type="button" variant="secondary" size="sm" aria-label="Interromper resposta" onClick={stop}><Square size={13} aria-hidden="true" /> Parar</Button> : <Button key="send" type="submit" size="sm" aria-label="Enviar mensagem" disabled={sendDisabled}>Enviar <Send size={14} aria-hidden="true" /></Button>}
+              <FileButton onFiles={upload} accept={[...documentExtensions, ...(supportsImages ? supportedImages : [])].map(extension => '.' + extension).join(',')} multiple disabled={!attachAllowed || attachments.length >= maxFiles} icon={<Paperclip size={16} />} variant="ghost" size="sm">Anexar arquivos</FileButton>
+              {canUseAgent && <p className="chat-hint"><span className="chat-hint-long">Shift+Enter quebra a linha. Cole ou arraste arquivos. Até {maxFiles} arquivos de {fileSize(maxBytes)}{supportsImages ? ', imagens até ' + fileSize(Math.min(imageMaxBytes, maxBytes)) : ''}.</span><span className="chat-hint-short">Shift+Enter quebra a linha.</span></p>}
+              {sending ? <Button key="stop" type="button" variant="secondary" size="sm" aria-label="Interromper resposta (Esc)" onClick={stop}><Square size={13} aria-hidden="true" /> Parar</Button> : <Button key="send" type="submit" size="sm" aria-label="Enviar mensagem" disabled={sendDisabled}>Enviar <Send size={14} aria-hidden="true" /></Button>}
             </div>
           </form>
         </div>

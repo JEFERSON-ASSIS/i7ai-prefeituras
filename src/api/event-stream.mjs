@@ -31,11 +31,14 @@ export async function* readEvents(body) {
   }
 }
 
-export async function consumeChatEvents(body,onDelta=()=>{}) {
+// `progress` ({etapa}) is optional and informative; unknown events are ignored.
+export async function consumeChatEvents(body,onDelta=()=>{},onProgress=()=>{}) {
   for await(const {event,data} of readEvents(body)) {
     if(event==='delta') {
       if(typeof data?.text!=='string')throw new Error('Trecho da resposta inválido.');
       onDelta(data.text);
+    } else if(event==='progress') {
+      if(typeof data?.etapa==='string')onProgress(data.etapa);
     } else if(event==='error')throw new Error(data?.message||'Não foi possível concluir a resposta.');
     else if(event==='complete') {
       if(!data?.conversationId||typeof data.answer!=='string'||!Array.isArray(data.messages))throw new Error('A conversa não foi confirmada pelo servidor.');

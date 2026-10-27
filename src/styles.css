@@ -133,3 +133,19 @@ html.sgdm-app-shell, html.sgdm-app-shell body, html.sgdm-app-shell #root { heigh
   .chat-hint { display: none; }
   .chat-composer-actions { justify-content: space-between; }
 }
+/* Chat composer: queue chips, drop overlay, auto-growing textarea, short hint on narrow screens. */
+.chat-window { position: relative; }
+.chat-drop-overlay { position: absolute; inset: 8px; z-index: 5; display: flex; align-items: center; justify-content: center; gap: 10px; border: 2px dashed rgb(var(--sd-color-accent, var(--sd-color-border))); border-radius: var(--sd-radius-card); background: rgb(var(--sd-color-surface) / 0.92); color: rgb(var(--sd-color-text-title)); font-size: 15px; font-weight: 600; pointer-events: none; }
+.chat-composer textarea { min-height: 0; resize: none; overflow-y: hidden; }
+.chat-queue { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.chat-queue-item { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 4px 4px 10px; border: 1px solid rgb(var(--sd-color-border)); border-radius: 999px; background: rgb(var(--sd-color-surface-muted, var(--sd-color-surface))); font-size: 13px; }
+.chat-queue-tag { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; color: rgb(var(--sd-color-text-muted)); font-size: 12px; font-weight: 600; }
+.chat-queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-queue-item small { flex-shrink: 0; color: rgb(var(--sd-color-text-muted)); font-size: 12px; }
+.message-meta small.message-interrupted { font-style: italic; }
+.chat-hint-short { display: none; }
+@media (max-width: 639px) {
+  .chat-hint { display: block; }
+  .chat-hint-long { display: none; }
+  .chat-hint-short { display: inline; }
+}

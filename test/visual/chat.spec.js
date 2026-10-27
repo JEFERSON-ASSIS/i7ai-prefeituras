@@ -193,7 +193,9 @@ test('interromper resposta conserva pergunta e impede persistência visual tardi
   await page.waitForTimeout(200);
   await expect(page.getByLabel('Mensagem', { exact: true })).toHaveValue('Pergunta para interromper.');
   await expect(page.getByText('Resposta parcial', { exact: true })).toHaveCount(0);
-  await expect(page.locator('.message')).toHaveCount(0);
+  // The cancelled exchange stays on screen only (the server saved nothing), marked as interrupted.
+  await expect(page.locator('.message')).toHaveCount(2);
+  await expect(page.locator('.message.agent')).toContainText('Resposta interrompida.');
   expect(writes).toHaveLength(1);
 });
 
@@ -324,4 +326,198 @@ test('desligar o resumo com a releitura falhando não deixa aviso antigo; trocar
   await expect(page.getByText('Esta conversa usa as mensagens completas.')).toBeVisible();
   await expect(page.getByText(/foram resumidas para reduzir o custo/)).toHaveCount(0);
   expect(reads).toBeGreaterThan(before);
+});
+
+// Composer like a modern chat: the stream stays open under test control (window.__streams).
+async function controlledStreams(page) {
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window);
+    window.__streams = [];
+    window.fetch = (input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (!url.endsWith('/chat/stream')) return original(input, init);
+      const encoder = new TextEncoder();
+      let controller;
+      const body = new ReadableStream({ start(value) { controller = value; } });
+      const entry = { body: JSON.parse(init.body), aborted: false };
+      entry.push = (event, data) => controller.enqueue(encoder.encode('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n'));
+      entry.close = () => { try { controller.close(); } catch {} };
+      window.__streams.push(entry);
+      init.signal?.addEventListener('abort', () => { entry.aborted = true; try { controller.error(new DOMException('Aborted', 'AbortError')); } catch {} });
+      return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+    };
+  });
+}
+const streams = page => page.evaluate(() => window.__streams.map(item => ({ body: item.body, aborted: item.aborted })));
+const push = (page, index, event, data) => page.evaluate(([i, e, d]) => window.__streams[i].push(e, d), [index, event, data]);
+async function finish(page, index, conversationId, answer) {
+  const { body } = (await streams(page))[index];
+  const now = new Date().toISOString();
+  await push(page, index, 'delta', { text: answer });
+  await push(page, index, 'complete', { conversationId, answer, messages: [
+    { id: 'user-' + index, role: 'user', content: body.message, createdAt: now, metadata: {} },
+    { id: 'assistant-' + index, role: 'assistant', content: answer, createdAt: now, metadata: {} },
+  ] });
+  await page.evaluate(i => window.__streams[i].close(), index);
+}
+async function openChat(page, options = {}) {
+  await controlledStreams(page);
+  await mockSession(page, options);
+  await page.goto('/?module=chat');
+  await page.getByLabel('Agente da conversa').selectOption('agent-1');
+  return page.getByLabel('Mensagem', { exact: true });
+}
+
+test('composer continua editável durante a resposta; Enter enfileira e a fila sai sozinha após concluir', async ({ page }) => {
+  const composer = await openChat(page);
+  await composer.fill('Primeira pergunta.');
+  await composer.press('Enter');
+  await expect.poll(async () => (await streams(page)).length).toBe(1);
+  await expect(page.getByRole('button', { name: 'Interromper resposta' })).toBeVisible();
+  await expect(composer).toBeEnabled();
+  await expect(page.getByLabel('Modelo da conversa')).toBeDisabled();
+  await expect(page.getByLabel('Agente da conversa')).toBeDisabled();
+  await composer.type('Segunda pergunta.');
+  await expect(composer).toHaveValue('Segunda pergunta.');
+  await composer.press('Enter');
+  await composer.fill('Terceira pergunta.');
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('');
+  const queue = page.getByRole('list', { name: 'Mensagens na fila' });
+  await expect(queue.getByRole('listitem')).toHaveCount(2);
+  await expect(queue.getByRole('listitem').first()).toContainText('Na fila');
+  await expect(queue.getByRole('listitem').first()).toContainText('Segunda pergunta.');
+  // Removable from the keyboard.
+  await page.getByRole('button', { name: 'Remover da fila: Terceira pergunta.' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(queue.getByRole('listitem')).toHaveCount(1);
+  expect((await streams(page)).length).toBe(1);
+  await finish(page, 0, 'conversation-queue', 'Resposta da primeira.');
+  await expect(page.getByText('Resposta da primeira.', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await streams(page)).length).toBe(2);
+  expect((await streams(page))[1].body).toEqual({ message: 'Segunda pergunta.', modelId: 'model-1', conversationId: 'conversation-queue' });
+  await expect(page.getByRole('list', { name: 'Mensagens na fila' })).toHaveCount(0);
+  await finish(page, 1, 'conversation-queue', 'Resposta da segunda.');
+  await expect(page.getByText('Resposta da segunda.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Enviar mensagem' })).toBeVisible();
+  await page.waitForTimeout(200);
+  expect((await streams(page)).map(item => item.aborted)).toEqual([false, false]);
+});
+
+test('erro na resposta para a fila e mantém os itens para reenviar', async ({ page }) => {
+  const composer = await openChat(page);
+  await composer.fill('Pergunta que falha.');
+  await composer.press('Enter');
+  await expect.poll(async () => (await streams(page)).length).toBe(1);
+  await composer.fill('Pergunta na fila.');
+  await composer.press('Enter');
+  await push(page, 0, 'error', { message: 'Provedor indisponível.' });
+  await expect(page.getByText('Provedor indisponível.')).toBeVisible();
+  await expect(composer).toHaveValue('Pergunta que falha.');
+  await expect(page.getByRole('list', { name: 'Mensagens na fila' }).getByRole('listitem')).toHaveCount(1);
+  await page.waitForTimeout(200);
+  expect((await streams(page)).length).toBe(1);
+  await composer.fill('');
+  await page.getByRole('button', { name: 'Enviar agora: Pergunta na fila.' }).click();
+  await expect.poll(async () => (await streams(page)).length).toBe(2);
+  expect((await streams(page))[1].body.message).toBe('Pergunta na fila.');
+});
+
+test('Parar e Esc interrompem a resposta e guardam o trecho recebido como parcial', async ({ page }) => {
+  const composer = await openChat(page);
+  await composer.fill('Explique o edital.');
+  await composer.press('Enter');
+  await expect.poll(async () => (await streams(page)).length).toBe(1);
+  await push(page, 0, 'delta', { text: 'O edital trata de merenda' });
+  await expect(page.getByText('O edital trata de merenda')).toBeVisible();
+  await page.getByRole('button', { name: 'Interromper resposta' }).click();
+  expect((await streams(page))[0].aborted).toBe(true);
+  const partial = page.locator('.message.agent').last();
+  await expect(partial).toContainText('O edital trata de merenda');
+  await expect(partial).toContainText('Resposta interrompida.');
+  await expect(partial.getByRole('button', { name: /Baixar resposta/ })).toHaveCount(0);
+  await expect(composer).toHaveValue('Explique o edital.');
+  await expect(page.getByRole('button', { name: 'Enviar mensagem' })).toBeEnabled();
+  await composer.press('Enter');
+  await expect.poll(async () => (await streams(page)).length).toBe(2);
+  await composer.press('Escape');
+  await expect.poll(async () => (await streams(page))[1].aborted).toBe(true);
+  await expect(page.getByRole('button', { name: 'Enviar mensagem' })).toBeVisible();
+});
+
+test('progresso ao vivo mostra a etapa sem os termos pesquisados', async ({ page }) => {
+  const composer = await openChat(page);
+  await composer.fill('Pesquise compras de merenda.');
+  await composer.press('Enter');
+  await expect.poll(async () => (await streams(page)).length).toBe(1);
+  const status = page.getByRole('status');
+  await expect(status).toHaveText(/O agente está preparando a resposta/);
+  await push(page, 0, 'progress', { etapa: 'pesquisa_compras' });
+  await expect(status).toHaveText('Pesquisando em compras públicas (PNCP)…');
+  await push(page, 0, 'progress', { etapa: 'pesquisa_internet' });
+  await expect(status).toHaveText('Pesquisando na internet…');
+  await push(page, 0, 'progress', { etapa: 'ferramenta' });
+  await expect(status).toHaveText('Usando uma ferramenta do agente…');
+  await push(page, 0, 'progress', { etapa: 'desconhecida' });
+  await expect(status).toHaveText('Usando uma ferramenta do agente…');
+  await push(page, 0, 'delta', { text: 'Encontrei dois pregões.' });
+  await expect(page.getByText('Encontrei dois pregões.')).toBeVisible();
+  await expect(page.getByRole('status')).toHaveCount(0);
+});
+
+test('colar imagem anexa pelo mesmo envio de arquivos; texto colado continua texto', async ({ page }) => {
+  const writes = [];
+  const composer = await openChat(page, { writes });
+  const prevented = await composer.evaluate(element => {
+    const data = new DataTransfer();
+    data.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' }));
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(prevented).toBe(true);
+  await expect.poll(() => writes.filter(item => item.path === '/chat/attachments').length).toBe(1);
+  expect(writes.find(item => item.path === '/chat/attachments').body).toContain('filename="imagem-colada-1.png"');
+  await expect(page.locator('.chat-draft-file')).toHaveCount(1);
+  const textPrevented = await composer.evaluate(element => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'Texto copiado');
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(textPrevented).toBe(false);
+  expect(writes.filter(item => item.path === '/chat/attachments').length).toBe(1);
+});
+
+test('arrastar arquivo mostra "Solte para anexar" e soltar anexa', async ({ page }) => {
+  const writes = [];
+  await openChat(page, { writes });
+  const data = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['Relatório municipal.'], 'relatorio.txt', { type: 'text/plain' }));
+    return transfer;
+  });
+  const area = page.getByRole('region', { name: 'Conversa' });
+  await area.dispatchEvent('dragenter', { dataTransfer: data });
+  await expect(page.getByText('Solte para anexar')).toBeVisible();
+  await page.screenshot({ path: 'output/verification/sgdm/screenshots-embedded/chat-drop-overlay.png' });
+  await area.dispatchEvent('drop', { dataTransfer: data });
+  await expect(page.getByText('Solte para anexar')).toHaveCount(0);
+  await expect.poll(() => writes.filter(item => item.path === '/chat/attachments').length).toBe(1);
+  await expect(page.locator('.chat-draft-file')).toContainText('relatorio.txt');
+});
+
+test('caixa de mensagem cresce com o texto até cerca de dez linhas e depois rola', async ({ page }) => {
+  const composer = await openChat(page);
+  const height = () => composer.evaluate(element => element.getBoundingClientRect().height);
+  const initial = await height();
+  await composer.fill('linha\nlinha\nlinha\nlinha');
+  const grown = await height();
+  expect(grown).toBeGreaterThan(initial);
+  await composer.fill(Array.from({ length: 30 }, (_, index) => 'linha ' + index).join('\n'));
+  const capped = await height();
+  expect(capped).toBeGreaterThan(grown);
+  expect(await composer.evaluate(element => element.scrollHeight > element.clientHeight && getComputedStyle(element).overflowY === 'auto')).toBe(true);
+  expect(capped).toBeLessThan(initial * 8);
 });

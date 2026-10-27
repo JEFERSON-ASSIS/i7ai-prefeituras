@@ -8,7 +8,7 @@ import { LIMIT_MESSAGES } from './limit-messages';
 import type { OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
 import { SplitInstructions, joinedInstructions, neutralizeTags } from './instructions';
 import { historyWindow } from './history-summary';
-import { ResearchSession, appendSourcesIfMissing, isBuiltinResearch } from '../research/research-tools';
+import { ChatProgressStage, ResearchSession, appendSourcesIfMissing, isBuiltinResearch, progressStage } from '../research/research-tools';
 
 export type OmniRouterInput = {
   agent: { id: string; tenantId: string; systemPrompt?: string | null; temperature: unknown; maxTokens: number; advancedReasoning: boolean };
@@ -28,6 +28,8 @@ export type OmniRouterInput = {
   conversationId?: string;
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
+  /** Called when a tool runs, with the stage only (no arguments). */
+  onProgress?: (etapa: ChatProgressStage) => void;
   quotaScope: QuotaScope;
   /** Optimization settings from SGDM (or the defaults), read once per call by the gateway. */
   optimization: OtimizacaoEfetiva;
@@ -210,6 +212,7 @@ export class OmniRouterService {
           messages.push({ role: 'tool', tool_call_id: call.id, content: 'Ferramenta indisponível depois de uma pesquisa nesta resposta.' });
           continue;
         }
+        input.onProgress?.(progressStage(call.function.name));
         if (isBuiltinResearch(selected)) {
           if (!input.research) throw protocolError('O OmniRouter solicitou uma ferramenta que não está vinculada a este agente.');
           result = await input.research.execute(localCall);

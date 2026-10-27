@@ -15,6 +15,9 @@ export const BUILTIN_PNCP = 'pesquisar_compras_publicas';
 export const BUILTIN_WEB_ID = 'builtin:web';
 export const BUILTIN_PNCP_ID = 'builtin:pncp';
 export const MAX_SEARCHES_PER_ANSWER = 5;
+/** Stage shown live in the chat while the answer is produced. Only the stage leaves the server, never arguments. */
+export type ChatProgressStage = 'pesquisa_internet' | 'pesquisa_compras' | 'ferramenta' | 'documentos';
+export const progressStage = (name: string): ChatProgressStage => name === BUILTIN_WEB ? 'pesquisa_internet' : name === BUILTIN_PNCP ? 'pesquisa_compras' : 'ferramenta';
 export const SEARCH_LIMIT_ERROR = 'Limite de 5 pesquisas desta resposta atingido. Responda com o que já encontrou.';
 export const SOURCE_ERROR = 'A fonte não respondeu agora.';
 export const WEB_UNAVAILABLE = 'A pesquisa na internet está indisponível agora.';

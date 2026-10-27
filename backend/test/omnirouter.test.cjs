@@ -1005,3 +1005,32 @@ test('research: a forced http_* call after a research call is not executed and d
   assert.equal(local.requests[2].body.messages.at(-1).content, 'Ferramenta indisponível depois de uma pesquisa nesta resposta.');
   assert.deepEqual(rows.map(row => row.source), ['web']);
 });
+
+test('progress: each tool round reports only its stage (PNCP → pesquisa_compras, http_ → ferramenta), never arguments', async t => {
+  const functions = [httpFn(), ...builtinResearchFunctions({ web: true, pncp: true })];
+  const context = fixture(functions);
+  context.input.model.capabilities = { supportsTools: true };
+  const terms = [];
+  context.input.research = new ResearchSession(
+    { tenantId: 'tenant-a', userId: 'user-a', agentId: 'agent-a', serperKey: 'serper-secret', costPerSearchUsd: 0.001 },
+    { record: async () => {}, web: async () => ({ resultados: [] }), pncp: async args => { terms.push(args.termo); return { compras: [{ orgao: 'Prefeitura', uf: 'MT', objeto: 'Pregão', link: 'https://pncp.gov.br/app/editais/1' }] }; } },
+  );
+  const progress = [];
+  context.input.onProgress = (...args) => progress.push(args);
+  const pncpCall = { id: 'call-pncp', type: 'function', function: { name: 'pesquisar_compras_publicas', arguments: JSON.stringify({ termo: 'merenda escolar sigilosa' }) } };
+  await provider(t, (_body, response, round) => json(response, round === 1
+    ? completion(null, { finishReason: 'tool_calls', calls: [call('call-http', 'http_toola')] })
+    : round === 2 ? completion(null, { finishReason: 'tool_calls', calls: [pncpCall] })
+      : completion('Achei o pregão em https://pncp.gov.br/app/editais/1.')));
+  await context.service.generate(context.input);
+  assert.deepEqual(progress, [['ferramenta'], ['pesquisa_compras']]);
+  assert.deepEqual(terms, ['merenda escolar sigilosa']);
+  assert.ok(!JSON.stringify(progress).includes('merenda') && !JSON.stringify(progress).includes('2026'));
+});
+
+test('progress: progressStage maps the built-in names and anything else to ferramenta', () => {
+  const { progressStage } = require('../dist/research/research-tools');
+  assert.equal(progressStage('pesquisar_internet'), 'pesquisa_internet');
+  assert.equal(progressStage('pesquisar_compras_publicas'), 'pesquisa_compras');
+  for (const name of ['http_x', 'internal_y', 'search_z', 'mcp_w', 'lookup_budget']) assert.equal(progressStage(name), 'ferramenta');
+});

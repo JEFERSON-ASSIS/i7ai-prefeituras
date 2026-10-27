@@ -206,8 +206,11 @@ test('streaming tool loop executes the call before final deltas and persists acc
     assert.equal(request.input.at(-1).type, 'function_call_output');
     return sseResponse([{ type: 'response.output_text.delta', delta: 'Valor 42', sequence_number: 1 }, { type: 'response.completed', response: modelPayload('Valor 42'), sequence_number: 2 }]);
   };
-  const result = await service.chatStream('agent-a', 'tenant-a', { message: 'Consulte' }, 'user-a', (event) => { events.push(event); });
-  assert.deepEqual(events, ['delta', 'complete']); assert.equal(result.usage.inputTokens, 200); assert.equal(result.usage.outputTokens, 40);
+  const payloads = [];
+  const result = await service.chatStream('agent-a', 'tenant-a', { message: 'Consulte' }, 'user-a', (event, payload) => { events.push(event); if (event === 'progress') payloads.push(payload); });
+  // The http_ function round announces only its stage, before running and without the arguments.
+  assert.deepEqual(events, ['progress', 'delta', 'complete']); assert.deepEqual(payloads, [{ etapa: 'ferramenta' }]);
+  assert.equal(JSON.stringify(payloads).includes('2026'), false); assert.equal(result.usage.inputTokens, 200); assert.equal(result.usage.outputTokens, 40);
   assert.equal(records.messages.length, 2); assert.ok(local.calls.some((call) => call.path === '/http'));
 });
 
@@ -229,4 +232,12 @@ test('disabled or foreign tenant binding is not exposed; revoked binding is rech
   global.fetch = async (_url, options) => { const tools = JSON.parse(options.body).tools; assert.equal(tools.length, 1); active.enabled = false; return jsonResponse(toolPayload(tools[0].name, {}, 'revoked')); };
   await assert.rejects(() => service.chat('agent-a', 'tenant-a', { message: 'Execute' }, 'user-a'), /não está autorizada/);
   assert.equal(local.calls.some((call) => call.path === '/http'), false); assert.equal(records.messages.length, 0);
+});
+
+test('SSE controller encodes progress frames with the stage only', async () => {
+  const response = new EventEmitter(); const frames = [];
+  response.setHeader = () => {}; response.flushHeaders = () => {}; response.write = (frame) => { frames.push(frame); return true; }; response.end = () => { response.writableEnded = true; }; response.writableEnded = false; response.destroyed = false;
+  const controller = new AiGatewayController({ chatStream: async (_agent, _tenant, _body, _user, emit) => { emit('progress', { etapa: 'pesquisa_compras' }); emit('complete', { conversationId: 'c', answer: 'ok', messages: [] }); } });
+  await controller.stream('agent-a', { user: { tenantId: 'tenant-a', sub: 'user-a' } }, { message: 'oi' }, response);
+  assert.equal(frames[0], ['event: progress', 'data: {"etapa":"pesquisa_compras"}', '', ''].join(String.fromCharCode(10)));
 });

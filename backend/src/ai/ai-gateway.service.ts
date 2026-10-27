@@ -17,7 +17,7 @@ import { SgdmOptimizationService } from '../sgdm/sgdm-optimization.service';
 import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
 import { CHAT_EXPORT_INSTRUCTIONS, RESEARCH_INSTRUCTIONS, RESEARCH_NO_TOOLS_INSTRUCTIONS, RESEARCH_OFF_INSTRUCTIONS, RESEARCH_PNCP_ONLY_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedInstructions, variableInstructions } from './instructions';
 import { ResearchConfigService } from '../research/research-config.service';
-import { ResearchSession, builtinResearchFunctions, researchRecorder, userMinuteCheck } from '../research/research-tools';
+import { ChatProgressStage, ResearchSession, builtinResearchFunctions, progressStage, researchRecorder, userMinuteCheck } from '../research/research-tools';
 import { SgdmLimitsService } from '../sgdm/sgdm-limits.service';
 import { EXPORT_MIME, ExportFormat, exportFileName, exportTitle, parseAnswer, renderExport } from './chat-export';
 import { ConversationSummaryService } from './conversation-summary.service';
@@ -28,9 +28,12 @@ export { CHAT_EXPORT_INSTRUCTIONS };
 
 type HistoryItem = { role: string; content: string };
 type AttachmentContext = { documents: { id: string; name: string; mimeType: string; sizeBytes: string; status: string }[]; text: string; images: { name: string; mimeType: string; dataUrl: string }[] };
-type ChatRunOptions = { signal?: AbortSignal; onDelta?: (text: string) => void };
-export type ChatStreamEvent = 'delta' | 'complete';
+type ChatRunOptions = { signal?: AbortSignal; onDelta?: (text: string) => void; onProgress?: (etapa: ChatProgressStage) => void };
+/** `progress` carries only `{ etapa }` (never tool arguments or queries); older clients ignore it. */
+export type ChatStreamEvent = 'delta' | 'progress' | 'complete';
 export type AgentExecutionInput = { message: string; userId?: string; automationId?: string; conversationId?: string; signal?: AbortSignal; modelId?: string; attachmentContext?: AttachmentContext; historyComplete?: boolean;
+  /** Live stage of the answer (tool rounds) for the streaming chat; never carries arguments. */
+  onProgress?: (etapa: ChatProgressStage) => void;
   /** Conversation summary system message (OmniRouter only) and the history that would go without it (savings baseline). */
   summary?: string; summaryBaseline?: HistoryItem[] };
 export type AgentAnswer = { answer: string; sources: RagSource[]; agentId: string; provider: string; model: string; toolCalls?: { callId: string; name: string }[]; usage: { inputTokens: number; outputTokens: number; cost: number; costConfigured: boolean; latencyMs: number; measured: boolean } };
@@ -106,12 +109,13 @@ export class AiGatewayService {
       if (!this.knowledge) throw new ServiceUnavailableException('O serviço de anexos está indisponível.');
       // Keep the most recent files in context. Every file is reauthorized before use.
       const relevantIds = [...new Set([...attachmentIds, ...historyAttachmentIds])].slice(0, 5);
+      if (attachmentIds.length) options.onProgress?.('documentos');
       attachmentContext = await this.knowledge.prepareChatAttachments(tenantId, userId, relevantIds);
     }
     options.signal?.throwIfAborted();
     // A new conversation gets its id up front so even its first (usually costliest) call carries the conversa tag.
     const newConversationId = input.conversationId ? undefined : randomUUID();
-    const prepared = await this.generate(agentId, tenantId, { message: input.message, userId, conversationId: input.conversationId ?? newConversationId, modelId, attachmentContext, signal: options.signal, historyComplete: !historyCut, ...(summary ? { summary, summaryBaseline } : {}) }, history, options.onDelta, optimization);
+    const prepared = await this.generate(agentId, tenantId, { message: input.message, userId, conversationId: input.conversationId ?? newConversationId, modelId, attachmentContext, signal: options.signal, onProgress: options.onProgress, historyComplete: !historyCut, ...(summary ? { summary, summaryBaseline } : {}) }, history, options.onDelta, optimization);
     try {
     options.signal?.throwIfAborted();
     const { conversationId, messages } = await this.prisma.$transaction(async (tx) => {
@@ -173,7 +177,7 @@ export class AiGatewayService {
   }
 
   async chatStream(agentId: string, tenantId: string, input: ChatDto, userId: string, emit: (event: ChatStreamEvent, payload: unknown) => void, signal?: AbortSignal) {
-    const result = await this.chat(agentId, tenantId, input, userId, { signal, onDelta: (text) => emit('delta', { text }) });
+    const result = await this.chat(agentId, tenantId, input, userId, { signal, onDelta: (text) => emit('delta', { text }), onProgress: (etapa) => emit('progress', { etapa }) });
     signal?.throwIfAborted();
     emit('complete', result);
     return result;
@@ -322,7 +326,7 @@ export class AiGatewayService {
 
   private async runOmniRouter(agent: LoadedAgent, model: LoadedModel, instructions: SplitInstructions, message: string, history: HistoryItem[], historyComplete: boolean, functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, optimization: OtimizacaoEfetiva, outputCapApplied: boolean, onDelta?: (text: string) => void, historySavedTokens = 0, research?: ResearchSession): Promise<ProviderAnswer> {
     if (!this.omni) throw new ServiceUnavailableException('O adaptador OmniRouter está indisponível.');
-    return this.omni.generate({ agent, model, instructions, message, history, historyComplete, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, quotaScope, optimization, outputCapApplied, ...(input.summary ? { summary: input.summary, historySavedTokens } : {}), ...(research ? { research } : {}) });
+    return this.omni.generate({ agent, model, instructions, message, history, historyComplete, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, onProgress: input.onProgress, quotaScope, optimization, outputCapApplied, ...(input.summary ? { summary: input.summary, historySavedTokens } : {}), ...(research ? { research } : {}) });
   }
 
   /**
@@ -383,6 +387,7 @@ export class AiGatewayService {
         transcript.push(...response.output as ResponseInputItem[]);
         for (const call of calls) {
           if (usedCalls.some((item) => item.callId === call.callId)) throw new BadGatewayException('O provedor repetiu um identificador de chamada de ferramenta.');
+          input.onProgress?.(progressStage(call.name));
           const result = await this.agentTools.execute(tenantId, agent.id, call, functions, input.userId, input.signal);
           usedCalls.push({ callId: call.callId, name: call.name });
           transcript.push({ type: 'function_call_output', call_id: result.callId, output: result.output });
