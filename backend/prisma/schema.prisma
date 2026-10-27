@@ -237,6 +237,7 @@ model AiModel {
   slug        String
   inputPrice  Decimal?     @db.Decimal(10, 6)
   outputPrice Decimal?     @db.Decimal(10, 6)
+  cachedInputPrice Decimal? @db.Decimal(12, 6)
   capabilities Json?
   provider    AiProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
   agents      AgentModel[]
@@ -530,6 +531,8 @@ model AiUsage {
   latencyMs    Int?
   status       String   @default("COMPLETED")
   usageMeasured Boolean @default(true)
+  cachedInputTokens Int  @default(0)
+  costSource   String   @default("catalog")
   tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   agent        Agent?   @relation(fields: [agentId], references: [id], onDelete: SetNull)

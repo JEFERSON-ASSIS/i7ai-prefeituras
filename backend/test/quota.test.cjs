@@ -110,3 +110,9 @@ test('usage persistence keeps the original reservation when P2028 retries are ex
  assert.equal(records.usage.length,0);assert.equal(records.reservations[0].status,'RESERVED');
  assert.equal(records.reservations[0].reservedTokens,BigInt(Buffer.byteLength(JSON.stringify({message:'hello'}),'utf8')+2048+100));
 });
+
+test('calculateUsageCost cobra tokens em cache pelo preço de cache', () => {
+ const {calculateUsageCost}=require('../dist/ai/ai-gateway.service');
+ assert.equal(calculateUsageCost(100,10,1,2,60,0.5),0.00009);
+ assert.equal(calculateUsageCost(100,10,1,2),0.00012);
+});

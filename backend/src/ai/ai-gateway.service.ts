@@ -7,7 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RagService, RagSource } from '../knowledge/rag.service';
 import { ChatDto } from './dto/chat.dto';
 import { requireActiveLicense } from '../catalog/license-policy';
-import { AiQuotaService, QuotaScope, QuotaUsage } from './ai-quota.service';
+import { AiQuotaService, QuotaScope, QuotaUsage, calculateUsageCost } from './ai-quota.service';
 import { AgentFunction, AgentToolCall, AgentToolsService } from './agent-tools.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import { OmniRouterService } from './omnirouter.service';
@@ -34,10 +34,7 @@ const attachmentDocument = { select: { id: true, name: true, mimeType: true, siz
 function numericTokens(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(2_147_483_647, Math.trunc(value)) : 0;
 }
-export function calculateUsageCost(inputTokens: number, outputTokens: number, inputPrice: unknown, outputPrice: unknown): number {
-  const input = Math.max(0, Number(inputPrice) || 0); const output = Math.max(0, Number(outputPrice) || 0);
-  return Number(((inputTokens * input + outputTokens * output) / 1_000_000).toFixed(6));
-}
+export { calculateUsageCost };
 
 @Injectable()
 export class AiGatewayService {
@@ -189,7 +186,7 @@ export class AiGatewayService {
     const executionAgent = { ...agent, maxTokens: maxOutput };
     const provider = model.provider.slug.toLowerCase();
     const settings = { temperature: Number(agent.temperature), maxTokens: maxOutput, advancedReasoning: agent.advancedReasoning };
-    const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0 });
+    const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice) || 0 });
     try {
     const generated = omniConfigured
       ? await this.runOmniRouter(executionAgent, model, instructions, message, history, functions, input, quotaScope, onDelta)

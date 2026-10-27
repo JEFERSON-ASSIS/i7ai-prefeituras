@@ -487,3 +487,29 @@ test('cada chamada leva user = prefeitura e as tags de usuário, origem e conver
   assert.equal(requests[1].body.user, 'tenant-a');
   assert.deepEqual(requests[1].body.metadata.tags, ['origem:i7ai-automacao']);
 });
+
+test('tokens em cache e custo do cabeçalho entram no consumo; stream sem cabeçalho usa o catálogo', async t => {
+  const { calculateUsageCost } = require('../dist/ai/ai-gateway.service');
+  const usage = { prompt_tokens: 100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 60 } };
+  const first = fixture();
+  await provider(t, (_body, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json', 'x-litellm-response-cost': '0.000123' });
+    response.end(JSON.stringify(completion('ok', { usage })));
+  });
+  await first.service.generate(first.input);
+  assert.equal(first.records.usage[0].cachedInputTokens, 60);
+  assert.equal(first.records.usage[0].cost, 0.000123);
+  assert.equal(first.records.usage[0].costSource, 'gateway');
+
+  const second = fixture(); second.input.onDelta = () => {};
+  second.input.quotaScope = second.quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cachedInputPrice: 0.5 });
+  await provider(t, (_body, response) => sse(response, [frame(chunk({ role: 'assistant', content: 'ok' })), frame(chunk({}, 'stop')), frame({ choices: [], usage }), frame('[DONE]')]));
+  await second.service.generate(second.input);
+  assert.equal(second.records.usage[0].costSource, 'catalog');
+  assert.equal(second.records.usage[0].cachedInputTokens, 60);
+  assert.equal(second.records.usage[0].cost, calculateUsageCost(100, 10, 1, 2, 60, 0.5));
+
+  const third = fixture();
+  await provider(t, (_body, response) => json(response, completion('ok', { usage: { prompt_tokens: 10, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 11 } } })));
+  await assert.rejects(third.service.generate(third.input), /consumo inválidos/);
+});

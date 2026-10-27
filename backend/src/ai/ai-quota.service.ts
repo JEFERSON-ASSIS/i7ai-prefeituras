@@ -4,11 +4,18 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { requireActiveLicense } from '../catalog/license-policy';
 
-export type QuotaUsage = { inputTokens: number; outputTokens: number; measured: boolean };
+export type QuotaUsage = { inputTokens: number; outputTokens: number; measured: boolean; cachedInputTokens?: number; gatewayCost?: number };
 export type QuotaScope = {
   runId: string; tenantId: string; agentId: string; modelId: string; userId?: string; automationId?: string;
-  inputPrice: number; outputPrice: number; started: number;
+  inputPrice: number; outputPrice: number; cachedInputPrice: number; started: number;
 };
+/** Catalog cost in currency units; cached prompt tokens are billed at the cache price (default: the input price). */
+export function calculateUsageCost(inputTokens: number, outputTokens: number, inputPrice: unknown, outputPrice: unknown, cachedInputTokens = 0, cachedInputPrice: unknown = inputPrice): number {
+  const input = Math.max(0, Number(inputPrice) || 0); const output = Math.max(0, Number(outputPrice) || 0);
+  const cachedPrice = Math.max(0, Number(cachedInputPrice) || 0);
+  const cached = Math.min(Math.max(0, cachedInputTokens), inputTokens);
+  return Number((((inputTokens - cached) * input + cached * cachedPrice + outputTokens * output) / 1_000_000).toFixed(6));
+}
 const pendingStatuses = ['RESERVED', 'UNCERTAIN'];
 
 @Injectable()
@@ -47,9 +54,11 @@ export class AiQuotaService {
       const total = BigInt(usage.inputTokens) + BigInt(usage.outputTokens);
       const budget = reservation.reservedTokens + BigInt(previous?.inputTokens || 0) + BigInt(previous?.outputTokens || 0);
       const unresolved = usage.measured ? 0n : (budget > total ? budget - total : 0n);
-      const cost = Number(((usage.inputTokens * scope.inputPrice + usage.outputTokens * scope.outputPrice) / 1_000_000).toFixed(6));
+      const cachedInputTokens = usage.cachedInputTokens ?? 0;
+      const cost = usage.gatewayCost ?? calculateUsageCost(usage.inputTokens, usage.outputTokens, scope.inputPrice, scope.outputPrice, cachedInputTokens, scope.cachedInputPrice);
+      const costSource = usage.gatewayCost !== undefined ? 'gateway' : 'catalog';
       const data = { tenantId: scope.tenantId, agentId: scope.agentId, modelId: scope.modelId, userId: scope.userId, automationId: scope.automationId,
-        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cost, usageMeasured: usage.measured, status: previous?.status || 'PENDING', latencyMs: Date.now() - scope.started };
+        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens, cost, costSource, usageMeasured: usage.measured, status: previous?.status || 'PENDING', latencyMs: Date.now() - scope.started };
       await tx.aiUsage.upsert({ where: { id }, create: { id, ...data, createdAt: reservation.createdAt }, update: data });
       await tx.aiTokenReservation.update({ where: { id }, data: { status: usage.measured ? 'MEASURED' : 'UNCERTAIN', reservedTokens: unresolved, finishedAt: new Date() } });
     });

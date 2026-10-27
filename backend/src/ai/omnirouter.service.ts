@@ -60,8 +60,13 @@ function usageFrom(value: unknown): QuotaUsage {
     totalTokens = tokenCount(usage.total_tokens);
     if (totalTokens < inputTokens + outputTokens) throw protocolError('O OmniRouter retornou contadores de consumo inválidos.');
   }
+  const details = usage.prompt_tokens_details;
+  if (details !== undefined && details !== null && !object(details)) throw protocolError('O OmniRouter retornou contadores de consumo inválidos.');
+  const cachedInputTokens = tokenCount(object(details)?.cached_tokens);
+  if (cachedInputTokens > inputTokens) throw protocolError('O OmniRouter retornou contadores de consumo inválidos.');
   return {
     inputTokens,
+    cachedInputTokens,
     // Some gateways include additional output tokens only in the total. Keep
     // that consumption without inferring missing prompt/completion counters.
     outputTokens: measured && totalTokens !== undefined ? totalTokens - inputTokens : outputTokens,
@@ -234,6 +239,10 @@ export class OmniRouterService {
       try { payload = object(JSON.parse(content)); } catch { throw protocolError('O OmniRouter retornou conteúdo JSON inválido.'); }
       if (!payload || payload.error) throw protocolError();
       const usage = usageFrom(payload.usage);
+      // LiteLLM's official cost; streaming responses never carry it.
+      const rawCost = response.headers.get('x-litellm-response-cost')?.trim();
+      const gatewayCost = rawCost && /^\d+(\.\d+)?(e[+-]?\d+)?$/i.test(rawCost) ? Number(rawCost) : undefined;
+      if (gatewayCost !== undefined && Number.isFinite(gatewayCost) && usage.measured) usage.gatewayCost = gatewayCost;
       await record(usage);
       const choices = payload.choices;
       if (!Array.isArray(choices) || choices.length !== 1) throw protocolError();
