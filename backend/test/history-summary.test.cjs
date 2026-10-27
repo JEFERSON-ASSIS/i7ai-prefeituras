@@ -36,7 +36,55 @@ test('missingItems não se engana com prefixos: item perdido dentro de um item m
   assert.deepEqual(missingItems('inciso IV', 'inciso IVX'), ['inciso iv']);
   // Items inside a longer one at the same place are not separate items (the process number carries its year).
   assert.deepEqual(criticalItems('processo 2026.0001234-5'), ['2026.0001234-5']);
-  assert.deepEqual(missingItems('processo 2026.0001234-5 e o ano 2026', 'Processo 2026.0001234-5.'), ['2026']);
+  // The summary may state a number inside a longer one (the year is still literally there).
+  assert.deepEqual(missingItems('processo 2026.0001234-5 e o ano 2026', 'Processo 2026.0001234-5.'), []);
+});
+
+// Each row: source, a summary that keeps the item (other spelling when equivalent), a summary that swaps it.
+const LEGAL_CASES = [
+  ['Conforme o artigo 75.', 'Cita o art. 75.', 'Cita o artigo 57.'],
+  ['Conforme art 75.', 'Artigo 75 citado.', 'Art 76 citado.'],
+  ['Vide arts. 74 e 75.', 'Artigos 74 e 75.', 'Arts. 74 e 76.'],
+  ['Nos termos do § 2º.', 'Pelo §2º.', 'Pelo § 3º.'],
+  ['Parágrafo único do art. 5.', 'art. 5, § único.', 'art. 5, § 1º.'],
+  ['Com base no inciso IV.', 'inciso IV aplicado.', 'inciso VI aplicado.'],
+  ['Art. 75, II da lei.', 'art. 75, inciso II.', 'art. 75, inciso III.'],
+  ['Prazo de 30 dias.', 'prazo: 30 dias úteis.', 'prazo de 20 dias.'],
+  ['Vigência de 12 meses.', 'vigência 12 meses.', 'vigência 12 anos.'],
+  ['Garantia de 5 anos.', 'garantia de 5 anos.', 'garantia de 3 anos.'],
+  ['Multa de 500 reais.', 'multa de 500 reais.', 'multa de 50 reais.'],
+  ['Resposta em 48 horas.', 'resposta em 48 horas.', 'resposta em 24 horas.'],
+  ['Reajuste de 10%.', 'reajuste de 10 %.', 'reajuste de 1%.'],
+  ['Juros de 12,5 por cento.', 'juros de 12,5%.', 'juros de 12%.'],
+  ['O 1º colocado vence.', 'o 1º colocado.', 'o 2º colocado.'],
+  ['Até 15 de março de 2026.', 'até 15/03/2026.', 'até 15 de maio de 2026.'],
+  ['Até 15/03/2026.', 'até 15 de março de 2026.', 'até 16/03/2026.'],
+  ['Lei nº 14.133/2021.', 'Lei 14.133/2021.', 'Lei nº 14.133/2012.'],
+  ['Lei 8.666/93.', 'Lei nº 8.666/1993.', 'Lei 8.666/94.'],
+  ['Lei 14.133.', 'Lei nº 14.133, de 2021, e Lei 14.133/2021.', 'Lei 14.113.'],
+  ['Lei Complementar 101/2000.', 'LC 101/2000.', 'Lei 101/2000.'],
+  ['Decreto nº 10.024/2019.', 'Decreto 10.024/2019.', 'Decreto 10.024/2020.'],
+  ['Valor de R$ 1.000,00.', 'R$ 1.000.', 'R$ 10.000,00.'],
+  ['Processo 0001234-56.2026.8.26.0100.', 'processo 0001234-56.2026.8.26.0100', 'processo 0001234-56.2026.8.26.0101'],
+  ['Processo nº 123/2026.', 'processo 123 / 2026', 'processo 124/2026'],
+  ['Protocolo 2026-000123.', 'protocolo 2026-000123', 'protocolo 2026-000132'],
+  ['CPF 123.456.789-09.', 'CPF 123.456.789-09', 'CPF 123.456.789-90'],
+  ['CNPJ 12.345.678/0001-90.', 'CNPJ 12.345.678/0001-90', 'CNPJ 12.345.678/0002-90'],
+];
+
+test('itens jurídicos: cada forma é reconhecida, a grafia equivalente passa e a troca é recusada', () => {
+  for (const [source, kept, swapped] of LEGAL_CASES) {
+    assert.ok(criticalItems(source).length > 0, 'sem itens: ' + source);
+    assert.deepEqual(missingItems(source, kept), [], source + ' → ' + kept);
+    assert.ok(missingItems(source, swapped).length > 0, source + ' → ' + swapped + ' deveria faltar');
+  }
+});
+
+test('itens jurídicos: números pequenos sem unidade não viram itens; números dentro de outros não são confundidos', () => {
+  assert.deepEqual(criticalItems('Foram 3 reuniões e 2 pareceres.'), []);
+  assert.deepEqual(missingItems('art. 7 e 30 dias', 'art. 75 e 300 dias'), ['art. 7', '30 dias']);
+  assert.deepEqual(missingItems('§ 1º', '§ 10'), ['§ 1']);
+  assert.deepEqual(missingItems('12 meses', '112 meses'), ['12 meses']);
 });
 
 const messages = count => Array.from({ length: count }, (_, index) => ({ id: 'm' + (index + 1), role: index % 2 ? 'assistant' : 'user', content: 'Mensagem ' + (index + 1), createdAt: new Date(1_000 + index) }));

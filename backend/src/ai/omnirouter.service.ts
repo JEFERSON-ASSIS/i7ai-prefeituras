@@ -6,6 +6,7 @@ import { TenantAiKeyService } from './tenant-ai-key.service';
 import { LIMIT_MESSAGES } from './limit-messages';
 import type { OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
 import { SplitInstructions, joinedInstructions, neutralizeTags } from './instructions';
+import { historyWindow } from './history-summary';
 
 export type OmniRouterInput = {
   agent: { id: string; tenantId: string; systemPrompt?: string | null; temperature: unknown; maxTokens: number; advancedReasoning: boolean };
@@ -207,12 +208,7 @@ export class OmniRouterService {
   }
 
   private history(history: OmniRouterInput['history']): ChatMessage[] {
-    let size = 0;
-    return history.slice(-40).reverse().filter(item => {
-      if (!['user', 'assistant'].includes(item.role) || typeof item.content !== 'string') return false;
-      size += item.content.length;
-      return size <= 48000;
-    }).reverse().map(item => ({ role: item.role as 'user' | 'assistant', content: item.content }));
+    return historyWindow(history).map(item => ({ role: item.role as 'user' | 'assistant', content: item.content }));
   }
 
   private textInputUpperBound(request: { messages: ChatMessage[] }): number {
@@ -364,7 +360,8 @@ export class OmniRouterService {
       // With the platform's output cap on, the user is told the cap (not the agent setting) cut the answer.
       const cap = input.optimization.limiteSaida;
       const capBound = Boolean(input.outputCapApplied) && cap.ligado && cap.tokens === input.agent.maxTokens;
-      throw protocolError(capBound ? OUTPUT_LIMIT_MESSAGE : 'O OmniRouter encerrou uma resposta incompleta por limite de tokens. Aumente o limite de resposta do agente.');
+      // `truncated` lets callers (the history summary) tell a cut answer from a failure.
+      throw Object.assign(protocolError(capBound ? OUTPUT_LIMIT_MESSAGE : 'O OmniRouter encerrou uma resposta incompleta por limite de tokens. Aumente o limite de resposta do agente.'), { truncated: true });
     }
     if (round.finishReason === 'content_filter') throw protocolError('O OmniRouter interrompeu a resposta por restrições do modelo.');
     if (!['stop', 'tool_calls'].includes(round.finishReason) || (round.finishReason === 'tool_calls') !== Boolean(round.calls.length)) {

@@ -18,7 +18,7 @@ import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from '../sgdm/optimization-d
 import { CHAT_EXPORT_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedInstructions, variableInstructions } from './instructions';
 import { EXPORT_MIME, ExportFormat, exportFileName, exportTitle, parseAnswer, renderExport } from './chat-export';
 import { ConversationSummaryService } from './conversation-summary.service';
-import { SUMMARY_PREFIX, estimateTokens } from './history-summary';
+import { SUMMARY_MAX_REJECTIONS, estimateTokens, historyWindow, summaryMessage, summaryThreshold } from './history-summary';
 
 export { CHAT_EXPORT_INSTRUCTIONS };
 
@@ -27,8 +27,8 @@ type AttachmentContext = { documents: { id: string; name: string; mimeType: stri
 type ChatRunOptions = { signal?: AbortSignal; onDelta?: (text: string) => void };
 export type ChatStreamEvent = 'delta' | 'complete';
 export type AgentExecutionInput = { message: string; userId?: string; automationId?: string; conversationId?: string; signal?: AbortSignal; modelId?: string; attachmentContext?: AttachmentContext; historyComplete?: boolean;
-  /** Conversation summary system message (OmniRouter only) and the prompt tokens it saved versus today's history. */
-  summary?: string; historySavedTokens?: number };
+  /** Conversation summary system message (OmniRouter only) and the history that would go without it (savings baseline). */
+  summary?: string; summaryBaseline?: HistoryItem[] };
 export type AgentAnswer = { answer: string; sources: RagSource[]; agentId: string; provider: string; model: string; toolCalls?: { callId: string; name: string }[]; usage: { inputTokens: number; outputTokens: number; cost: number; costConfigured: boolean; latencyMs: number; measured: boolean } };
 type PreparedAnswer = { quotaScope: QuotaScope; result: AgentAnswer; modelId: string; modelName: string; providerName: string; userId?: string; automationId?: string; tenantId: string };
 type ProviderAnswer = { answer: string; inputTokens: number; outputTokens: number; measured: boolean; cost?: number; toolCalls: { callId: string; name: string }[] };
@@ -59,9 +59,10 @@ export class AiGatewayService {
     let historyAttachmentIds: string[] = [];
     let historyCut = false;
     let optimization: OtimizacaoEfetiva | undefined;
-    let summary: string | undefined; let historySavedTokens = 0;
+    let summary: string | undefined; let summaryBaseline: HistoryItem[] | undefined;
     // Messages not yet covered by a summary, known when one is active; otherwise counted after the answer.
     let unsummarized: number | undefined; let summaryDisabled = false; let storedMessages = 0;
+    let rejection: { throughId: string | null; count: number } = { throughId: null, count: 0 };
     if (input.conversationId) {
       const conversation = await this.prisma.conversation.findFirst({
         where: { id: input.conversationId, tenantId, userId, agentId },
@@ -75,6 +76,7 @@ export class AiGatewayService {
       history = [...recent].reverse().map(({ role, content }) => ({ role, content }));
       historyAttachmentIds = recent.flatMap(item => (item.attachments || []).map(link => link.documentId));
       storedMessages = conversation.messages.length; summaryDisabled = conversation.summaryDisabled === true;
+      rejection = { throughId: conversation.summaryRejectedThroughMessageId ?? null, count: conversation.summaryRejections ?? 0 };
       if (this.omniConfigured()) {
         // Read once per call and handed to generate(); never throws (SGDM down: defaults).
         optimization = this.optimization ? await this.optimization.effective(tenantId, agentId) : structuredClone(OPTIMIZATION_DEFAULTS);
@@ -83,10 +85,9 @@ export class AiGatewayService {
           if (through) {
             const after = await this.prisma.message.findMany({ where: { conversationId: conversation.id, createdAt: { gt: through.createdAt } }, orderBy: { createdAt: 'desc' }, take: SUMMARIZED_HISTORY_MESSAGES + 1, select: { role: true, content: true } });
             const kept = after.slice(0, SUMMARIZED_HISTORY_MESSAGES).reverse().map(({ role, content }) => ({ role, content }));
-            summary = SUMMARY_PREFIX + conversation.summary;
-            // Today's history (the bounded last 40) against summary + unsummarized messages; never negative.
-            const today = this.boundedHistory(history).map(item => item.content).join('');
-            historySavedTokens = Math.max(0, estimateTokens(today) - estimateTokens(summary + kept.map(item => item.content).join('')));
+            summary = summaryMessage(conversation.summary);
+            // Savings are measured in generate(), on what is actually sent once both histories are bounded.
+            summaryBaseline = history;
             history = kept; unsummarized = after.length;
             // The summary covers the older messages, so the history counts as complete for the second cache marker.
             historyCut = after.length > SUMMARIZED_HISTORY_MESSAGES;
@@ -106,7 +107,7 @@ export class AiGatewayService {
     options.signal?.throwIfAborted();
     // A new conversation gets its id up front so even its first (usually costliest) call carries the conversa tag.
     const newConversationId = input.conversationId ? undefined : randomUUID();
-    const prepared = await this.generate(agentId, tenantId, { message: input.message, userId, conversationId: input.conversationId ?? newConversationId, modelId, attachmentContext, signal: options.signal, historyComplete: !historyCut, ...(summary ? { summary, historySavedTokens } : {}) }, history, options.onDelta, optimization);
+    const prepared = await this.generate(agentId, tenantId, { message: input.message, userId, conversationId: input.conversationId ?? newConversationId, modelId, attachmentContext, signal: options.signal, historyComplete: !historyCut, ...(summary ? { summary, summaryBaseline } : {}) }, history, options.onDelta, optimization);
     try {
     options.signal?.throwIfAborted();
     const { conversationId, messages } = await this.prisma.$transaction(async (tx) => {
@@ -139,7 +140,7 @@ export class AiGatewayService {
       options.signal?.throwIfAborted();
       return { conversationId: id, messages: [userMessage, assistantMessage] };
     });
-    if (input.conversationId && optimization) this.scheduleSummary(tenantId, conversationId, optimization, summaryDisabled, unsummarized, storedMessages);
+    if (input.conversationId && optimization) this.scheduleSummary(tenantId, conversationId, optimization, summaryDisabled, unsummarized, storedMessages, rejection);
     return { ...prepared.result, modelId: prepared.modelId, modelName: prepared.modelName, conversationId, messages };
     } catch (error) { await this.quota.finish(prepared.quotaScope, 'FAILED'); throw error; }
   }
@@ -148,12 +149,20 @@ export class AiGatewayService {
    * After the answer is saved: a summary job only when the unsummarized messages (the two just written included)
    * reach N, so planSummary always has a batch. Fire and forget: nothing here can fail or slow the chat.
    */
-  private scheduleSummary(tenantId: string, conversationId: string, optimization: OtimizacaoEfetiva, disabled: boolean, unsummarized: number | undefined, stored: number) {
-    if (!this.summaries || disabled || !optimization.resumoHistorico.ligado) return;
+  private scheduleSummary(tenantId: string, conversationId: string, optimization: OtimizacaoEfetiva, disabled: boolean, unsummarized: number | undefined, stored: number, rejection: { throughId: string | null; count: number }) {
+    // Three rejections in a row stop the summary until the user turns it off and on.
+    if (!this.summaries || disabled || !optimization.resumoHistorico.ligado || rejection.count >= SUMMARY_MAX_REJECTIONS) return;
     const summaries = this.summaries;
+    const threshold = summaryThreshold(optimization.resumoHistorico.mensagens);
     void (async () => {
       const before = unsummarized ?? (stored <= HISTORY_MESSAGES ? stored : await this.prisma.message.count({ where: { conversationId } }) - 2);
-      if (before + 2 >= optimization.resumoHistorico.mensagens) await summaries.enqueue(tenantId, conversationId);
+      if (before + 2 < threshold) return;
+      if (rejection.throughId) {
+        // After a rejection, only N/2 new messages past the rejected batch justify another try.
+        const rejected = await this.prisma.message.findFirst({ where: { id: rejection.throughId, conversationId }, select: { createdAt: true } });
+        if (rejected && await this.prisma.message.count({ where: { conversationId, createdAt: { gt: rejected.createdAt } } }) < Math.floor(threshold / 2)) return;
+      }
+      await summaries.enqueue(tenantId, conversationId);
     })().catch(() => { /* enqueue() already logs; a failed count only skips this turn. */ });
   }
 
@@ -185,7 +194,7 @@ export class AiGatewayService {
       where: { id, tenantId, userId }, include: { agent: { select: { id: true, name: true } }, model: conversationModel, messages: { orderBy: { createdAt: 'desc' }, take: 1000, include: { attachments: { include: { document: attachmentDocument } } } } },
     });
     if (!conversation) throw new NotFoundException('Conversa não encontrada.');
-    const { summary: content, summaryThroughMessageId, summaryModelId: _model, summaryUpdatedAt, summaryDisabled, ...rest } = conversation;
+    const { summary: content, summaryThroughMessageId, summaryModelId: _model, summaryUpdatedAt, summaryDisabled, summaryRejectedThroughMessageId: _rejected, summaryRejections: _rejections, ...rest } = conversation;
     const summary = content && summaryThroughMessageId ? { content, throughMessageId: summaryThroughMessageId, updatedAt: summaryUpdatedAt } : null;
     return { ...rest, summary, summaryDisabled, messages: [...conversation.messages].reverse().map(item => ({ ...item, attachments: (item.attachments || []).filter(link => link.document.ownerUserId === userId && link.document.tenantId === tenantId).map(link => ({ document: { id: link.document.id, name: link.document.name, mimeType: link.document.mimeType, sizeBytes: link.document.sizeBytes.toString(), status: link.document.status } })) })) };
   }
@@ -197,8 +206,8 @@ export class AiGatewayService {
     await this.prisma.$transaction(async tx => {
       // updatedAt is kept so the conversation does not jump to the top of the list.
       await tx.conversation.update({ where: { id }, data: disabled
-        ? { summaryDisabled: true, summary: null, summaryThroughMessageId: null, summaryModelId: null, summaryUpdatedAt: null, updatedAt: conversation.updatedAt }
-        : { summaryDisabled: false, updatedAt: conversation.updatedAt } });
+        ? { summaryDisabled: true, summary: null, summaryThroughMessageId: null, summaryModelId: null, summaryUpdatedAt: null, summaryRejectedThroughMessageId: null, summaryRejections: 0, updatedAt: conversation.updatedAt }
+        : { summaryDisabled: false, summaryRejectedThroughMessageId: null, summaryRejections: 0, updatedAt: conversation.updatedAt } });
       await tx.auditLog.create({ data: { tenantId, userId, event: disabled ? 'conversation.summary_disabled' : 'conversation.summary_enabled', resource: 'conversation', resourceId: id, metadata: {} } });
     });
     return { id, summaryDisabled: disabled };
@@ -268,13 +277,18 @@ export class AiGatewayService {
     // A cut history changes the cached prefix on every turn, so its last message is not marked for caching.
     const historyComplete = input.historyComplete !== false && bounded.length === history.length;
     history = bounded;
+    // Summary savings on what is really sent: both histories bounded the same way and cut to the OmniRouter window.
+    const sentText = (items: HistoryItem[]) => historyWindow(items).map(item => item.content).join('');
+    const historySavedTokens = omniConfigured && input.summary && input.summaryBaseline
+      ? Math.max(0, estimateTokens(sentText(this.boundedHistory(input.summaryBaseline, historyBudget))) - estimateTokens(input.summary + sentText(bounded)))
+      : 0;
     const executionAgent = { ...agent, maxTokens: maxOutput };
     const provider = model.provider.slug.toLowerCase();
     const settings = { temperature: Number(agent.temperature), maxTokens: maxOutput, advancedReasoning: agent.advancedReasoning };
     const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice ?? model.inputPrice) || 0, cacheWriteInputPrice: Number(model.cacheWriteInputPrice ?? model.inputPrice) || 0, conversationId: input.conversationId, kind: 'resposta' });
     try {
     const generated = omniConfigured
-      ? await this.runOmniRouter(executionAgent, model, instructions, message, history, historyComplete, functions, input, quotaScope, optimization, outputCapApplied, onDelta)
+      ? await this.runOmniRouter(executionAgent, model, instructions, message, history, historyComplete, functions, input, quotaScope, optimization, outputCapApplied, onDelta, historySavedTokens)
       : process.env.AI_GATEWAY_URL
         ? await this.externalGateway(executionAgent, model.slug, provider, joined, message, history, sources, settings, functions, input, quotaScope)
         : await this.openAi(executionAgent, tenantId, model, joined, message, history, functions, input, quotaScope, onDelta);
@@ -287,9 +301,9 @@ export class AiGatewayService {
     } catch (error) { await this.quota.finish(quotaScope, 'FAILED'); throw error; }
   }
 
-  private async runOmniRouter(agent: LoadedAgent, model: LoadedModel, instructions: SplitInstructions, message: string, history: HistoryItem[], historyComplete: boolean, functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, optimization: OtimizacaoEfetiva, outputCapApplied: boolean, onDelta?: (text: string) => void): Promise<ProviderAnswer> {
+  private async runOmniRouter(agent: LoadedAgent, model: LoadedModel, instructions: SplitInstructions, message: string, history: HistoryItem[], historyComplete: boolean, functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, optimization: OtimizacaoEfetiva, outputCapApplied: boolean, onDelta?: (text: string) => void, historySavedTokens = 0): Promise<ProviderAnswer> {
     if (!this.omni) throw new ServiceUnavailableException('O adaptador OmniRouter está indisponível.');
-    return this.omni.generate({ agent, model, instructions, message, history, historyComplete, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, quotaScope, optimization, outputCapApplied, ...(input.summary ? { summary: input.summary, historySavedTokens: input.historySavedTokens } : {}) });
+    return this.omni.generate({ agent, model, instructions, message, history, historyComplete, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, quotaScope, optimization, outputCapApplied, ...(input.summary ? { summary: input.summary, historySavedTokens } : {}) });
   }
 
   private async openAi(agent: LoadedAgent, tenantId: string, selectedModel: LoadedModel, instructions: string, message: string, history: HistoryItem[], functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, onDelta?: (text: string) => void): Promise<ProviderAnswer> {

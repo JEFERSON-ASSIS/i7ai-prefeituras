@@ -384,6 +384,9 @@ model Conversation {
   summaryModelId          String?   @db.Uuid
   summaryUpdatedAt        DateTime?
   summaryDisabled         Boolean   @default(false)
+  /// Last message of the batch whose summary was rejected, and consecutive rejections (counts only, never text).
+  summaryRejectedThroughMessageId String? @db.Uuid
+  summaryRejections               Int     @default(0)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
