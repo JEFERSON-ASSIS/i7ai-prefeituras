@@ -119,11 +119,13 @@ model Department {
   name        String
   description String?
   status      String  @default("ACTIVE")
+  /// Id of the SGDM setor this department mirrors; null for legacy local departments.
+  externalId  String?
   tenant      Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   users       User[]
   agents      Agent[]
 
-  @@unique([tenantId, name])
+  @@unique([tenantId, externalId])
   @@map("departments")
 }
 

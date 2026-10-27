@@ -1,9 +1,10 @@
-import { ForbiddenException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, Optional, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { gatewayBaseAllowed } from '../catalog/model-route-policy';
 import { assertLicenseCapacity } from '../catalog/license-policy';
 import { SGDM_MANAGED_ROLES, permissionEntries, rolesFromSgdm } from './role-catalog';
+import { SgdmOrganizationService, departmentExternalIdFor } from '../sgdm/sgdm-organization.service';
 
 export type SgdmIdentity = { id: string; tenantId: string; email: string; name: string; tenantName: string; roles: string[] };
 
@@ -18,9 +19,10 @@ const MAX_CACHE = 5000;
  */
 @Injectable()
 export class SgdmIdentityService {
+  private readonly logger = new Logger(SgdmIdentityService.name);
   private readonly cache = new Map<string, { expires: number; identity: SgdmIdentity }>();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly organization?: SgdmOrganizationService) {}
 
   enabled(env: NodeJS.ProcessEnv = process.env) {
     return Boolean(env.SGDM_API_URL?.trim());
@@ -139,5 +141,26 @@ export class SgdmIdentityService {
         await tx.auditLog.create({ data: { tenantId: identity.tenantId, userId: identity.id, event: existing ? 'user.sgdm.roles_synced' : 'user.sgdm.created', resource: 'users', resourceId: identity.id, metadata: { roles: identity.roles } } });
       }
     });
+    // After the commit: the organization sync updates the tenant row in its own transaction,
+    // which would wait on the row lock held by the identity transaction above.
+    await this.syncDepartment(identity);
+  }
+
+  /** Places the user in the department of their SGDM setor. Never blocks the login. */
+  private async syncDepartment(identity: SgdmIdentity) {
+    if (!this.organization) return;
+    try {
+      const org = await this.organization.sync(identity.tenantId);
+      if (!org) return;
+      const externalId = departmentExternalIdFor(org, identity.id);
+      const department = externalId
+        ? await this.prisma.department.findUnique({ where: { tenantId_externalId: { tenantId: identity.tenantId, externalId } }, select: { id: true } })
+        : null;
+      const departmentId = department?.id ?? null;
+      const user = await this.prisma.user.findUnique({ where: { id: identity.id }, select: { departmentId: true } });
+      if (user && user.departmentId !== departmentId) await this.prisma.user.update({ where: { id: identity.id }, data: { departmentId } });
+    } catch (error) {
+      this.logger.warn('Não foi possível atualizar o departamento do usuário ' + identity.id + ' (' + (error instanceof Error ? error.message : String(error)) + ').');
+    }
   }
 }

@@ -1,10 +1,10 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateUserDto, DepartmentDto, LicenseDto, SettingsDto, UpdateDepartmentDto, UpdateUserDto } from './catalog.dto';
-import { assertLicenseCapacity } from './license-policy';
+import { LicenseDto } from './catalog.dto';
 import { publicModelCapabilities } from './model-capabilities';
 import { SgdmAccessService } from '../sgdm/sgdm-access.service';
+import { DEFAULT_TIMEZONE } from './tenant-settings';
 
 const userSelect = {
   id: true, tenantId: true, departmentId: true, name: true, email: true, status: true,
@@ -12,10 +12,6 @@ const userSelect = {
   roles: { include: { role: { include: { permissions: { include: { permission: true } } } } } },
 } satisfies Prisma.UserSelect;
 
-function conflict(error: unknown): never {
-  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('Este nome ou e-mail já está cadastrado');
-  throw error;
-}
 function largeInteger(value: string | undefined, field: string): bigint | undefined {
   if (value === undefined) return undefined;
   if (!/^\d{1,19}$/.test(value) || BigInt(value) > 9223372036854775807n) throw new BadRequestException(`${field} deve ser um inteiro positivo`);
@@ -48,49 +44,28 @@ function serializeModel(model: Prisma.AiModelGetPayload<{ include: typeof modelI
 export class CatalogService {
   constructor(private readonly prisma: PrismaService, private readonly access?: SgdmAccessService) {}
 
+  /**
+   * Read-only: with the SGDM integration, settings are the prefeitura's (settingsFromSgdm, written on login)
+   * and defaultModelId is the prefeitura's released default model. Standalone mode keeps the stored values.
+   */
   async settings(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true, name: true, slug: true, settings: true } });
     if (!tenant) throw new NotFoundException('Prefeitura não encontrada');
     const raw = tenant.settings && typeof tenant.settings === 'object' && !Array.isArray(tenant.settings) ? tenant.settings : {};
     const allowed = ['organizationName', 'timezone', 'locale', 'defaultModelId', 'theme', 'retentionDays', 'allowSignups'];
-    const settings = Object.fromEntries(Object.entries(raw).filter(([key]) => allowed.includes(key)));
-    return { ...tenant, settings: { timezone: 'America/Cuiaba', locale: 'pt-BR', theme: 'system', ...settings } };
-  }
-
-  async updateSettings(tenantId: string, input: SettingsDto, actorId?: string) {
-    if (input.timezone) { try { new Intl.DateTimeFormat('pt-BR', { timeZone: input.timezone }); } catch { throw new BadRequestException('Fuso horário inválido'); } }
-    if (input.defaultModelId && !await this.prisma.aiModel.findUnique({ where: { id: input.defaultModelId } })) throw new BadRequestException('Modelo não encontrado');
-    await this.prisma.$transaction(async (tx) => {
-      const tenant = await tx.tenant.findUnique({ where: { id: tenantId } });
-      if (!tenant) throw new NotFoundException('Prefeitura não encontrada');
-      const previous = tenant.settings && typeof tenant.settings === 'object' && !Array.isArray(tenant.settings) ? tenant.settings : {};
-      await tx.tenant.update({ where: { id: tenantId }, data: { settings: { ...previous, ...input } as Prisma.InputJsonObject } });
-      await tx.auditLog.create({ data: { tenantId, userId: actorId, event: 'settings.updated', resource: 'settings', resourceId: tenantId, metadata: { fields: Object.keys(input) } } });
-    });
-    return this.settings(tenantId);
+    const settings: Record<string, unknown> = { timezone: DEFAULT_TIMEZONE, locale: 'pt-BR', theme: 'system', ...Object.fromEntries(Object.entries(raw).filter(([key]) => allowed.includes(key))) };
+    let released: Awaited<ReturnType<SgdmAccessService['allowed']>> | undefined;
+    // SGDM down with nothing cached must not take the read-only settings page down with it.
+    try { released = await this.access?.allowed(tenantId); } catch { released = undefined; }
+    if (released !== null && this.access) {
+      const model = released?.defaultSlug ? await this.prisma.aiModel.findFirst({ where: { slug: released.defaultSlug, active: true }, select: { id: true } }) : null;
+      settings.defaultModelId = model?.id ?? null;
+    }
+    return { ...tenant, settings };
   }
 
   departments(tenantId: string) {
     return this.prisma.department.findMany({ where: { tenantId }, include: { _count: { select: { users: true, agents: true } } }, orderBy: { name: 'asc' } });
-  }
-  async createDepartment(tenantId: string, input: DepartmentDto, actorId?: string) {
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        const department = await tx.department.create({ data: { tenantId, name: input.name.trim(), description: input.description, status: input.status ?? 'ACTIVE' } });
-        await tx.auditLog.create({ data: { tenantId, userId: actorId, event: 'department.created', resource: 'departments', resourceId: department.id, metadata: { status: department.status } } });
-        return department;
-      });
-    } catch (error) { conflict(error); }
-  }
-  async updateDepartment(tenantId: string, id: string, input: UpdateDepartmentDto, actorId?: string) {
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        if (!await tx.department.findFirst({ where: { id, tenantId } })) throw new NotFoundException('Departamento não encontrado');
-        const department = await tx.department.update({ where: { id }, data: { name: input.name?.trim(), description: input.description, status: input.status } });
-        await tx.auditLog.create({ data: { tenantId, userId: actorId, event: 'department.updated', resource: 'departments', resourceId: department.id, metadata: { status: department.status } } });
-        return department;
-      });
-    } catch (error) { conflict(error); }
   }
   /** Read-only catalog: the SGDM Central de IA decides which models are active and released to whom. */
   async models(actor: { sub: string; tenantId: string; roles: string[] }) {
@@ -109,55 +84,6 @@ export class CatalogService {
   }
   users(tenantId: string) { return this.prisma.user.findMany({ where: { tenantId }, select: userSelect, orderBy: { name: 'asc' } }); }
   roles() { return this.prisma.role.findMany({ include: { permissions: { include: { permission: true } } }, orderBy: { name: 'asc' } }); }
-
-  private async validateUserRelations(tx: Prisma.TransactionClient, tenantId: string, input: UpdateUserDto, actorId: string) {
-    if (input.departmentId && !await tx.department.findFirst({ where: { id: input.departmentId, tenantId } })) throw new BadRequestException('Departamento não pertence à prefeitura');
-    if (input.roleIds !== undefined) {
-      if (!Array.isArray(input.roleIds) || new Set(input.roleIds).size !== input.roleIds.length) throw new BadRequestException('Perfis inválidos');
-      const roles = await tx.role.findMany({ where: { id: { in: input.roleIds } } });
-      if (roles.length !== input.roleIds.length) throw new BadRequestException('Perfil não encontrado');
-      if (roles.some((role) => role.name === 'SUPER_ADMIN')) {
-        const superAdmin = await tx.userRole.findFirst({ where: { userId: actorId, user: { tenantId, status: 'ACTIVE' }, role: { name: 'SUPER_ADMIN' } } });
-        if (!superAdmin) throw new ForbiddenException('Somente um SUPER_ADMIN pode atribuir este perfil');
-      }
-    }
-  }
-
-  async createUser(tenantId: string, input: CreateUserDto, actorId: string) {
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        await this.validateUserRelations(tx, tenantId, input, actorId);
-        if (input.status !== 'SUSPENDED') await assertLicenseCapacity(tx, tenantId, 'users');
-        const user = await tx.user.create({ data: { tenantId, name: input.name.trim(), email: input.email.trim().toLowerCase(), departmentId: input.departmentId, status: input.status ?? 'ACTIVE', roles: { create: (input.roleIds ?? []).map((roleId) => ({ roleId })) } }, select: userSelect });
-        await tx.auditLog.create({ data: { tenantId, userId: actorId, event: 'user.created', resource: 'users', resourceId: user.id, metadata: { status: user.status } } });
-        if (input.roleIds?.length) await tx.auditLog.create({ data: { tenantId, userId: actorId, event: 'permission.changed', resource: 'users', resourceId: user.id, metadata: { roleIds: input.roleIds } } });
-        return user;
-      });
-    } catch (error) { conflict(error); }
-  }
-
-  async updateUser(tenantId: string, id: string, input: UpdateUserDto, actorId: string) {
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        const existing = await tx.user.findFirst({ where: { id, tenantId }, include: { roles: { select: { roleId: true } } } });
-        if (!existing) throw new NotFoundException('Usuário não encontrado');
-        await this.validateUserRelations(tx, tenantId, input, actorId);
-        if (existing.status === 'SUSPENDED' && input.status !== undefined && input.status !== 'SUSPENDED') await assertLicenseCapacity(tx, tenantId, 'users');
-        const privilegedTarget = await tx.userRole.findFirst({ where: { userId: id, role: { name: 'SUPER_ADMIN' } } });
-        if (privilegedTarget && !await tx.userRole.findFirst({ where: { userId: actorId, role: { name: 'SUPER_ADMIN' } } })) throw new ForbiddenException('Somente um SUPER_ADMIN pode editar este usuário');
-        if (input.roleIds !== undefined) {
-          await tx.userRole.deleteMany({ where: { userId: id } });
-          if (input.roleIds.length) await tx.userRole.createMany({ data: input.roleIds.map((roleId) => ({ userId: id, roleId })) });
-        }
-        const user = await tx.user.update({ where: { id }, data: { name: input.name?.trim(), email: input.email?.trim().toLowerCase(), departmentId: input.departmentId, status: input.status }, select: userSelect });
-        await tx.auditLog.create({ data: { tenantId, userId: actorId, event: 'user.updated', resource: 'users', resourceId: user.id, metadata: { status: user.status } } });
-        if (input.roleIds !== undefined && (input.roleIds.length !== existing.roles.length || input.roleIds.some((roleId) => !existing.roles.some((binding) => binding.roleId === roleId)))) {
-          await tx.auditLog.create({ data: { tenantId, userId: actorId, event: 'permission.changed', resource: 'users', resourceId: user.id, metadata: { roleIds: input.roleIds } } });
-        }
-        return user;
-      });
-    } catch (error) { conflict(error); }
-  }
 
   async licensing(tenantId: string) {
     const [license, users, agents, automations, knowledgeBases, storage, usage] = await Promise.all([

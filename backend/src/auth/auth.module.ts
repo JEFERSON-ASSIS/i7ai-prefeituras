@@ -5,9 +5,10 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 import { APP_GUARD } from '@nestjs/core';
 import { PermissionsGuard } from './permissions.guard';
 import { SgdmIdentityService } from './sgdm-identity.service';
+import { SgdmModule } from '../sgdm/sgdm.module';
 
 @Module({
-  imports: [JwtModule.register({})],
+  imports: [JwtModule.register({}), SgdmModule],
   controllers: [AuthController],
   providers: [JwtAuthGuard, SgdmIdentityService, { provide: APP_GUARD, useClass: PermissionsGuard }],
   exports: [JwtAuthGuard, SgdmIdentityService, JwtModule],

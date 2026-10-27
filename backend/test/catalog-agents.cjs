@@ -161,14 +161,6 @@ test('agent create denies a foreign department without creating an agent', async
   assert.equal(writes, 0);
 });
 
-test('user PATCH denies assigning SUPER_ADMIN as an ordinary admin before mutation', async () => {
-  let writes = 0;
-  const tx = { user: { findFirst: async () => ({ id: 'user' }) }, role: { findMany: async () => [{ id: 'super-role', name: 'SUPER_ADMIN' }] }, userRole: { findFirst: async () => null, deleteMany: async () => { writes++; } } };
-  const service = new CatalogService({ $transaction: (fn) => fn(tx) });
-  await assert.rejects(service.updateUser('tenant-a', 'user', { roleIds: ['super-role'] }, 'ordinary-admin'), /Somente um SUPER_ADMIN/);
-  assert.equal(writes, 0);
-});
-
 test('license limits cannot be increased by a tenant admin', async () => {
   const service = new CatalogService({ userRole: { findFirst: async () => null } });
   await assert.rejects(service.updateLicense('tenant-a', { maxUsers: 100000 }, 'ordinary-admin'), /Somente SUPER_ADMIN/);
@@ -217,34 +209,6 @@ test('archived agent reactivation cannot bypass capacity', async () => {
   const service = new AgentsService({ $transaction: (fn) => fn(tx) });
   await assert.rejects(service.update('tenant-a', 'agent', { status: 'ACTIVE' }), /Limite de agentes/);
   assert.equal(writes, 0);
-});
-
-test('suspended user reactivation cannot bypass capacity', async () => {
-  const { tx } = licenseTransaction(); let writes = 0;
-  tx.user.findFirst = async () => ({ id: 'user', status: 'SUSPENDED' }); tx.user.update = async () => { writes++; };
-  const service = new CatalogService({ $transaction: (fn) => fn(tx) });
-  await assert.rejects(service.updateUser('tenant-a', 'user', { status: 'ACTIVE' }, 'admin'), /Limite de usuários/);
-  assert.equal(writes, 0);
-});
-
-test('new identities are created without a local password or hash', async () => {
-  const { tx } = licenseTransaction({ maxUsers: 3 });
-  tx.user.create = async (query) => {
-    assert.equal(Object.hasOwn(query.data, 'passwordHash'), false);
-    assert.equal(query.select.passwordHash, undefined);
-    return { id: 'new-user', email: query.data.email };
-  };
-  const service = new CatalogService({ $transaction: (fn) => fn(tx) });
-  assert.deepEqual(await service.createUser('tenant-a', { name: 'User', email: 'USER@example.test' }, 'admin'), { id: 'new-user', email: 'user@example.test' });
-});
-
-test('identity updates never replace existing legacy hashes', async () => {
-  const {tx}=licenseTransaction();
-  tx.user.findFirst=async()=>({id:'user',status:'ACTIVE',roles:[]});
-  tx.userRole={findFirst:async()=>null};
-  tx.user.update=async({data})=>{assert.equal(Object.hasOwn(data,'passwordHash'),false);return{id:'user',status:'ACTIVE'};};
-  const service=new CatalogService({$transaction:fn=>fn(tx)});
-  await service.updateUser('tenant-a','user',{name:'Changed'},'admin');
 });
 
 test('automation capacity excludes the current automation during activation', async () => {

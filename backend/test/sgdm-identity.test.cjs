@@ -3,13 +3,14 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 require('reflect-metadata');
 const { SgdmIdentityService } = require('../dist/auth/sgdm-identity.service');
+const { SgdmOrganizationService } = require('../dist/sgdm/sgdm-organization.service');
 const { JwtAuthGuard } = require('../dist/auth/jwt-auth.guard');
 const roleCatalog = require('../dist/auth/role-catalog');
 const scriptCatalog = require('../scripts/permissions.cjs');
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
 const USER = '22222222-2222-4222-8222-222222222222';
-const envKeys = ['SGDM_API_URL', 'SGDM_INTERNAL_HOSTS', 'SGDM_SESSION_CACHE_SECONDS', 'NODE_ENV'];
+const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_ORG_CACHE_SECONDS', 'SGDM_INTERNAL_HOSTS', 'SGDM_SESSION_CACHE_SECONDS', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 test.afterEach(() => envKeys.forEach(key => savedEnv[key] === undefined ? delete process.env[key] : process.env[key] = savedEnv[key]));
 
@@ -20,7 +21,7 @@ async function sgdm(t, respond) {
   const calls = [];
   const server = http.createServer((request, response) => {
     calls.push({ url: request.url, auth: request.headers.authorization, forwarded: request.headers['x-forwarded-for'] });
-    const [status, body] = respond(calls.length);
+    const [status, body] = respond(calls.length, request.url);
     response.writeHead(status, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(body));
   });
@@ -32,13 +33,33 @@ async function sgdm(t, respond) {
 }
 
 // In-memory stand-in for the Prisma calls used by the sync.
-function database({ users = [], licenses = [] } = {}) {
-  const db = { tenants: [], users: [...users], roles: [], permissions: [], rolePermissions: [], userRoles: [], audits: [] };
+function database({ users = [], licenses = [], departments = [] } = {}) {
+  const db = { tenants: [], users: users.map(item => ({ ...item })), departments: departments.map(item => ({ ...item })), roles: [], permissions: [], rolePermissions: [], userRoles: [], audits: [] };
   let id = 0;
   const next = () => 'id-' + (++id);
   const tx = {
     $queryRaw: async () => [],
-    tenant: { upsert: async ({ where, create, update }) => { const found = db.tenants.find(item => item.id === where.id); if (found) return Object.assign(found, update); db.tenants.push({ ...create }); return create; } },
+    tenant: {
+      upsert: async ({ where, create, update }) => { const found = db.tenants.find(item => item.id === where.id); if (found) return Object.assign(found, update); db.tenants.push({ ...create }); return create; },
+      update: async ({ where, data }) => Object.assign(db.tenants.find(item => item.id === where.id), data),
+    },
+    department: {
+      upsert: async ({ where, create, update }) => {
+        const key = where.tenantId_externalId;
+        const found = db.departments.find(item => item.tenantId === key.tenantId && item.externalId === key.externalId);
+        if (found) return Object.assign(found, update);
+        const record = { id: 'dep-' + create.externalId, ...create };
+        db.departments.push(record);
+        return record;
+      },
+      updateMany: async ({ where, data }) => {
+        const hits = db.departments.filter(item => item.tenantId === where.tenantId && item.status !== where.status.not
+          && where.OR.some(clause => clause.externalId === null ? item.externalId == null : !clause.externalId.notIn.includes(item.externalId)));
+        hits.forEach(item => Object.assign(item, data));
+        return { count: hits.length };
+      },
+      findUnique: async ({ where }) => db.departments.find(item => item.tenantId === where.tenantId_externalId.tenantId && item.externalId === where.tenantId_externalId.externalId) || null,
+    },
     license: { findFirst: async () => licenses[0] || null },
     user: {
       findUnique: async ({ where }) => db.users.find(item => (where.id && item.id === where.id) || (where.email && item.email === where.email)) || null,
@@ -162,4 +183,67 @@ test('the guard uses SGDM when configured and the local mirror for roles and per
   assert.equal(await guard.canActivate({ switchToHttp: () => ({ getRequest: () => request }) }), true);
   assert.deepEqual(lookup, { id: USER, tenantId: TENANT, status: 'ACTIVE', tenant: { status: 'ACTIVE' } });
   assert.deepEqual(request.user.permissions, ['conversations:write']);
+});
+
+const prefeitura = { nome: 'Prefeitura de Sinop', cidade: 'Sinop', estado: 'MT', fuso: 'America/Cuiaba' };
+const setor = (id, nome, extra = {}) => ({ id, nome, sigla: null, ativo: true, ordem: 0, membros: [{ usuarioId: USER, papel: 'MEMBRO' }], ...extra });
+
+// Fake SGDM answering /auth/me and the organization contract of `GET /integracoes/i7ai/organizacao/:tenantId`.
+async function sgdmWithOrganization(t, organization) {
+  const calls = await sgdm(t, (_, url) => url.includes('/integracoes/i7ai/organizacao/') ? organization() : [200, me(['I7AI_USAR'])]);
+  process.env.SGDM_INTEGRATION_KEY = 'integration-secret';
+  process.env.SGDM_SESSION_CACHE_SECONDS = '0';
+  process.env.SGDM_ORG_CACHE_SECONDS = '0';
+  return calls;
+}
+const quiet = service => { service.logger = { warn: () => {} }; return service; };
+
+test('login places the user in the department of their SGDM setor', async t => {
+  const calls = await sgdmWithOrganization(t, () => [200, { prefeitura, setores: [setor('s-compras', 'Compras', { ordem: 2 }), setor('s-gabinete', 'Gabinete', { membros: [{ usuarioId: USER, papel: 'CHEFE' }], ordem: 5 })] }]);
+  const { db, prisma } = database();
+  await new SgdmIdentityService(prisma, new SgdmOrganizationService(prisma)).resolve(token());
+  const organizationCall = calls.find(call => call.url.includes('/organizacao/'));
+  assert.equal(organizationCall.url, `/api/v1/integracoes/i7ai/organizacao/${TENANT}`);
+  assert.equal(organizationCall.auth, 'Bearer integration-secret');
+  assert.equal(db.users[0].departmentId, 'dep-s-gabinete');
+  assert.equal(db.tenants[0].name, 'Prefeitura de Sinop');
+  assert.equal(db.tenants[0].settings.timezone, 'America/Cuiaba');
+});
+
+test('two setores with the same name and an inactivated setor with users never break the login', async t => {
+  let setores = [setor('s-1', 'Compras'), setor('s-2', 'Compras', { ordem: 1, membros: [] })];
+  await sgdmWithOrganization(t, () => [200, { prefeitura, setores }]);
+  const { db, prisma } = database({ departments: [{ id: 'legacy', tenantId: TENANT, externalId: null, name: 'Compras', status: 'ACTIVE' }] });
+  const service = new SgdmIdentityService(prisma, new SgdmOrganizationService(prisma));
+  await service.resolve(token());
+  assert.equal(db.users[0].departmentId, 'dep-s-1');
+  assert.deepEqual(db.departments.map(item => [item.id, item.status]), [['legacy', 'INACTIVE'], ['dep-s-1', 'ACTIVE'], ['dep-s-2', 'ACTIVE']]);
+  setores = [setor('s-1', 'Compras', { ativo: false }), setor('s-2', 'Compras', { ordem: 1, membros: [] })];
+  await service.resolve(token(Math.floor(Date.now() / 1000) + 7200));
+  assert.equal(db.users[0].departmentId, null);
+  assert.equal(db.departments.find(item => item.id === 'dep-s-1').status, 'INACTIVE');
+});
+
+test('/organizacao answering 500 completes the login and keeps the department', async t => {
+  await sgdmWithOrganization(t, () => [500, { message: 'boom' }]);
+  const existing = { id: USER, tenantId: TENANT, email: 'maria@prefeitura.gov.br', name: 'Maria Servidora', status: 'ACTIVE', departmentId: 'dep-anterior' };
+  const { db, prisma } = database({ users: [existing] });
+  let departmentWrites = 0;
+  const update = prisma.user.update;
+  prisma.user.update = async query => { if ('departmentId' in query.data) departmentWrites++; return update(query); };
+  const identity = await new SgdmIdentityService(prisma, quiet(new SgdmOrganizationService(prisma))).resolve(token());
+  assert.equal(identity.id, USER);
+  assert.equal(db.users[0].departmentId, 'dep-anterior');
+  assert.equal(departmentWrites, 0);
+});
+
+test('the department is written only when it changes', async t => {
+  await sgdmWithOrganization(t, () => [200, { prefeitura, setores: [setor('s-1', 'Compras')] }]);
+  const existing = { id: USER, tenantId: TENANT, email: 'maria@prefeitura.gov.br', name: 'Maria Servidora', status: 'ACTIVE', departmentId: 'dep-s-1' };
+  const { prisma } = database({ users: [existing], departments: [{ id: 'dep-s-1', tenantId: TENANT, externalId: 's-1', name: 'Compras', status: 'ACTIVE' }] });
+  let departmentWrites = 0;
+  const update = prisma.user.update;
+  prisma.user.update = async query => { if ('departmentId' in query.data) departmentWrites++; return update(query); };
+  await new SgdmIdentityService(prisma, new SgdmOrganizationService(prisma)).resolve(token());
+  assert.equal(departmentWrites, 0);
 });

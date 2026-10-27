@@ -85,46 +85,6 @@ test('tool creation and update audits omit configuration, body and credential re
   assert.ok(!/private|secret|Authorization/i.test(JSON.stringify(f.state().audits)));
 });
 
-test('user creation and role changes audit the administrator without password or hash values', async () => {
-  const f = fixture({ seededRoles: ['old-role'] });
-  const user = await f.catalog.createUser(tenantId, { name: 'User', email: 'user@example.test', status: 'SUSPENDED', roleIds: ['new-role'] }, actorId);
-  await f.catalog.updateUser(tenantId, 'user-existing', { name: 'private-name', roleIds: ['new-role'] }, actorId);
-  assertAudit(f.state().audits[0], 'user.created', 'users', user.id);
-  assertAudit(f.state().audits[1], 'permission.changed', 'users', user.id);
-  assertAudit(f.state().audits[2], 'user.updated', 'users', 'user-existing');
-  assertAudit(f.state().audits[3], 'permission.changed', 'users', 'user-existing');
-  assert.ok(!/private|password|\$2[ab]\$/i.test(JSON.stringify(f.state().audits)));
-});
-
-test('equivalent role sets do not create a duplicate permission change audit', async () => {
-  const f = fixture({ seededRoles: ['role-a', 'role-b'] });
-  await f.catalog.updateUser(tenantId, 'user-existing', { roleIds: ['role-b', 'role-a'] }, actorId);
-  assert.equal(f.state().audits.length, 1);
-  assert.equal(f.state().audits[0].event, 'user.updated');
-  await f.catalog.updateUser(tenantId, 'user-existing', { roleIds: [] }, actorId);
-  assert.equal(f.state().audits.at(-1).event, 'permission.changed');
-  assert.deepEqual(f.state().audits.at(-1).metadata.roleIds, []);
-});
-
-test('department create and update audits stay within the tenant and omit descriptions', async () => {
-  const f = fixture();
-  const department = await f.catalog.createDepartment(tenantId, { name: 'Department', description: 'private-description' }, actorId);
-  await f.catalog.updateDepartment(tenantId, department.id, { status: 'INACTIVE' }, actorId);
-  assertAudit(f.state().audits[0], 'department.created', 'departments', department.id);
-  assertAudit(f.state().audits[1], 'department.updated', 'departments', department.id);
-  await assert.rejects(f.catalog.updateDepartment('tenant-b', department.id, { name: 'Forbidden' }, actorId), /Departamento não encontrado/);
-  assert.equal(f.state().audits.length, 2);
-  assert.ok(!JSON.stringify(f.state().audits).includes('private'));
-});
-
-test('settings updates audit changed field names without copying their values', async () => {
-  const f = fixture();
-  await f.catalog.updateSettings(tenantId, { organizationName: 'private-organization', timezone: 'America/Cuiaba' }, actorId);
-  assertAudit(f.state().audits[0], 'settings.updated', 'settings', tenantId);
-  assert.deepEqual(f.state().audits[0].metadata, { fields: ['organizationName', 'timezone'] });
-  assert.ok(!JSON.stringify(f.state().audits).includes('private'));
-});
-
 test('license creation and update audit the platform administrator and affected license', async () => {
   const f = fixture();
   await f.catalog.updateLicense(tenantId, { status: 'ACTIVE', startDate: '2020-01-01T00:00:00.000Z' }, actorId);
@@ -138,10 +98,6 @@ test('audit write failure rejects each mutation and rolls back its transaction',
   const mutations = [
     f => f.agents.create(tenantId, { name: 'Agent', status: 'ARCHIVED', systemPrompt: 'Help' }, actorId),
     f => f.tools.create(tenantId, { name: 'Tool', type: 'HTTP_REQUEST', allowedDomains: ['example.test'], config: { endpoint: 'https://example.test' } }, actorId),
-    f => f.catalog.createDepartment(tenantId, { name: 'Department' }, actorId),
-    f => f.catalog.updateSettings(tenantId, { organizationName: 'Changed' }, actorId),
-    f => f.catalog.createUser(tenantId, { name: 'User', email: 'user@example.test', status: 'SUSPENDED' }, actorId),
-    f => f.catalog.updateUser(tenantId, 'user-existing', { roleIds: ['new-role'] }, actorId),
     f => f.catalog.updateLicense(tenantId, { status: 'ACTIVE' }, actorId),
   ];
   for (const mutate of mutations) {
@@ -157,8 +113,25 @@ test('controllers pass authenticated actor IDs to every audited CRUD mutation', 
   const agents = new AgentsController(spy), tools = new ToolsController(spy), catalog = new CatalogController(spy);
   agents.create(req, {}); agents.update(req, 'agent', {});
   tools.create(req, {}); tools.update(req, 'tool', {});
-  catalog.createDepartment(req, {}); catalog.updateDepartment(req, 'department', {});
-  catalog.updateSettings(req, {}); catalog.createUser(req, {}); catalog.updateUser(req, 'user', {}); catalog.updateLicense(req, {});
-  assert.equal(calls.length, 10);
+  catalog.updateLicense(req, {});
+  assert.equal(calls.length, 5);
   for (const { args } of calls) { assert.equal(args[0], tenantId); assert.equal(args.at(-1), actorId); }
+});
+
+test('users, departments and settings come from SGDM: their write handlers no longer exist', () => {
+  const { RequestMethod } = require('@nestjs/common');
+  const { METHOD_METADATA, PATH_METADATA } = require('@nestjs/common/constants');
+  for (const name of ['updateSettings', 'createDepartment', 'updateDepartment', 'createUser', 'updateUser']) {
+    assert.equal(CatalogController.prototype[name], undefined, 'controller ' + name);
+    assert.equal(CatalogService.prototype[name], undefined, 'service ' + name);
+  }
+  assert.equal(CatalogService.prototype.validateUserRelations, undefined);
+  const routes = Object.getOwnPropertyNames(CatalogController.prototype)
+    .map(name => CatalogController.prototype[name])
+    .filter(handler => typeof handler === 'function' && Reflect.getMetadata(PATH_METADATA, handler) !== undefined)
+    .map(handler => RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)] + ' ' + Reflect.getMetadata(PATH_METADATA, handler));
+  for (const path of ['settings', 'departments', 'users', 'roles']) assert.ok(routes.includes('GET ' + path), path);
+  for (const route of routes.filter(route => !route.startsWith('GET '))) assert.ok(!/settings|departments|users/.test(route), route);
+  const dto = require('../dist/catalog/catalog.dto');
+  for (const name of ['SettingsDto', 'DepartmentDto', 'UpdateDepartmentDto', 'CreateUserDto', 'UpdateUserDto']) assert.equal(dto[name], undefined, name);
 });

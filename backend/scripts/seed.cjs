@@ -15,7 +15,8 @@ async function seed(){
   const provider=await prisma.aiProvider.upsert({where:{slug:'openai'},update:{},create:{name:'OpenAI',slug:'openai'}});
   const model=process.env.OPENAI_MODEL||'gpt-4o-mini';
   await prisma.aiModel.upsert({where:{providerId_slug:{providerId:provider.id,slug:model}},update:{},create:{providerId:provider.id,name:model,slug:model}});
-  for(const name of ['Administração','Jurídico','Compras'])await prisma.department.upsert({where:{tenantId_name:{tenantId:tenant.id,name}},update:{},create:{tenantId:tenant.id,name}});
+  // Local standalone departments (no SGDM setor): names are no longer unique in the schema, so look them up first.
+  for(const name of ['Administração','Jurídico','Compras'])if(!await prisma.department.findFirst({where:{tenantId:tenant.id,name,externalId:null}}))await prisma.department.create({data:{tenantId:tenant.id,name}});
   if(!await prisma.license.findFirst({where:{tenantId:tenant.id}}))await prisma.license.create({data:{tenantId:tenant.id,maxUsers:10,maxAgents:10,maxAutomations:10,maxKnowledgeBases:10,maxTokens:1000000n}});
   console.log('Catálogo, perfis e acesso de desenvolvimento inicializados.');
 }
