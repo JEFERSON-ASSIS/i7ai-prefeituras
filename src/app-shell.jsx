@@ -7,6 +7,7 @@ import { useApi } from './hooks/useApi';
 import { getSgdmContext, getSgdmToken } from './integration/sgdmBridge';
 import { State } from './components/Common';
 import { AgentsPage } from './features/AgentPages';
+import { parseHashRoute } from './integration/hashRoute';
 import { ChatPage } from './features/ChatPage';
 import { KnowledgePage } from './features/KnowledgePage';
 import { ToolsPage } from './features/ToolPages';
@@ -40,6 +41,13 @@ function readCentralConversationId() {
   return id && uuidPattern.test(id) ? id : '';
 }
 export function App() {
+  // Deep link #/chat?c=<uuid>: kept until the chat page opens that conversation.
+  const [deepLinkId, setDeepLinkId] = useState(() => parseHashRoute(window.location.hash).conversationId);
+  useEffect(() => {
+    const onHash = () => { const { conversationId } = parseHashRoute(window.location.hash); if (conversationId) setDeepLinkId(conversationId); };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
   // Read once: the SGDM Central de IA opens a conversation through ?conversa=<uuid>.
   const [centralConversationId, setCentralConversationId] = useState(readCentralConversationId);
   const [active, setActive] = useState(() => titles[getSgdmContext().modulePage] ? getSgdmContext().modulePage : 'dashboard'),
@@ -101,7 +109,7 @@ export function App() {
   if (active === 'dashboard') content = <Dashboard token={token} navigate={navigate} />;else if (active === 'agents') content = <AgentsPage token={token} notify={notify} onOpen={id => {
     setSelectedAgentId(id);
     navigate('chat');
-  }} />;else if (active === 'chat') content = <ChatPage token={token} selectedAgentId={selectedAgentId} onSelectAgent={setSelectedAgentId} />;else if (['knowledge', 'documents'].includes(active)) content = <KnowledgePage token={token} active={active} notify={notify} />;else if (['tools', 'integrations'].includes(active)) content = <ToolsPage token={token} notify={notify} />;else if (['automations', 'schedules'].includes(active)) content = <AutomationPage token={token} active={active} notify={notify} />;else if (active === 'executions') content = <ExecutionsPage token={token} notify={notify} />;else if (active === 'models') content = <ModelPage token={token} notify={notify} />;else if (active === 'reports') content = <ReportsPage token={token} />;else content = <Dashboard token={token} navigate={navigate} />;
+  }} />;else if (active === 'chat') content = <ChatPage token={token} initialConversationId={deepLinkId} onDeepLinkHandled={() => setDeepLinkId('')} selectedAgentId={selectedAgentId} onSelectAgent={setSelectedAgentId} />;else if (['knowledge', 'documents'].includes(active)) content = <KnowledgePage token={token} active={active} notify={notify} />;else if (['tools', 'integrations'].includes(active)) content = <ToolsPage token={token} notify={notify} />;else if (['automations', 'schedules'].includes(active)) content = <AutomationPage token={token} active={active} notify={notify} />;else if (active === 'executions') content = <ExecutionsPage token={token} notify={notify} />;else if (active === 'models') content = <ModelPage token={token} notify={notify} />;else if (active === 'reports') content = <ReportsPage token={token} />;else content = <Dashboard token={token} navigate={navigate} />;
   const sections = moduleNavigationGroups.map(([label, items]) => ({
     label,
     items: items.filter(([id]) => hasPermission(user.permissions, {

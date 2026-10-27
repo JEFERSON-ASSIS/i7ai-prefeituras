@@ -557,3 +557,18 @@ test('soltar arquivo sem poder anexar não abre o arquivo e explica o motivo', a
   await expect(page.getByRole('alert')).toContainText('Escolha um agente ativo para anexar arquivos.');
   expect(writes).toEqual([]);
 });
+
+test('link direto #/chat?c=<id> abre a conversa e limpa o parâmetro da URL', async ({ page }) => {
+  const id = '3f2b8c1e-5a4d-4e6f-9a7b-1c2d3e4f5a6b';
+  await mockSession(page, { overrides: { ['/conversations/' + id]: fixtures['/conversations/conversation-2'] } });
+  await page.goto('/?module=chat#/chat?c=' + id);
+  await expect(page.getByText('O relatório recomenda acompanhar a frequência escolar.')).toBeVisible();
+  await expect.poll(() => new URL(page.url()).hash).toBe('#/chat');
+});
+
+test('link direto com id inválido mantém uma conversa nova', async ({ page }) => {
+  await mockSession(page);
+  await page.goto('/?module=chat#/chat?c=nao-e-uuid');
+  await expect(page.getByLabel('Mensagem', { exact: true })).toBeVisible();
+  await expect(page.getByText('O relatório recomenda acompanhar a frequência escolar.')).toHaveCount(0);
+});

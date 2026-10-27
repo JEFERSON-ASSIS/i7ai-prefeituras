@@ -55,7 +55,7 @@ function contextAttachments(current, messages) {
   }).slice(0, 5);
 }
 
-export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
+export function ChatPage({ token, selectedAgentId, onSelectAgent, initialConversationId = '', onDeepLinkHandled }) {
   const canSend = usePermission('agents', 'execute');
   const canReadHistory = usePermission('conversations', 'read');
   const catalog = useApi(canSend ? '/chat/catalog' : '/agents', token, { agents: [], models: [] });
@@ -247,6 +247,13 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
       if (request.current === controller && !controller.signal.aborted) setLoadingHistory(false);
     }
   }
+  // Deep link (#/chat?c=<id>): open once, then drop the parameter from the URL.
+  useEffect(() => {
+    if (!initialConversationId) return;
+    if (/^#\/chat\?/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search + '#/chat');
+    onDeepLinkHandled?.();
+    if (canReadHistory) openConversation(initialConversationId);
+  }, [initialConversationId]);
   // The summary is only a cost optimization: messages stay on screen; this toggles it per conversation.
   async function changeSummary(action) {
     if (!conversationId || summaryBusy) return;

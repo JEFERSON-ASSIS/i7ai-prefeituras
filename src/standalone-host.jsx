@@ -7,10 +7,11 @@ import { App, moduleNavigationGroups } from './app-shell';
 import { getSgdmContext, getSgdmToken } from './integration/sgdmBridge';
 import { hasPermission } from './api/permissions';
 import { useApi } from './hooks/useApi';
+import { parseHashRoute } from './integration/hashRoute';
 
 const pages = new Set(moduleNavigationGroups.flatMap(([, items]) => items.map(([id]) => id)));
 const route = () => {
-  const page = location.hash.replace(/^#\//, '');
+  const { page } = parseHashRoute(location.hash);
   return pages.has(page) ? page : 'dashboard';
 };
 
