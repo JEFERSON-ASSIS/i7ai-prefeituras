@@ -85,6 +85,7 @@ model Tenant {
   auditLogs      AuditLog[]
   usage          AiUsage[]
   tokenReservations AiTokenReservation[]
+  optimizationEvents OptimizationEvent[]
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @default(now()) @updatedAt
   Conversation   Conversation[]
@@ -215,6 +216,7 @@ model Agent {
   automations       Automation[]
   executions        AutomationExecution[]
   usage             AiUsage[]
+  optimizationEvents OptimizationEvent[]
   createdAt         DateTime              @default(now())
   updatedAt         DateTime              @updatedAt
 
@@ -583,6 +585,23 @@ model AiTokenReservation {
   @@index([runId])
   @@index([tenantId, userId, createdAt])
   @@map("ai_token_reservations")
+}
+
+/// Changes made from SGDM's Central de IA (model swap and its undo). Ids and kinds only, never conversation text.
+model OptimizationEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  agentId     String?  @db.Uuid
+  /// TROCA_MODELO
+  kind        String
+  fromModelId String?  @db.Uuid
+  toModelId   String?  @db.Uuid
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent       Agent?   @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@map("optimization_events")
 }
 
 model AuditLog {
