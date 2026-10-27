@@ -1,0 +1,39 @@
+{
+ "items": [
+  {
+   "title": "Ato que autoriza a Contratação Direta nº 10/2024",
+   "description": "ARROZ PARA MERENDA ESCOLAR",
+   "item_url": "/compras/46643474000152/2024/25",
+   "document_type": "edital",
+   "numero_sequencial": "25",
+   "ano": "2024",
+   "orgao_cnpj": "46643474000152",
+   "orgao_nome": "MUNICIPIO DE PARAIBUNA",
+   "unidade_nome": "PREFEITURA MUNICIPAL DE PARAIBUNA - SP",
+   "municipio_nome": "Paraibuna",
+   "uf": "SP",
+   "modalidade_licitacao_nome": "Dispensa",
+   "data_publicacao_pncp": "2024-06-07T09:18:15.984689",
+   "createdAt": "2026-09-30T00:04:58.903462",
+   "tem_resultado": true
+  },
+  {
+   "title": "Aviso de Contratação Direta nº 202501712/2025",
+   "description": "AQUISIÇÃO DE MERENDA ESCOLAR ( ARROZ)",
+   "item_url": "/compras/07954480000179/2025/1216",
+   "document_type": "edital",
+   "numero_sequencial": "1216",
+   "ano": "2025",
+   "orgao_cnpj": "07954480000179",
+   "orgao_nome": "ESTADO DO CEARA",
+   "unidade_nome": "EEFM SANTO AMARO",
+   "municipio_nome": "Fortaleza",
+   "uf": "CE",
+   "modalidade_licitacao_nome": "Dispensa",
+   "data_publicacao_pncp": "2025-02-24T17:08:05.164583",
+   "createdAt": "2026-09-30T01:39:56.462513",
+   "tem_resultado": true
+  }
+ ],
+ "total": 8722
+}
