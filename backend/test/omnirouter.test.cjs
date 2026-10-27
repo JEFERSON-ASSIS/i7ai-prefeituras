@@ -454,7 +454,7 @@ test('gateway reasons pick a clear message without exposing the provider text', 
   let reason = 'litellm.AuthenticationError: OpenAIException - The api_key client option must be set';
   await provider(t, (_body, response) => json(response, { error: { message: reason } }, reason.includes('Invalid model') ? 400 : 401));
   const missing = fixture();
-  await assert.rejects(missing.service.generate(missing.input), error => { assert.match(error.message, /Chaves dos provedores de IA/); assert.doesNotMatch(error.message, /OpenAIException/); return true; });
+  await assert.rejects(missing.service.generate(missing.input), error => { assert.match(error.message, /Chaves da plataforma/); assert.doesNotMatch(error.message, /OpenAIException/); return true; });
   reason = '/chat/completions: Invalid model name passed in model=openai/x';
   const unknown = fixture();
   await assert.rejects(unknown.service.generate(unknown.input), /não está disponível no gateway/);

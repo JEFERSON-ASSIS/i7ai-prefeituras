@@ -46,7 +46,7 @@ export class SgdmIdentityService {
     this.cache.delete(key);
 
     const identity = this.parse(await this.fetchMe(token, clientIp));
-    if (!identity.roles.length) throw new ForbiddenException('Seu perfil no SGDM não tem acesso ao i7Ai. Peça ao administrador uma permissão I7AI_USAR, I7AI_CONSTRUIR ou I7AI_ADMINISTRAR.');
+    if (!identity.roles.length) throw new ForbiddenException('Seu perfil no SGDM não tem acesso ao i7Ai. O acesso é concedido pelo dono da plataforma (permissão I7AI_USAR, I7AI_CONSTRUIR ou I7AI_ADMINISTRAR): peça a ele.');
     try {
       await this.sync(identity);
     } catch (error) {

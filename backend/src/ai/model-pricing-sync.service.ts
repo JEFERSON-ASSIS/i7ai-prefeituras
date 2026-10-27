@@ -7,6 +7,8 @@ import { litellmCall } from './litellm-admin';
 /** SGDM provider slug -> display name of the i7Ai provider created for it. */
 const PROVIDER_NAMES: Record<string, string> = { openai: 'OpenAI', anthropic: 'Anthropic (Claude)', gemini: 'Google Gemini' };
 const BOOLEAN_CAPABILITIES = ['supportsVision', 'supportsTools', 'supportsReasoning', 'supportsPromptCaching'] as const;
+/** Provider slugs older deploys/scripts used for the same vendor (configure-omniroute.cjs wrote `google` for Gemini). */
+const PROVIDER_ALIASES: Record<string, string[]> = { gemini: ['gemini', 'google'] };
 type SgdmModel = { slug: string; nome: string; provedor: string; capacidades?: Record<string, unknown> | null };
 
 function syncInterval() {
@@ -100,13 +102,34 @@ export class ModelPricingSyncService implements OnModuleInit, OnModuleDestroy {
       const slug = item.slug.trim();
       const name = (typeof item.nome === 'string' && item.nome.trim() ? item.nome.trim() : slug).slice(0, 160);
       const where = { providerId_slug: { providerId, slug } };
-      const existing = await this.prisma.aiModel.findUnique({ where, select: { capabilities: true } });
+      let existing = await this.prisma.aiModel.findUnique({ where, select: { capabilities: true } });
+      if (!existing) {
+        // Adopt a legacy row (equivalent provider slug and/or unprefixed slug) in place: same id, so agents, usage and
+        // conversations bound to it follow the model instead of staying on a row that would be deactivated.
+        const legacy = await this.findLegacy(providerSlug, slug);
+        if (legacy) {
+          await this.prisma.aiModel.update({ where: { id: legacy.id }, data: { providerId, slug } });
+          existing = { capabilities: legacy.capabilities };
+        }
+      }
       const capabilities = mergeCapabilities(existing?.capabilities, item.capacidades);
       const row = await this.prisma.aiModel.upsert({ where, create: { providerId, slug, name, capabilities, active: true }, update: { name, capabilities, active: true }, select: { id: true } });
       if (!kept.includes(row.id)) kept.push(row.id);
     }
     const { count } = await this.prisma.aiModel.updateMany({ where: { active: true, id: { notIn: kept } }, data: { active: false } });
     return { upserted: kept.length, deactivated: count };
+  }
+
+  /** Row created under an equivalent provider slug (google = gemini) and/or without the `provider/` prefix. */
+  private async findLegacy(providerSlug: string, slug: string) {
+    const aliases = PROVIDER_ALIASES[providerSlug] ?? [providerSlug];
+    const prefix = providerSlug + '/';
+    const slugs = slug.startsWith(prefix) && slug.length > prefix.length ? [slug, slug.slice(prefix.length)] : [slug];
+    return this.prisma.aiModel.findFirst({
+      where: { slug: { in: slugs }, provider: { slug: { in: aliases } } },
+      orderBy: [{ active: 'desc' }, { id: 'asc' }],
+      select: { id: true, capabilities: true },
+    });
   }
 
   async sync(): Promise<{ updated: number; unknown: string[] }> {

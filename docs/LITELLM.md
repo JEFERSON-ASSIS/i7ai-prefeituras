@@ -65,7 +65,8 @@ Regras da Entrega 2, definidas na Central de IA do SGDM:
 - **Permissões `I7AI_*`.** Só o dono da plataforma as tem; o ADMINISTRADOR de prefeitura deixou de recebê-las (migration `20261212100000`) e só o dono atribui perfis com códigos reservados.
 - **Organização.** Os departamentos do i7Ai são os setores da prefeitura no SGDM (cada usuário em um departamento: CHEFE > ordem > nome), e nome, fuso e retenção vêm do `/settings` do SGDM. As telas Usuários, Departamentos e Configurações saíram do i7Ai.
 - **Consumo** agrupado por agente e por conversa, com nomes: a API do SGDM consulta o i7Ai (`I7AI_API_URL`) para traduzir os ids das tags.
-- **SGDM fora do ar.** O i7Ai usa o último acesso em cache por até 10 minutos (60 s de validade + janela de 600 s). No login, com o cache de organização frio, a espera pelo SGDM pode chegar a 8 s (endurecimento previsto).
+- **SGDM fora do ar.** O i7Ai usa o último acesso em cache por até 10 minutos (60 s de validade + janela de 600 s). Isso vale só para o acesso aos modelos; a validação da sessão depende do SGDM e é refeita a cada `SGDM_SESSION_CACHE_SECONDS` (60 s), então sem o SGDM os logins e as requisições novas falham após esse prazo.
+- **Execução de automação.** A execução manual usa o acesso do usuário que a disparou; as execuções agendadas usam a regra da prefeitura (sem exceção de usuário). No login, com o cache de organização frio, a espera pelo SGDM pode chegar a 8 s (endurecimento previsto).
 
 ### Variáveis
 

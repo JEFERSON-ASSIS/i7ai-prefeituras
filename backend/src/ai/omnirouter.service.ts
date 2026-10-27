@@ -347,7 +347,7 @@ export class OmniRouterService {
     if (/Rate limit exceeded for end_user/i.test(reason)) return Object.assign(new HttpException(LIMIT_MESSAGES.tenantMinute, 429), { providerStatus: status });
     const missingKey = /api_key client option must be set|api key|x-api-key|authentication/i.test(reason);
     const unknownModel = /invalid model name|model.*not found|does not exist/i.test(reason);
-    const message = missingKey ? 'A chave do provedor de IA não está cadastrada ou foi recusada. Cadastre a chave da prefeitura no SGDM (Cadastros › IA) ou a chave da plataforma em Modelos › Chaves dos provedores de IA.'
+    const message = missingKey ? 'A chave do provedor de IA não está cadastrada ou foi recusada. Cadastre a chave da prefeitura no SGDM (Cadastros › IA) ou a chave da plataforma em Central de IA › Modelos e acesso › Chaves da plataforma, no SGDM.'
       : unknownModel ? 'O modelo escolhido não está disponível no gateway de IA. Escolha outro modelo ou peça ao SUPER_ADMIN para revisar o catálogo.'
       : status === 401 || status === 403 ? 'A credencial do gateway de IA é inválida ou não tem acesso ao modelo.'
       : status === 402 ? 'O saldo da conta do provedor de IA é insuficiente.'

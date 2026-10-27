@@ -129,6 +129,10 @@ function catalogPrisma() {
     aiModel: {
       findMany: async () => rows.map(row => ({ id: row.id, slug: row.slug, capabilities: row.capabilities })),
       findUnique: async ({ where }) => rows.find(row => matches(row, where)) || null,
+      findFirst: async ({ where }) => {
+        const hits = rows.filter(row => where.slug.in.includes(row.slug) && where.provider.slug.in.includes(providers.find(item => item.id === row.providerId)?.slug));
+        return hits.sort((a, b) => Number(b.active) - Number(a.active))[0] || null;
+      },
       upsert: async ({ where, create, update }) => {
         writes.push(['model', create, update]);
         const row = rows.find(item => matches(item, where));
@@ -191,6 +195,29 @@ test('syncCatalog não sobrescreve preços', async t => {
     if (kind !== 'model') continue;
     for (const data of [create, update]) for (const field of ['inputPrice', 'outputPrice', 'cachedInputPrice', 'cacheWriteInputPrice']) assert.equal(field in data, false);
   }
+});
+
+test('syncCatalog adota a linha legada (google = gemini, slug sem prefixo) em vez de duplicar, mantendo o id dos agentes', async t => {
+  await sgdmCatalog(t, { modelos: [
+    { slug: 'gemini/gemini-2.5-flash', nome: 'Gemini Flash', provedor: 'gemini' },
+    { slug: 'openai/gpt-4o-mini', nome: 'gpt-4o-mini', provedor: 'openai' },
+  ] });
+  const prisma = catalogPrisma();
+  prisma.providers.push({ id: 'p-google', slug: 'google', name: 'Google' });
+  prisma.rows.push({ id: 'legacy-g', providerId: 'p-google', slug: 'gemini/gemini-2.5-flash', name: 'old', active: true, capabilities: null });
+  prisma.rows.find(row => row.id === 'm2').slug = 'gpt-4o-mini';
+  const before = prisma.rows.length;
+  const service = new ModelPricingSyncService(prisma);
+  const result = await service.syncCatalog();
+  assert.equal(prisma.rows.length, before, 'nenhuma linha duplicada');
+  const gemini = prisma.rows.find(row => row.id === 'legacy-g');
+  assert.deepEqual([gemini.providerId, gemini.slug, gemini.active, gemini.name], ['p-gemini', 'gemini/gemini-2.5-flash', true, 'Gemini Flash']);
+  const mini = prisma.rows.find(row => row.id === 'm2');
+  assert.deepEqual([mini.providerId, mini.slug, mini.active], ['p-openai', 'openai/gpt-4o-mini', true]);
+  assert.equal(mini.inputPrice, '0.150000', 'preços preservados');
+  assert.deepEqual(result, { upserted: 2, deactivated: 1 });
+  await service.syncCatalog();
+  assert.equal(prisma.rows.length, before, 'idempotente');
 });
 
 test('syncCatalog com resposta inválida ou SGDM fora não desativa nada', async t => {

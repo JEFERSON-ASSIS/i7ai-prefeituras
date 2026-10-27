@@ -45,7 +45,11 @@ export class AgentsService {
 
   private async validateRelations(tx: Prisma.TransactionClient, tenantId: string, input: UpdateAgentDto) {
     if (input.departmentId && !await tx.department.findFirst({ where: { id: input.departmentId, tenantId } })) throw new BadRequestException('Departamento não pertence à prefeitura');
-    if (input.modelId && !await tx.aiModel.findUnique({ where: { id: input.modelId } })) throw new BadRequestException('Modelo não encontrado');
+    if (input.modelId) {
+      const model = await tx.aiModel.findUnique({ where: { id: input.modelId }, select: { id: true, active: true } });
+      if (!model) throw new BadRequestException('Modelo não encontrado');
+      if (model.active === false) throw new BadRequestException('Este modelo não está ativo na plataforma.');
+    }
     if (input.knowledgeBaseIds !== undefined) {
       const ids = input.knowledgeBaseIds;
       if (!Array.isArray(ids) || new Set(ids).size !== ids.length || await tx.knowledgeBase.count({ where: { id: { in: ids }, tenantId } }) !== ids.length) throw new BadRequestException('Uma ou mais bases não pertencem à prefeitura');

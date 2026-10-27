@@ -233,3 +233,23 @@ test('active license read helpers share the same expiry policy without acquiring
   assert.equal(requireActiveLicense, assertActiveLicense);
   await assert.rejects(requireActiveLicense({ license: tx.license }, 'tenant-a'), /Licença da prefeitura/);
 });
+
+test('agent create and update refuse an inactive model with a 400', async () => {
+  const { tx, writes } = reasoningAgentTransaction();
+  tx.aiModel.findUnique = async ({ where }) => ({ id: where.id, active: where.id !== 'off' });
+  const service = new AgentsService({ $transaction: (fn) => fn(tx) });
+  await assert.rejects(service.create('tenant-a', { name: 'A', systemPrompt: 'x', modelId: 'off' }), /Este modelo não está ativo na plataforma/);
+  await assert.rejects(service.update('tenant-a', 'agent', { modelId: 'off' }), /Este modelo não está ativo na plataforma/);
+  assert.ok(!writes.includes('agent.create') && !writes.includes('models.create'));
+  await service.update('tenant-a', 'agent', { modelId: 'on' });
+  assert.ok(writes.includes('models.create'));
+});
+
+test('GET /departments returns active ones plus the agent current department', async () => {
+  let where;
+  const service = new CatalogService({ department: { findMany: async (query) => { where = query.where; return []; } } });
+  await service.departments('tenant-a');
+  assert.deepEqual(where, { tenantId: 'tenant-a', OR: [{ status: 'ACTIVE' }] });
+  await service.departments('tenant-a', 'dep-1');
+  assert.deepEqual(where, { tenantId: 'tenant-a', OR: [{ status: 'ACTIVE' }, { id: 'dep-1' }] });
+});

@@ -1,4 +1,4 @@
-import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RequirePermission } from '../auth/permissions.decorator';
 import { CatalogService } from './catalog.service';
@@ -14,7 +14,7 @@ export class CatalogController {
   @Get('settings') @RequirePermission('settings', 'read')
   settings(@Req() req: AuthenticatedRequest) { return this.catalog.settings(req.user!.tenantId); }
   @Get('departments') @RequirePermission('departments', 'read')
-  departments(@Req() req: AuthenticatedRequest) { return this.catalog.departments(req.user!.tenantId); }
+  departments(@Req() req: AuthenticatedRequest, @Query('includeId') includeId?: string) { return this.catalog.departments(req.user!.tenantId, includeId && /^[0-9a-f-]{36}$/i.test(includeId) ? includeId : undefined); }
   @Get('models') @RequirePermission('models', 'read')
   models(@Req() req: AuthenticatedRequest) { return this.catalog.models(req.user!); }
   @Get('providers') @RequirePermission('models', 'read')

@@ -57,8 +57,9 @@ export class CatalogService {
     return { ...tenant, settings };
   }
 
-  departments(tenantId: string) {
-    return this.prisma.department.findMany({ where: { tenantId }, include: { _count: { select: { users: true, agents: true } } }, orderBy: { name: 'asc' } });
+  /** Active departments only; `includeId` (the agent's current department) is also returned, with its `status`, so an edit can show it as inactive. */
+  departments(tenantId: string, includeId?: string) {
+    return this.prisma.department.findMany({ where: { tenantId, OR: [{ status: 'ACTIVE' }, ...(includeId ? [{ id: includeId }] : [])] }, include: { _count: { select: { users: true, agents: true } } }, orderBy: { name: 'asc' } });
   }
   /** Read-only catalog: the SGDM Central de IA decides which models are active and released to whom. */
   async models(actor: { sub: string; tenantId: string; roles: string[] }) {

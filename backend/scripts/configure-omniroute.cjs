@@ -48,17 +48,10 @@ async function main() {
     if (!model || (model.type && !['chat', 'text', 'llm'].includes(model.type))) throw new Error('Modelo de chat não encontrado: ' + id);
     if (!isAllowedRoute(id)) throw new Error(routePolicyMessage(id));
     // Multi-family connections (antigravity/, kiro/) are attributed by model family.
-    const provider = { openai: 'openai', anthropic: 'anthropic', gemini: 'google', xai: 'xai' }[id.split('/')[0].toLowerCase()]
-      || (/claude|sonnet|opus|haiku/i.test(id) ? 'anthropic' : /gemini/i.test(id) ? 'google' : /grok/i.test(id) ? 'xai' : /gpt|\/o\d/i.test(id) ? 'openai' : undefined);
+    const provider = { openai: 'openai', anthropic: 'anthropic', gemini: 'gemini', xai: 'xai' }[id.split('/')[0].toLowerCase()]
+      || (/claude|sonnet|opus|haiku/i.test(id) ? 'anthropic' : /gemini/i.test(id) ? 'gemini' : /grok/i.test(id) ? 'xai' : /gpt|\/o\d/i.test(id) ? 'openai' : undefined);
     if (!provider) throw new Error('Provedor não mapeado para a rota: ' + id);
-    const capabilities = {};
-    for (const [remote, local] of [['vision', 'supportsVision'], ['tool_calling', 'supportsTools'], ['reasoning', 'supportsReasoning'], ['temperature', 'supportsTemperature']]) {
-      if (typeof model.capabilities?.[remote] === 'boolean') capabilities[local] = model.capabilities[remote];
-    }
-    const window = model.context_length || model.max_input_tokens;
-    if (Number.isSafeInteger(window) && window >= 4096 && window <= 2000000) capabilities.contextWindow = window;
-    if (Number.isSafeInteger(model.max_output_tokens) && model.max_output_tokens >= 1 && model.max_output_tokens <= 200000) capabilities.maxOutputTokens = model.max_output_tokens;
-    return { id, name: (model.name || id).replace(/^[a-z0-9-]+\//i, ''), provider, capabilities };
+    return { id, provider };
   });
   const tenantId = option('--tenant');
   const tenants = await prisma.tenant.findMany({ where: tenantId ? { id: tenantId } : {}, select: { id: true, name: true } });
@@ -70,22 +63,17 @@ async function main() {
   const userId = users[0].id;
   const existingAgents = await prisma.agent.findMany({ where: { tenantId: tenant.id, name: agentName }, select: { id: true, status: true } });
   if (existingAgents.length > 1) throw new Error('Há mais de um agente com esse nome. Escolha um nome único.');
-  console.log(JSON.stringify({ mode: apply ? 'apply' : 'review', tenant: tenant.name, agentName, preset, agentExists: Boolean(existingAgents.length), models }));
+  // The catalog is owned by the SGDM Central de IA (synced into ai_models): this script never creates models.
+  const aliases = { gemini: ['gemini', 'google'] };
+  const saved = [];
+  for (const model of models) {
+    const slugs = [model.id, model.id.replace(/^[a-z0-9-]+\//i, '')];
+    const row = await prisma.aiModel.findFirst({ where: { slug: { in: slugs }, provider: { slug: { in: aliases[model.provider] || [model.provider] } } }, orderBy: { active: 'desc' }, select: { id: true, slug: true, active: true } });
+    if (!row || !row.active) throw new Error('O modelo ' + model.id + ' não está ativo na plataforma. Ative o modelo na Central de IA (SGDM) primeiro e aguarde a sincronização (MODEL_SYNC_SECONDS).');
+    saved.push(row);
+  }
+  console.log(JSON.stringify({ mode: apply ? 'apply' : 'review', tenant: tenant.name, agentName, preset, agentExists: Boolean(existingAgents.length), models: models.map((model, index) => ({ ...model, id: saved[index].id, slug: saved[index].slug })) }));
   if (!apply) return;
-  const saved = await prisma.$transaction(async tx => {
-    const result = [];
-    for (const model of models) {
-      const provider = await tx.aiProvider.findUnique({ where: { slug: model.provider } });
-      if (!provider) throw new Error('Cadastre o provedor antes de continuar: ' + model.provider);
-      const where = { providerId_slug: { providerId: provider.id, slug: model.id } };
-      const existing = await tx.aiModel.findUnique({ where });
-      if (existing) { result.push(existing); continue; }
-      const row = await tx.aiModel.create({ data: { providerId: provider.id, slug: model.id, name: model.name, capabilities: model.capabilities, inputPrice: null, outputPrice: null } });
-      await tx.auditLog.create({ data: { tenantId: tenant.id, userId, event: 'model.created', resource: 'models', resourceId: row.id, metadata: { providerId: provider.id, slug: row.slug, source: 'omniroute-admin-configuration' } } });
-      result.push(row);
-    }
-    return result;
-  });
   const agents = new AgentsService(prisma);
   // Re-running configuration preserves prompts, status, bindings and model choices.
   const agent = existingAgents[0] || await agents.create(tenant.id, { name: agentName, description: presets[preset].description, systemPrompt, status: 'ACTIVE', modelId: saved[0].id, maxTokens: preset === 'general' ? 2048 : 4096, advancedReasoning: false }, userId);
