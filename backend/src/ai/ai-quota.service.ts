@@ -53,7 +53,8 @@ export class AiQuotaService {
         const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
         const from = license.startDate > month ? license.startDate : month;
         const [usage, pending] = await Promise.all([
-          tx.aiUsage.aggregate({ where: { tenantId: scope.tenantId, createdAt: { gte: from } }, _sum: { inputTokens: true, outputTokens: true } }),
+          // Answers served from the exact cache do not consume the license.
+          tx.aiUsage.aggregate({ where: { tenantId: scope.tenantId, createdAt: { gte: from }, cacheHit: false }, _sum: { inputTokens: true, outputTokens: true } }),
           tx.aiTokenReservation.aggregate({ where: { tenantId: scope.tenantId, createdAt: { gte: from }, status: { in: pendingStatuses } }, _sum: { reservedTokens: true } }),
         ]);
         const used = BigInt(usage._sum.inputTokens || 0) + BigInt(usage._sum.outputTokens || 0) + (pending._sum.reservedTokens || 0n);
@@ -81,7 +82,7 @@ export class AiQuotaService {
     }
     if (limits.tokensPerMinute !== null) {
       const [usage, pending] = await Promise.all([
-        tx.aiUsage.aggregate({ where: { tenantId, userId, createdAt: { gte: minuteAgo } }, _sum: { inputTokens: true, outputTokens: true } }),
+        tx.aiUsage.aggregate({ where: { tenantId, userId, createdAt: { gte: minuteAgo }, cacheHit: false }, _sum: { inputTokens: true, outputTokens: true } }),
         tx.aiTokenReservation.aggregate({ where: { tenantId, userId, createdAt: { gte: minuteAgo }, status: { in: pendingStatuses } }, _sum: { reservedTokens: true } }),
       ]);
       const used = BigInt(usage._sum.inputTokens || 0) + BigInt(usage._sum.outputTokens || 0) + (pending._sum.reservedTokens || 0n);
@@ -91,6 +92,7 @@ export class AiQuotaService {
 
   async record(scope: QuotaScope, id: string, usage: QuotaUsage) {
     if (![usage.inputTokens, usage.outputTokens, usage.cachedInputTokens ?? 0, usage.cacheWriteInputTokens ?? 0, usage.historySavedTokens ?? 0, usage.lowDetailImages ?? 0, usage.highDetailImages ?? 0].every(value => Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647)) throw new BadRequestException('Contadores de consumo inválidos.');
+    if (usage.requestHash !== undefined && !/^[0-9a-f]{64}$/.test(usage.requestHash)) throw new BadRequestException('Identificador de requisição inválido.');
     const persist = () => this.prisma.$transaction(async tx => {
       await tx.$queryRaw(Prisma.sql`SELECT id FROM tenants WHERE id = ${scope.tenantId}::uuid FOR UPDATE`);
       const reservation = await tx.aiTokenReservation.findFirst({ where: { id, runId: scope.runId, tenantId: scope.tenantId } });

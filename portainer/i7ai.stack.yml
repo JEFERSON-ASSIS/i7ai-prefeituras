@@ -62,7 +62,9 @@ services:
     image: redis:7-alpine
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
-    command: [sh, -ec, 'exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"']
+    # Filas BullMQ + cache exato de respostas do LiteLLM. "volatile-ttl" só despeja
+    # chaves com validade (o cache); as filas não têm validade e nunca são despejadas.
+    command: [sh, -ec, 'exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}" --maxmemory 200mb --maxmemory-policy volatile-ttl']
     volumes:
       - i7ai_redis:/data
     networks:
@@ -77,7 +79,8 @@ services:
       placement: *placement
       resources:
         limits:
-          memory: 128M
+          # 200 MB de dados + folga para o AOF. Soma da pilha: 512 + 256 + 1200 + 768 + 128 = 2864 MB.
+          memory: 256M
 
   litellm:
     # Gateway de IA privado. O SGDM e o backend chamam http://litellm:4000 pela
@@ -90,6 +93,10 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY}
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY}
       STORE_MODEL_IN_DB: 'True'
+      # Cache exato de respostas: só o Redis do i7Ai, com senha (nunca o "redis" do SGDM na SGDMNET).
+      REDIS_HOST: i7ai-redis
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
     configs:
       - source: litellm_config
         target: /app/config.yaml

@@ -55,5 +55,20 @@ litellm_settings:
   # Sem fallbacks entre modelos: o i7Ai registra custo e provedor pelo modelo
   # escolhido. Ative só depois que o backend conferir o modelo da resposta.
 
+  # Cache exato de respostas no Redis próprio do i7Ai (nunca o Redis do SGDM).
+  # "default_off": nada é cacheado sem pedido. O backend pede por requisição,
+  # só sem stream, com namespace "i7ai:<prefeitura>" para que uma prefeitura
+  # nunca receba a resposta guardada de outra. O TTL vem da Central de IA.
+  cache: true
+  cache_params:
+    type: redis
+    host: os.environ/REDIS_HOST
+    port: os.environ/REDIS_PORT
+    password: os.environ/REDIS_PASSWORD
+    namespace: litellm.exact
+    ttl: 3600
+    mode: default_off
+    supported_call_types: [acompletion, completion]
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

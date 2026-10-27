@@ -65,6 +65,10 @@ services:
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-i7ai-dev-salt}
       # Recarrega do banco as chaves cadastradas pelo i7Ai ao iniciar.
       STORE_MODEL_IN_DB: "True"
+      # Cache exato de respostas no Redis do i7Ai (vazio = sem senha no local).
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     volumes:
       - ./deploy/litellm/config.yaml:/app/config.yaml:ro
     ports:
@@ -72,6 +76,8 @@ services:
     depends_on:
       litellm-db-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_started
 
 volumes:
   i7ai_postgres_data:

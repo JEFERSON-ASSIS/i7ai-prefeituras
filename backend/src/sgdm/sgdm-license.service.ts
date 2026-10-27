@@ -177,7 +177,8 @@ export class SgdmLicenseService implements OnModuleInit, OnModuleDestroy {
         this.prisma.automation.count({ where: { tenantId, status: { not: 'ARCHIVED' } } }),
         this.prisma.knowledgeBase.count({ where: { tenantId } }),
         this.prisma.document.aggregate({ where: { tenantId }, _sum: { sizeBytes: true } }),
-        this.prisma.aiUsage.aggregate({ where: { tenantId, createdAt: { gte: month } }, _sum: { inputTokens: true, outputTokens: true } }),
+        // Same balance as the license check: exact-cache hits are left out.
+        this.prisma.aiUsage.aggregate({ where: { tenantId, createdAt: { gte: month }, cacheHit: false }, _sum: { inputTokens: true, outputTokens: true } }),
       ]);
       const from = license && license.startDate > month ? license.startDate : month;
       const reservations = await this.prisma.aiTokenReservation.aggregate({ where: { tenantId, createdAt: { gte: from }, status: { in: ['RESERVED', 'UNCERTAIN'] } }, _sum: { reservedTokens: true } });

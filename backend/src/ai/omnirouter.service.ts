@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadGatewayException, BadRequestException, HttpException, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { AgentFunction, AgentToolCall, AgentToolsService } from './agent-tools.service';
 import { AiQuotaService, QuotaScope, QuotaUsage, usageCost } from './ai-quota.service';
@@ -53,6 +54,11 @@ export const OUTPUT_LIMIT_MESSAGE = 'A resposta passou do limite de tamanho defi
 /** Bounded input estimate per attached image, above what current vision models bill for one image. */
 export const IMAGE_TOKEN_ALLOWANCE = 16_384;
 
+/** sha256 (hex) of the fields that decide an exact-cache answer. */
+function requestHash(request: unknown): string {
+  const { model, messages, tools, max_tokens, temperature } = request as JsonObject;
+  return createHash('sha256').update(JSON.stringify({ model, messages, tools, max_tokens, temperature })).digest('hex');
+}
 function object(value: unknown): JsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
 }
@@ -280,11 +286,16 @@ export class OmniRouterService {
     const record: UsageReporter = usage => report({ ...usage, lowDetailImages: low ? images : 0, highDetailImages: low ? 0 : images, ...(saved ? { historySavedTokens: saved } : {}) });
     const timeout = AbortSignal.timeout(60000);
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
+    // Exact response cache (LiteLLM, mode default_off): only without stream, for automations or when the chat is
+    // allowed, and always under the prefeitura's namespace so one prefeitura never gets another's cached answer.
+    const exact = input.optimization.cacheExato;
+    const useCache = exact.ligado && !input.onDelta && (input.origin === 'i7ai-automacao' || exact.chat);
+    const cache = useCache ? { cache: { 'use-cache': true, ttl: exact.ttlSegundos, namespace: 'i7ai:' + input.agent.tenantId } } : {};
     try {
       const response = await fetch(endpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: input.onDelta ? 'text/event-stream' : 'application/json', Authorization: 'Bearer ' + apiKey },
         // `user` = prefeitura: the gateway groups spend by it (Relatórios › Custos de IA).
-        body: JSON.stringify({ ...(request as object), user: input.agent.tenantId, metadata: { tags: this.tags(input, providerKey) }, ...(providerKey ? { api_key: providerKey } : {}) }), signal, redirect: 'error',
+        body: JSON.stringify({ ...(request as object), ...cache, user: input.agent.tenantId, metadata: { tags: this.tags(input, providerKey) }, ...(providerKey ? { api_key: providerKey } : {}) }), signal, redirect: 'error',
       });
       input.signal?.throwIfAborted();
       if (!response.ok) throw this.httpError(response.status, await this.gatewayReason(response));
@@ -304,6 +315,11 @@ export class OmniRouterService {
       const rawCost = response.headers.get('x-litellm-response-cost')?.trim();
       const gatewayCost = rawCost && /^\d+(\.\d+)?(e[+-]?\d+)?$/i.test(rawCost) ? Number(rawCost) : undefined;
       if (gatewayCost !== undefined && Number.isFinite(gatewayCost) && usage.measured) usage.gatewayCost = gatewayCost;
+      // LiteLLM sends x-litellm-cache-key only when the answer came from the cache (and repeats the original
+      // cost header): a hit costs nothing and stays out of the license balance.
+      if (useCache && response.headers.get('x-litellm-cache-key')?.trim()) { usage.cacheHit = true; usage.gatewayCost = 0; }
+      // Hash of the normalized request, only to estimate repetition; no text is stored.
+      usage.requestHash = requestHash(request);
       // Peek at the finish reason before recording, so a response cut by the token cap is marked truncated;
       // the full choice validation still happens below, after the paid usage is safely recorded.
       const peeked = Array.isArray(payload.choices) ? object(payload.choices[0])?.finish_reason : undefined;

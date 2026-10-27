@@ -209,3 +209,21 @@ test('automação (sem userId) não consulta limites do usuário; a reserva cria
  assert.equal(records.reservations[2].userId, 'user-a');
  assert.equal(lookups.length, 1);
 });
+
+test('resposta do cache exato (cacheHit) não entra no saldo usado da licença',async()=>{
+ const {quota,scope,records}=fixture(5000n);
+ await quota.runRound(scope,{},10,async record=>record({inputTokens:3000,outputTokens:1000,measured:true,cacheHit:true,gatewayCost:0}));
+ assert.equal(records.usage[0].cacheHit,true);assert.equal(records.usage[0].cost,0);
+ // 4000 tokens served from the cache: a new 2500-token reservation still fits the 5000-token license.
+ await quota.reserve({...scope,runId:'after-hit'},2500n);
+ const paid=fixture(5000n);
+ await paid.quota.runRound(paid.scope,{},10,async record=>record({inputTokens:3000,outputTokens:1000,measured:true}));
+ await assert.rejects(paid.quota.reserve({...paid.scope,runId:'after-paid'},2500n),/Saldo/);
+});
+
+test('requestHash só aceita sha256 em hexadecimal',async()=>{
+ const {quota,scope}=fixture();
+ const reservation=await quota.reserve(scope,100n);
+ await assert.rejects(quota.record(scope,reservation.id,{inputTokens:1,outputTokens:1,measured:true,requestHash:'texto da conversa'}),/inválid/);
+ await quota.record(scope,reservation.id,{inputTokens:1,outputTokens:1,measured:true,requestHash:'f'.repeat(64)});
+});

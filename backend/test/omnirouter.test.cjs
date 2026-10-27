@@ -823,3 +823,68 @@ test('cache de prompt ligado com Claude: histórico cortado pelo próprio OmniRo
   await service.generate(input);
   assert.equal(countMarkers(local.requests[0].body), 1);
 });
+
+test('cache exato: automação sem stream pede o cache com TTL e namespace da prefeitura', async t => {
+  const { requests } = await provider(t, (_b, r) => json(r, completion()));
+  const { service, input } = fixture(); input.origin = 'i7ai-automacao';
+  await service.generate(input);
+  assert.deepEqual(requests[0].body.cache, { 'use-cache': true, ttl: 3600, namespace: 'i7ai:tenant-a' });
+  const custom = fixture(); custom.input.origin = 'i7ai-automacao'; custom.input.optimization.cacheExato = { ligado: true, ttlSegundos: 120, chat: false };
+  await custom.service.generate(custom.input);
+  assert.deepEqual(requests[1].body.cache, { 'use-cache': true, ttl: 120, namespace: 'i7ai:tenant-a' });
+  const off = fixture(); off.input.origin = 'i7ai-automacao'; off.input.optimization.cacheExato = { ligado: false, ttlSegundos: 3600, chat: true };
+  await off.service.generate(off.input);
+  assert.equal('cache' in requests[2].body, false);
+});
+
+test('cache exato: chat só com chat:true e nunca em stream', async t => {
+  const { requests } = await provider(t, (body, r) => body.stream
+    ? sse(r, [frame(chunk({ role: 'assistant', content: 'ok' })), frame(chunk({}, 'stop')), frame({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }), frame('[DONE]')])
+    : json(r, completion()));
+  const chat = fixture(); // defaults: ligado, chat:false
+  await chat.service.generate(chat.input);
+  assert.equal('cache' in requests[0].body, false);
+  const allowed = fixture(); allowed.input.optimization.cacheExato = { ligado: true, ttlSegundos: 3600, chat: true };
+  await allowed.service.generate(allowed.input);
+  assert.deepEqual(requests[1].body.cache, { 'use-cache': true, ttl: 3600, namespace: 'i7ai:tenant-a' });
+  const streamed = fixture(); streamed.input.optimization.cacheExato = { ligado: true, ttlSegundos: 3600, chat: true }; streamed.input.onDelta = () => {};
+  await streamed.service.generate(streamed.input);
+  assert.equal('cache' in requests[2].body, false);
+  const streamedAuto = fixture(); streamedAuto.input.origin = 'i7ai-automacao'; streamedAuto.input.onDelta = () => {};
+  await streamedAuto.service.generate(streamedAuto.input);
+  assert.equal('cache' in requests[3].body, false);
+  assert.equal(streamed.records.usage[0].requestHash, null);
+});
+
+test('cache exato: acerto (x-litellm-cache-key) grava cacheHit e custo 0; falha mantém o custo do cabeçalho', async t => {
+  let hit = false;
+  await provider(t, (_b, response) => {
+    // LiteLLM 1.106.4 repeats the original x-litellm-response-cost on a hit and adds x-litellm-cache-key only then.
+    response.writeHead(200, { 'Content-Type': 'application/json', 'x-litellm-response-cost': '0.000123', ...(hit ? { 'x-litellm-cache-key': 'i7ai:tenant-a:' + 'a'.repeat(64) } : {}) });
+    response.end(JSON.stringify(completion()));
+  });
+  const miss = fixture(); miss.input.origin = 'i7ai-automacao';
+  const missed = await miss.service.generate(miss.input);
+  assert.equal(miss.records.usage[0].cacheHit, false); assert.equal(miss.records.usage[0].cost, 0.000123); assert.equal(missed.cost, 0.000123);
+  hit = true;
+  const cached = fixture(); cached.input.origin = 'i7ai-automacao';
+  const answer = await cached.service.generate(cached.input);
+  assert.equal(cached.records.usage[0].cacheHit, true); assert.equal(cached.records.usage[0].cost, 0); assert.equal(cached.records.usage[0].costSource, 'gateway');
+  assert.equal(answer.cost, 0); assert.equal(answer.answer, 'O orçamento é 42.');
+  // Tokens stay on the row (they measure the saving) but the row is a hit, left out of the license balance.
+  assert.equal(cached.records.usage[0].inputTokens, 30);
+  // A cache-key header on a request that did not ask for the cache is never taken as a hit.
+  const chat = fixture();
+  await chat.service.generate(chat.input);
+  assert.equal(chat.records.usage[0].cacheHit, false); assert.equal(chat.records.usage[0].cost, 0.000123);
+});
+
+test('requestHash: sha256 hexadecimal da requisição, igual para corpos iguais e sem texto', async t => {
+  await provider(t, (_b, r) => json(r, completion()));
+  const first = fixture(); const second = fixture(); const other = fixture(); other.input.message = 'Outra pergunta.';
+  await first.service.generate(first.input); await second.service.generate(second.input); await other.service.generate(other.input);
+  const hash = first.records.usage[0].requestHash;
+  assert.match(hash, /^[0-9a-f]{64}$/);
+  assert.equal(second.records.usage[0].requestHash, hash);
+  assert.notEqual(other.records.usage[0].requestHash, hash);
+});

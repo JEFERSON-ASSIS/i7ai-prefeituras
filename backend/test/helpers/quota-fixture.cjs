@@ -5,6 +5,8 @@ function quotaFixture(prisma, records, limits) {
   prisma.$queryRaw ||= async () => [];
   const matches = (row, where) => Object.entries(where || {}).every(([key, value]) => {
     if (key === 'createdAt') return row.createdAt >= value.gte;
+    // Boolean columns default to false in the database (e.g. ai_usage.cacheHit).
+    if (value === false) return !row[key];
     if (value && typeof value === 'object' && value.in) return value.in.includes(row[key]);
     return row[key] === value;
   });

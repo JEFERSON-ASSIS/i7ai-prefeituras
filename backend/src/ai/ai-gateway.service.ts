@@ -457,7 +457,8 @@ export class AiGatewayService {
     const now = new Date();
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     const periodStart = license.startDate > monthStart ? license.startDate : monthStart;
-    const usage = await this.prisma.aiUsage.aggregate({ where: { tenantId, createdAt: { gte: periodStart } }, _sum: { inputTokens: true, outputTokens: true } });
+    // Answers served from the exact cache do not consume the license.
+    const usage = await this.prisma.aiUsage.aggregate({ where: { tenantId, createdAt: { gte: periodStart }, cacheHit: false }, _sum: { inputTokens: true, outputTokens: true } });
     if (BigInt((usage._sum.inputTokens || 0) + (usage._sum.outputTokens || 0)) >= license.maxTokens) throw new BadRequestException('O limite de tokens da licença foi atingido.');
   }
 
