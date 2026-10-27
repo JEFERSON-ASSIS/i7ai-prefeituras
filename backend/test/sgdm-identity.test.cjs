@@ -81,6 +81,7 @@ function database({ users = [], licenses = [], departments = [] } = {}) {
     userRole: {
       findMany: async ({ where }) => db.userRoles.filter(link => link.userId === where.userId).map(link => ({ ...link, role: db.roles.find(role => role.id === link.roleId) })).filter(link => where.role.name.in.includes(link.role.name)),
       deleteMany: async ({ where }) => { db.userRoles = db.userRoles.filter(link => !(link.userId === where.userId && where.roleId.in.includes(link.roleId))); },
+      count: async ({ where }) => db.userRoles.filter(link => link.userId === where.userId).length,
       create: async ({ data }) => { db.userRoles.push(data); return data; },
     },
     auditLog: { create: async ({ data }) => { db.audits.push(data); return data; } },
@@ -227,6 +228,19 @@ test('a roleless user gaining an i7Ai role takes a seat: refused when the licens
   await new SgdmIdentityService(free.prisma).resolve(token());
   assert.deepEqual(free.roleNames(USER), ['USUARIO']);
   assert.deepEqual(first.roleNames(USER), []);
+});
+
+test('a user that already holds a local role is already counted: no seat check when gaining an i7Ai role', async t => {
+  process.env.NODE_ENV = 'test';
+  await sgdm(t, () => [200, me(['I7AI_USAR'])]);
+  const other = { id: '44444444-4444-4444-8444-444444444444', tenantId: TENANT, email: 'outro@prefeitura.gov.br', name: 'Outro', status: 'ACTIVE' };
+  const mine = { id: USER, tenantId: TENANT, email: 'maria@prefeitura.gov.br', name: 'Maria', status: 'ACTIVE' };
+  const full = { status: 'ACTIVE', startDate: new Date(0), endDate: null, maxUsers: 2 };
+  const { db, prisma, roleNames } = database({ users: [other, mine], licenses: [full] });
+  db.roles.push({ id: 'local', name: 'LOCAL_ROLE' });
+  db.userRoles.push({ userId: USER, roleId: 'local' });
+  await new SgdmIdentityService(prisma).resolve(token());
+  assert.deepEqual(roleNames(USER), ['LOCAL_ROLE', 'USUARIO']);
 });
 
 test('SGDM URL follows the HTTPS policy, with internal Docker hosts opt-in', async t => {
