@@ -138,7 +138,7 @@ test('later sessions follow SGDM: roles removed and added, name updated; cache a
 test('users without any i7Ai permission are refused before anything is stored', async t => {
   await sgdm(t, () => [200, me(['DOCUMENTO_CRIAR'])]);
   const { db, prisma } = database();
-  await assert.rejects(new SgdmIdentityService(prisma).resolve(token()), /I7AI_USAR/);
+  await assert.rejects(new SgdmIdentityService(prisma).resolve(token()), /não tem acesso à IA do SGDM/);
   assert.equal(db.users.length, 0);
   assert.equal(db.tenants.length, 0);
 });
@@ -158,7 +158,7 @@ test('IA_CENTRAL alone enters without i7Ai roles; other permissions set the flag
   permissoes = ['I7AI_USAR'];
   assert.equal((await service.resolve(token())).centralIa, false);
   permissoes = [];
-  await assert.rejects(service.resolve(token()), /I7AI_USAR/);
+  await assert.rejects(service.resolve(token()), /não tem acesso à IA do SGDM/);
 });
 
 test('the guard exposes centralIa from the SGDM identity, and false without SGDM', async t => {

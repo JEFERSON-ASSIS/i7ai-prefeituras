@@ -111,7 +111,7 @@ function collect(doc: PDFKit.PDFDocument) {
 
 export async function renderPdf(input: ExportDocument): Promise<Buffer> {
   const margin = 56;
-  const doc = new PDFDocument({ size: 'A4', margins: { top: 88, bottom: 72, left: margin, right: margin }, bufferPages: true, info: { Title: winAnsi(input.title), Author: winAnsi(input.organization), Creator: 'i7Ai' } });
+  const doc = new PDFDocument({ size: 'A4', margins: { top: 88, bottom: 72, left: margin, right: margin }, bufferPages: true, info: { Title: winAnsi(input.title), Author: winAnsi(input.organization), Creator: 'SGDM' } });
   const done = collect(doc);
   const width = doc.page.width - margin * 2;
   const ink = '#0f172a', muted = '#64748b', rule = '#cbd5e1';
@@ -213,7 +213,7 @@ export async function renderDocx(input: ExportDocument): Promise<Buffer> {
     }
   }
   const document = new Document({
-    creator: 'i7Ai', title: input.title, description: EXPORT_DISCLAIMER,
+    creator: 'SGDM', title: input.title, description: EXPORT_DISCLAIMER,
     styles: { default: { document: { run: { font: 'Calibri', size: 22 } } } },
     numbering: { config: [{ reference: 'ordered', levels: [0, 1, 2].map(level => ({ level, format: LevelFormat.DECIMAL, text: `%${level + 1}.`, alignment: AlignmentType.START, style: { paragraph: { indent: { left: 720 + level * 360, hanging: 360 } } } })) }] },
     sections: [{
@@ -243,7 +243,7 @@ export async function renderXlsx(input: ExportDocument): Promise<Buffer> {
   const tables = input.blocks.filter((block): block is Extract<Block, { type: 'table' }> => block.type === 'table');
   if (!tables.length) throw new Error('NO_TABLES');
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'i7Ai'; workbook.title = input.title; workbook.company = input.organization; workbook.created = input.generatedAt;
+  workbook.creator = 'SGDM'; workbook.title = input.title; workbook.company = input.organization; workbook.created = input.generatedAt;
   tables.forEach((table, index) => {
     const sheet = workbook.addWorksheet(tables.length === 1 ? 'Tabela' : 'Tabela ' + (index + 1), { views: [{ state: 'frozen', ySplit: table.header.length ? 1 : 0 }] });
     if (table.header.length) {

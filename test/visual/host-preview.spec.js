@@ -16,9 +16,9 @@ for (const width of [1440,390]) {
     for (const [route,title] of Object.entries(routes)) {
       if(width===390)await page.getByLabel('Área da prévia').selectOption(route);
       else await page.getByRole('link',{name:route==='models'?'Modelos':route==='reports'?'Relatórios':title,exact:true}).click();
-      await expect(page.getByRole('region',{name:'i7Ai',exact:true}).getByRole('heading',{level:1,name:title,exact:true})).toBeVisible();
+      await expect(page.getByRole('region',{name:'IA do SGDM',exact:true}).getByRole('heading',{level:1,name:title,exact:true})).toBeVisible();
       await expect(page.getByRole('status').filter({hasText:'Carregando'})).toHaveCount(0);
-      await expect(page.getByLabel('Área do i7Ai')).toHaveCount(0);
+      await expect(page.getByLabel('Área da IA do SGDM')).toHaveCount(0);
       await expect(page.getByRole('banner')).toHaveCount(0);
       expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
       expect(await page.evaluate(()=>({

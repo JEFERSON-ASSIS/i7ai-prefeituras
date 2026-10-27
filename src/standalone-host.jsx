@@ -68,7 +68,7 @@ export function StandaloneHost({ initialPage, notice = null, exitLabel = 'Voltar
       onLogout={exit} label="Menu do SGDM" />}
     header={null}>
     <div className="page-content">
-      <div className="preview-mobile-navigation"><div className="form-stack"><Select label="Área do i7Ai" value={active}
+      <div className="preview-mobile-navigation"><div className="form-stack"><Select label="Área da IA do SGDM" value={active}
         onChange={event => update(event.target.value, true)}>{availableGroups.map(([label, items]) =>
           <optgroup key={label} label={label}>{items.map(([id, title]) =>
             <option key={id} value={id}>{title}</option>)}</optgroup>)}</Select>

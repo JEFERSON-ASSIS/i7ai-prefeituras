@@ -9,14 +9,14 @@ for(const viewport of [{width:1440,height:1050},{width:390,height:844}]) {
     test.setTimeout(120000);
     await page.setViewportSize(viewport);const errors=[];page.on('pageerror',error=>errors.push(error.message));await mockSession(page);
     for(const [route,title] of Object.entries(pages)) {
-      await page.goto('/?module='+route);await expect(page.getByRole('region',{name:'i7Ai',exact:true}).getByRole('heading',{level:1,name:title,exact:true})).toBeVisible();
+      await page.goto('/?module='+route);await expect(page.getByRole('region',{name:'IA do SGDM',exact:true}).getByRole('heading',{level:1,name:title,exact:true})).toBeVisible();
       await expect(page.getByRole('status').filter({hasText:'Carregando'})).toHaveCount(0);
       await page.evaluate(()=>document.fonts.ready);
       await expect.poll(()=>page.locator('body').innerText()).not.toMatch(/Carregando automações|Carregando execuções/);
       if(route==='chat'){await page.getByLabel('Agente da conversa').selectOption('agent-1');await page.getByRole('button',{name:'Orientação municipal'}).click();await expect(page.getByText('Consulte o guia municipal na base de conhecimento.')).toBeVisible();}
       expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),route+' horizontal overflow').toBe(true);
       await page.screenshot({path:`${folder}/${route}-${viewport.width}.png`,fullPage:true});
-      const main=page.getByRole('region',{name:'i7Ai',exact:true});
+      const main=page.getByRole('region',{name:'IA do SGDM',exact:true});
       expect(await main.evaluate(el=>el.scrollWidth<=el.clientWidth+1),route+' main overflow').toBe(true);
       await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
       await page.screenshot({path:`${folder}/${route}-${viewport.width}-bottom.png`,fullPage:true});
@@ -45,7 +45,7 @@ test('Modelos é só consulta: sem "Novo modelo" e com o aviso do SGDM',async({p
 });
 test('?module=users cai no Dashboard',async({page})=>{
   await mockSession(page);await page.goto('/?module=users');
-  await expect(page.getByRole('region',{name:'i7Ai',exact:true}).getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();
+  await expect(page.getByRole('region',{name:'IA do SGDM',exact:true}).getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();
 });
 
 for(const [type,name] of [['INTERNAL_DATABASE','Documentos vinculados'],['EXTERNAL_SEARCH','Pesquisa autorizada']]) {
@@ -72,7 +72,7 @@ test('execução com dados removidos mantém status e explica a retenção',asyn
 
 test('módulo licensing não existe mais e cai no Dashboard',async({page})=>{
   await mockSession(page);await page.goto('/?module=licensing');
-  await expect(page.getByRole('region',{name:'i7Ai',exact:true}).getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();
+  await expect(page.getByRole('region',{name:'IA do SGDM',exact:true}).getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();
   await expect(page.getByText('Licenciamento')).toHaveCount(0);
 });
 
@@ -90,13 +90,13 @@ test('vazio, falha e carregamento usam estados oficiais',async({page})=>{
 test('navegação do módulo preserva a rota e a estrutura do SGDM',async({page})=>{
   await page.setViewportSize({width:390,height:844});await mockSession(page);await page.goto('/?module=dashboard#/sgdm/municipio');
   await page.evaluate(()=>{window.lastNavigation=null;window.addEventListener('i7ai:navigate',event=>window.lastNavigation=event.detail);});
-  await page.getByLabel('Área do i7Ai').selectOption('agents');await expect(page.getByRole('heading',{level:1,name:'Agentes de IA',exact:true})).toBeVisible();
+  await page.getByLabel('Área da IA do SGDM').selectOption('agents');await expect(page.getByRole('heading',{level:1,name:'Agentes de IA',exact:true})).toBeVisible();
   expect(await page.evaluate(()=>location.hash)).toBe('#/sgdm/municipio');expect(await page.evaluate(()=>window.lastNavigation)).toEqual({page:'agents'});
   await expect(page.getByRole('banner')).toHaveCount(0);await expect(page.getByRole('navigation')).toHaveCount(0);await expect(page.getByRole('button',{name:/Entrar|Sair/})).toHaveCount(0);
 });
 
 test('SGDM controla página e renovação de sessão sem login próprio',async({page})=>{
-  await mockSession(page,{context:{navigationManagedByHost:true}});await page.goto('/');await expect(page.getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();await expect(page.getByLabel('Área do i7Ai')).toHaveCount(0);
+  await mockSession(page,{context:{navigationManagedByHost:true}});await page.goto('/');await expect(page.getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();await expect(page.getByLabel('Área da IA do SGDM')).toHaveCount(0);
   await page.evaluate(()=>{window.__SGDM_CONTEXT__.modulePage='agents';window.dispatchEvent(new Event('sgdm:context-updated'));});await expect(page.getByRole('heading',{level:1,name:'Agentes de IA',exact:true})).toBeVisible();
   await page.evaluate(()=>{window.sessionReason=null;window.addEventListener('i7ai:session-required',event=>window.sessionReason=event.detail.reason);window.dispatchEvent(new Event('i7ai:session-expired'));});
   await expect(page.getByText('Sessão do SGDM expirada',{exact:true})).toBeVisible();expect(await page.evaluate(()=>window.sessionReason)).toBe('expired');await expect(page.getByLabel(/^Senha/)).toHaveCount(0);

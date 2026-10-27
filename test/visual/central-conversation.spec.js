@@ -57,5 +57,5 @@ test('conversa com id inválido abre o app normal', async ({ page }) => {
 test('usuário sem papéis e sem conversa vê acesso restrito', async ({ page }) => {
   await mockSession(page, { overrides: { '/auth/me': { ...fixtures['/auth/me'], roles: [], permissions: [] } } });
   await page.goto('/');
-  await expect(page.getByText('Seu acesso ao i7Ai serve só para abrir conversas pela Central de IA.')).toBeVisible();
+  await expect(page.getByText('Seu acesso à IA do SGDM serve só para abrir conversas pela Central de IA.')).toBeVisible();
 });

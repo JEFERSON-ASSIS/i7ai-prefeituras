@@ -79,22 +79,22 @@ export function App() {
   useEffect(() => {
     if (!token || expired) window.dispatchEvent(new CustomEvent('i7ai:session-required', { detail: { reason: expired ? 'expired' : 'missing' } }));
   }, [token, expired]);
-  if (!token || expired) return <section aria-label="i7Ai" className="module-layout"><Card><EmptyState icon={ShieldCheck} title={expired ? 'Sessão do SGDM expirada' : 'Sessão do SGDM indisponível'} description="A sessão e o acesso ao i7Ai são fornecidos pelo SGDM." action={<Button onClick={() => {
+  if (!token || expired) return <section aria-label="IA do SGDM" className="module-layout"><Card><EmptyState icon={ShieldCheck} title={expired ? 'Sessão do SGDM expirada' : 'Sessão do SGDM indisponível'} description="A sessão e o acesso à IA do SGDM são fornecidos pelo SGDM." action={<Button onClick={() => {
           setHostContext(getSgdmContext());
           setToken(getSgdmToken());
           setExpired(false);
           session.reload();
           window.dispatchEvent(new CustomEvent('i7ai:session-required', { detail: { reason: 'refresh' } }));
         }}>Atualizar sessão</Button>} /></Card></section>;
-  if (session.loading || session.error || !session.data) return <section aria-label="i7Ai" className="module-layout"><State loading={session.loading} error={session.error} retry={session.reload} empty={!session.data && !session.loading && !session.error && 'Verificando sessão...'} /></section>;
+  if (session.loading || session.error || !session.data) return <section aria-label="IA do SGDM" className="module-layout"><State loading={session.loading} error={session.error} retry={session.reload} empty={!session.data && !session.loading && !session.error && 'Verificando sessão...'} /></section>;
   const user = session.data;
-  if (centralConversationId) return <section aria-label="i7Ai" className="module-layout"><div className="page-content"><CentralConversationPage token={token} conversationId={centralConversationId} onClose={() => {
+  if (centralConversationId) return <section aria-label="IA do SGDM" className="module-layout"><div className="page-content"><CentralConversationPage token={token} conversationId={centralConversationId} onClose={() => {
     const url = new URL(window.location.href);
     url.searchParams.delete('conversa');
     window.history.replaceState(null, '', url.pathname + url.search + url.hash);
     setCentralConversationId('');
   }} /></div></section>;
-  if (!user.roles?.length) return <section aria-label="i7Ai" className="module-layout"><Card><EmptyState icon={ShieldCheck} title="Acesso restrito" description="Seu acesso ao i7Ai serve só para abrir conversas pela Central de IA." /></Card></section>;
+  if (!user.roles?.length) return <section aria-label="IA do SGDM" className="module-layout"><Card><EmptyState icon={ShieldCheck} title="Acesso restrito" description="Seu acesso à IA do SGDM serve só para abrir conversas pela Central de IA." /></Card></section>;
   const
     [title, description] = titles[active] || titles.dashboard;
   let content;
@@ -116,5 +116,5 @@ export function App() {
       exact: true
     }))
   })).filter(section => section.items.length);
-  return <PermissionProvider permissions={user.permissions}><section aria-label="i7Ai" className="module-layout"><PageHeader title={title} description={description} action={hostContext.navigationManagedByHost !== false ? undefined : <Select label="Área do i7Ai" value={active} onChange={event => navigate(event.target.value)}>{sections.map(section => <optgroup key={section.label} label={section.label}>{section.items.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</optgroup>)}</Select>} /><div className="page-content">{content}</div></section></PermissionProvider>;
+  return <PermissionProvider permissions={user.permissions}><section aria-label="IA do SGDM" className="module-layout"><PageHeader title={title} description={description} action={hostContext.navigationManagedByHost !== false ? undefined : <Select label="Área da IA do SGDM" value={active} onChange={event => navigate(event.target.value)}>{sections.map(section => <optgroup key={section.label} label={section.label}>{section.items.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</optgroup>)}</Select>} /><div className="page-content">{content}</div></section></PermissionProvider>;
 }

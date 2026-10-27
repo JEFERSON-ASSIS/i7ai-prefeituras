@@ -46,7 +46,7 @@ export class SgdmIdentityService {
     this.cache.delete(key);
 
     const identity = this.parse(await this.fetchMe(token, clientIp));
-    if (!identity.roles.length && !identity.centralIa) throw new ForbiddenException('Seu perfil no SGDM não tem acesso ao i7Ai. O acesso é concedido pelo dono da plataforma (permissão I7AI_USAR, I7AI_CONSTRUIR ou I7AI_ADMINISTRAR): peça a ele.');
+    if (!identity.roles.length && !identity.centralIa) throw new ForbiddenException('Seu perfil no SGDM não tem acesso à IA do SGDM. O acesso é concedido pelo dono da plataforma: peça a ele.');
     try {
       await this.sync(identity);
     } catch (error) {
@@ -148,9 +148,9 @@ export class SgdmIdentityService {
         }
       }
       const emailOwner = await tx.user.findUnique({ where: { email: identity.email }, select: { id: true } });
-      if (emailOwner && emailOwner.id !== identity.id) throw new UnauthorizedException('O e-mail deste usuário do SGDM já pertence a outro cadastro no i7Ai. Ajuste o cadastro antigo.');
+      if (emailOwner && emailOwner.id !== identity.id) throw new UnauthorizedException('O e-mail deste usuário do SGDM já pertence a outro cadastro na IA do SGDM. Ajuste o cadastro antigo.');
       const existing = await tx.user.findUnique({ where: { id: identity.id }, select: { tenantId: true, status: true, name: true, email: true } });
-      if (existing && existing.tenantId !== identity.tenantId) throw new UnauthorizedException('Este usuário pertence a outra prefeitura no i7Ai.');
+      if (existing && existing.tenantId !== identity.tenantId) throw new UnauthorizedException('Este usuário pertence a outra prefeitura na IA do SGDM.');
       if (!existing) {
         // A user with only IA_CENTRAL (no i7Ai role) takes no seat, so the owner is never blocked by a full license.
         // Without a license the user still enters and sees the license notice; with one, the user limit applies.
