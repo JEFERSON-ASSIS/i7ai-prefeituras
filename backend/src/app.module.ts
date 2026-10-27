@@ -11,10 +11,11 @@ import { AutomationsModule } from './automations/automations.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { InsightsModule } from './insights/insights.module';
 import { SgdmModule } from './sgdm/sgdm.module';
+import { CentralModule } from './central/central.module';
 import { RetentionService } from './retention/retention.service';
 
 @Module({
-  imports: [PrismaModule, AuthModule, AgentsModule, McpModule, ToolsModule, KnowledgeModule, AiGatewayModule, AutomationsModule, CatalogModule, InsightsModule, SgdmModule],
+  imports: [PrismaModule, AuthModule, AgentsModule, McpModule, ToolsModule, KnowledgeModule, AiGatewayModule, AutomationsModule, CatalogModule, InsightsModule, SgdmModule, CentralModule],
   controllers: [HealthController],
   providers: [RetentionService],
 })

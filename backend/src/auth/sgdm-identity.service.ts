@@ -7,7 +7,7 @@ import { SGDM_MANAGED_ROLES, permissionEntries, rolesFromSgdm } from './role-cat
 import { SgdmOrganizationService, departmentExternalIdFor } from '../sgdm/sgdm-organization.service';
 import { LicenseSnapshot, SgdmLicenseService } from '../sgdm/sgdm-license.service';
 
-export type SgdmIdentity = { id: string; tenantId: string; email: string; name: string; tenantName: string; roles: string[] };
+export type SgdmIdentity = { id: string; tenantId: string; email: string; name: string; tenantName: string; roles: string[]; centralIa: boolean };
 
 /** Marks a failure of the license copy so the login can retry without it (the transaction is already aborted). */
 class LicenseApplyFailed extends Error {
@@ -46,7 +46,7 @@ export class SgdmIdentityService {
     this.cache.delete(key);
 
     const identity = this.parse(await this.fetchMe(token, clientIp));
-    if (!identity.roles.length) throw new ForbiddenException('Seu perfil no SGDM não tem acesso ao i7Ai. O acesso é concedido pelo dono da plataforma (permissão I7AI_USAR, I7AI_CONSTRUIR ou I7AI_ADMINISTRAR): peça a ele.');
+    if (!identity.roles.length && !identity.centralIa) throw new ForbiddenException('Seu perfil no SGDM não tem acesso ao i7Ai. O acesso é concedido pelo dono da plataforma (permissão I7AI_USAR, I7AI_CONSTRUIR ou I7AI_ADMINISTRAR): peça a ele.');
     try {
       await this.sync(identity);
     } catch (error) {
@@ -102,7 +102,7 @@ export class SgdmIdentityService {
     }
     const name = (typeof me.nome === 'string' && me.nome.trim()) || me.email;
     const tenantName = (typeof tenant?.nome === 'string' && tenant.nome.trim()) || 'Prefeitura';
-    return { id: me.id, tenantId: me.tenantId, email: me.email.trim().toLowerCase(), name: name.slice(0, 160), tenantName: tenantName.slice(0, 180), roles: rolesFromSgdm(permissoes) };
+    return { id: me.id, tenantId: me.tenantId, email: me.email.trim().toLowerCase(), name: name.slice(0, 160), tenantName: tenantName.slice(0, 180), roles: rolesFromSgdm(permissoes), centralIa: permissoes.includes('IA_CENTRAL') };
   }
 
   private tokenExpiry(token: string) {

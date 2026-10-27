@@ -9,7 +9,7 @@ const authenticated = Symbol('i7ai-authenticated');
 export type AuthenticatedRequest = {
   headers: Record<string, string | undefined>;
   ip?: string;
-  user?: { sub: string; tenantId: string; email: string; name: string; roles: string[]; permissions: string[] };
+  user?: { sub: string; tenantId: string; email: string; name: string; roles: string[]; permissions: string[]; centralIa: boolean };
   [authenticated]?: boolean;
 };
 
@@ -27,11 +27,13 @@ export class JwtAuthGuard implements CanActivate {
     if (!token) throw new UnauthorizedException('Bearer token is required');
 
     let claims: unknown;
+    let centralIa = false;
     if (this.sgdm?.enabled()) {
       // SGDM validates the session (signature, expiry, logout, deactivation) and
       // provides fresh permissions; the local mirror is refreshed from it.
       const identity = await this.sgdm.resolve(token, request.ip);
       claims = { sub: identity.id, tenantId: identity.tenantId };
+      centralIa = identity.centralIa;
     } else {
       try {
         // The decoded issuer only selects a policy; signature verification remains mandatory.
@@ -49,7 +51,7 @@ export class JwtAuthGuard implements CanActivate {
     const roles = user.roles.map(link => link.role.name);
     const permissions = user.roles.flatMap(link => link.role.permissions.map(item => item.permission.resource + ':' + item.permission.action));
     if (roles.includes('ADMIN') || roles.includes('SUPER_ADMIN')) permissions.push('*');
-    request.user = { sub: user.id, tenantId: user.tenantId, email: user.email, name: user.name, roles, permissions: [...new Set(permissions)] };
+    request.user = { sub: user.id, tenantId: user.tenantId, email: user.email, name: user.name, roles, permissions: [...new Set(permissions)], centralIa };
     request[authenticated] = true;
     return true;
   }

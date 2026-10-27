@@ -142,6 +142,38 @@ test('users without any i7Ai permission are refused before anything is stored', 
   assert.equal(db.tenants.length, 0);
 });
 
+test('IA_CENTRAL alone enters without i7Ai roles; other permissions set the flag off', async t => {
+  let permissoes = ['IA_CENTRAL'];
+  await sgdm(t, () => [200, me(permissoes)]);
+  process.env.SGDM_SESSION_CACHE_SECONDS = '0';
+  const { db, prisma, roleNames } = database();
+  const service = new SgdmIdentityService(prisma);
+  const identity = await service.resolve(token());
+  assert.deepEqual(identity.roles, []);
+  assert.equal(identity.centralIa, true);
+  assert.deepEqual(roleNames(USER), []);
+  assert.equal(db.users.length, 1);
+  permissoes = ['I7AI_USAR'];
+  assert.equal((await service.resolve(token())).centralIa, false);
+  permissoes = [];
+  await assert.rejects(service.resolve(token()), /I7AI_USAR/);
+});
+
+test('the guard exposes centralIa from the SGDM identity, and false without SGDM', async t => {
+  await sgdm(t, () => [200, me(['IA_CENTRAL'])]);
+  const { prisma } = database();
+  const guardPrisma = { user: { findFirst: async () => ({ id: USER, tenantId: TENANT, email: 'maria@prefeitura.gov.br', name: 'Maria', roles: [] }) } };
+  const jwt = { verifyAsync: async () => ({ sub: USER, tenantId: TENANT }), decode: () => null };
+  const request = { headers: { authorization: 'Bearer ' + token() } };
+  await new JwtAuthGuard(jwt, guardPrisma, new SgdmIdentityService(prisma)).canActivate({ switchToHttp: () => ({ getRequest: () => request }) });
+  assert.equal(request.user.centralIa, true);
+  assert.deepEqual(request.user.permissions, []);
+  delete process.env.SGDM_API_URL;
+  const local = { headers: { authorization: 'Bearer x' } };
+  await new JwtAuthGuard(jwt, guardPrisma, new SgdmIdentityService(prisma)).canActivate({ switchToHttp: () => ({ getRequest: () => local }) });
+  assert.equal(local.user.centralIa, false);
+});
+
 test('SGDM rejections, outages and malformed identities never create users', async t => {
   let reply = [401, { message: 'revogado' }];
   await sgdm(t, () => reply);
