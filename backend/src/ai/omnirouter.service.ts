@@ -1,6 +1,6 @@
 import { BadGatewayException, BadRequestException, HttpException, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { AgentFunction, AgentToolCall, AgentToolsService } from './agent-tools.service';
-import { AiQuotaService, QuotaScope, QuotaUsage } from './ai-quota.service';
+import { AiQuotaService, QuotaScope, QuotaUsage, usageCost } from './ai-quota.service';
 import { gatewayBaseAllowed, isAllowedRoute, routePolicyMessage } from '../catalog/model-route-policy';
 import { TenantAiKeyService } from './tenant-ai-key.service';
 
@@ -22,6 +22,8 @@ export type OmniRouterInput = {
 
 export type OmniRouterAnswer = {
   answer: string; inputTokens: number; outputTokens: number; measured: boolean;
+  /** Sum of the per-round costs recorded in ai_usage (gateway cost when present, otherwise catalog). */
+  cost: number;
   toolCalls: { callId: string; name: string }[];
 };
 
@@ -118,7 +120,7 @@ export class OmniRouterService {
     const providerKey = await this.tenantKeys?.forModel(input.agent.tenantId, input.model.slug);
     const messages: ChatMessage[] = [{ role: 'system', content: input.instructions }, ...this.history(input.history), { role: 'user', content: this.userContent(input) }];
     const usedCalls: { callId: string; name: string }[] = [];
-    let inputTokens = 0; let outputTokens = 0; let measured = true;
+    let inputTokens = 0; let outputTokens = 0; let measured = true; let cost = 0;
     for (let round = 0; round < 8; round++) {
       input.signal?.throwIfAborted();
       const request = {
@@ -140,12 +142,13 @@ export class OmniRouterService {
       const generated = await this.quota.runRound(input.quotaScope, request, input.agent.maxTokens, record => this.round(endpoint, apiKey, request, input, record, providerKey), inputUpperBound);
       input.signal?.throwIfAborted();
       inputTokens += generated.usage.inputTokens; outputTokens += generated.usage.outputTokens; measured = measured && generated.usage.measured;
+      cost = Number((cost + usageCost(input.quotaScope, generated.usage).cost).toFixed(6));
       if (inputTokens > 2_147_483_647 || outputTokens > 2_147_483_647) throw protocolError('O consumo acumulado do OmniRouter excedeu o limite permitido.');
       this.validateFinish(generated);
       if (!generated.calls.length) {
         const answer = generated.content.trim();
         if (!answer) throw protocolError('O OmniRouter retornou uma resposta sem texto.');
-        return { answer, inputTokens, outputTokens, measured, toolCalls: usedCalls };
+        return { answer, inputTokens, outputTokens, measured, cost, toolCalls: usedCalls };
       }
       if (round === 7 || usedCalls.length + generated.calls.length > 8) throw protocolError('O agente atingiu o limite de oito chamadas/rodadas de ferramentas sem concluir a resposta.');
       const roundIds = new Set<string>();

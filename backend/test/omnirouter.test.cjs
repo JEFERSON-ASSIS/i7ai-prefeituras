@@ -99,7 +99,7 @@ test('uses real HTTP Chat Completions, central catalog model, agent context, his
   const { service, input, records } = fixture();
   const local = await provider(t, (_body, response) => json(response, completion()));
   const result = await service.generate(input);
-  assert.deepEqual(result, { answer: 'O orçamento é 42.', inputTokens: 30, outputTokens: 10, measured: true, toolCalls: [] });
+  assert.deepEqual(result, { answer: 'O orçamento é 42.', inputTokens: 30, outputTokens: 10, measured: true, cost: 0.00005, toolCalls: [] });
   const request = local.requests[0];
   assert.equal(request.url, '/v1/chat/completions'); assert.equal(request.headers.authorization, 'Bearer local-test-key-never-used-outside-fixture');
   assert.equal(request.body.model, input.model.slug); assert.equal(request.body.max_tokens, 500); assert.equal(request.body.stream, false);
@@ -512,4 +512,36 @@ test('tokens em cache e custo do cabeçalho entram no consumo; stream sem cabeç
   const third = fixture();
   await provider(t, (_body, response) => json(response, completion('ok', { usage: { prompt_tokens: 10, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 11 } } })));
   await assert.rejects(third.service.generate(third.input), /consumo inválidos/);
+});
+
+test('response cost equals the recorded cost (gateway header and cached stream with input-price fallback)', async t => {
+  const { calculateUsageCost } = require('../dist/ai/ai-gateway.service');
+  const usage = { prompt_tokens: 100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 60 } };
+  const first = fixture();
+  await provider(t, (_body, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json', 'x-litellm-response-cost': '0.000123' });
+    response.end(JSON.stringify(completion('ok', { usage })));
+  });
+  const gateway = await first.service.generate(first.input);
+  assert.equal(gateway.cost, 0.000123); assert.equal(gateway.cost, first.records.usage[0].cost);
+
+  const second = fixture(); second.input.onDelta = () => {};
+  second.input.quotaScope = second.quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cachedInputPrice: 1 });
+  await provider(t, (_body, response) => sse(response, [frame(chunk({ role: 'assistant', content: 'ok' })), frame(chunk({}, 'stop')), frame({ choices: [], usage }), frame('[DONE]')]));
+  const streamed = await second.service.generate(second.input);
+  assert.equal(streamed.cost, calculateUsageCost(100, 10, 1, 2, 60, 1));
+  assert.equal(streamed.cost, second.records.usage[0].cost);
+});
+
+test('absent or invalid x-litellm-response-cost falls back to the catalog', async t => {
+  for (const header of [undefined, 'abc', '-1', 'NaN', '']) {
+    const run = fixture();
+    await provider(t, (_body, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json', ...(header === undefined ? {} : { 'x-litellm-response-cost': header }) });
+      response.end(JSON.stringify(completion()));
+    });
+    await run.service.generate(run.input);
+    assert.equal(run.records.usage[0].costSource, 'catalog', String(header));
+    assert.equal(run.records.usage[0].cost, 0.00005);
+  }
 });

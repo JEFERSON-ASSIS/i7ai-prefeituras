@@ -16,6 +16,11 @@ export function calculateUsageCost(inputTokens: number, outputTokens: number, in
   const cached = Math.min(Math.max(0, cachedInputTokens), inputTokens);
   return Number((((inputTokens - cached) * input + cached * cachedPrice + outputTokens * output) / 1_000_000).toFixed(6));
 }
+/** Single cost computation shared by the persisted row and the chat response. */
+export function usageCost(scope: Pick<QuotaScope, 'inputPrice' | 'outputPrice' | 'cachedInputPrice'>, usage: QuotaUsage): { cost: number; costSource: 'gateway' | 'catalog' } {
+  if (usage.gatewayCost !== undefined) return { cost: usage.gatewayCost, costSource: 'gateway' };
+  return { cost: calculateUsageCost(usage.inputTokens, usage.outputTokens, scope.inputPrice, scope.outputPrice, usage.cachedInputTokens ?? 0, scope.cachedInputPrice), costSource: 'catalog' };
+}
 const pendingStatuses = ['RESERVED', 'UNCERTAIN'];
 
 @Injectable()
@@ -55,8 +60,7 @@ export class AiQuotaService {
       const budget = reservation.reservedTokens + BigInt(previous?.inputTokens || 0) + BigInt(previous?.outputTokens || 0);
       const unresolved = usage.measured ? 0n : (budget > total ? budget - total : 0n);
       const cachedInputTokens = usage.cachedInputTokens ?? 0;
-      const cost = usage.gatewayCost ?? calculateUsageCost(usage.inputTokens, usage.outputTokens, scope.inputPrice, scope.outputPrice, cachedInputTokens, scope.cachedInputPrice);
-      const costSource = usage.gatewayCost !== undefined ? 'gateway' : 'catalog';
+      const { cost, costSource } = usageCost(scope, usage);
       const data = { tenantId: scope.tenantId, agentId: scope.agentId, modelId: scope.modelId, userId: scope.userId, automationId: scope.automationId,
         inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens, cost, costSource, usageMeasured: usage.measured, status: previous?.status || 'PENDING', latencyMs: Date.now() - scope.started };
       await tx.aiUsage.upsert({ where: { id }, create: { id, ...data, createdAt: reservation.createdAt }, update: data });

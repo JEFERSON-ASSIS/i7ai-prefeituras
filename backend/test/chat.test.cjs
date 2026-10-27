@@ -170,3 +170,21 @@ test('monthly quota counts from later of UTC month start and license start', asy
   await service.executeAgent('agent-a', 'tenant-a', { message: 'hello' });
   assert.equal(captured.at(-1).toISOString(), later.toISOString());
 });
+
+test('OmniRouter path: cached tokens fall back to the input price and the response cost is the recorded cost', async () => {
+  const { service, prisma, records } = fixture();
+  const { usageCost } = require('../dist/ai/ai-quota.service');
+  let scope;
+  const omni = { generate: async input => {
+    scope = input.quotaScope;
+    const usage = { inputTokens: 100, outputTokens: 10, measured: true, cachedInputTokens: 60 };
+    return { answer: 'ok', inputTokens: 100, outputTokens: 10, measured: true, cost: usageCost(scope, usage).cost, toolCalls: [] };
+  } };
+  const gateway = new (require('../dist/ai/ai-gateway.service').AiGatewayService)(prisma, service.rag, service.agentTools, service.quota, undefined, omni);
+  process.env.OMNIROUTER_BASE_URL = 'http://127.0.0.1:1/v1/';
+  try {
+    const result = await gateway.chat('agent-a', 'tenant-a', { message: 'Qual o orçamento?' }, 'user-a');
+    assert.equal(scope.cachedInputPrice, 0.15);
+    assert.equal(result.usage.cost, calculateUsageCost(100, 10, 0.15, 0.60, 60, 0.15));
+  } finally { delete process.env.OMNIROUTER_BASE_URL; }
+});

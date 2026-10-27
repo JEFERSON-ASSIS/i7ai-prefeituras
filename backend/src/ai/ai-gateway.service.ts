@@ -24,7 +24,7 @@ export type ChatStreamEvent = 'delta' | 'complete';
 export type AgentExecutionInput = { message: string; userId?: string; automationId?: string; conversationId?: string; signal?: AbortSignal; modelId?: string; attachmentContext?: AttachmentContext };
 export type AgentAnswer = { answer: string; sources: RagSource[]; agentId: string; provider: string; model: string; toolCalls?: { callId: string; name: string }[]; usage: { inputTokens: number; outputTokens: number; cost: number; costConfigured: boolean; latencyMs: number; measured: boolean } };
 type PreparedAnswer = { quotaScope: QuotaScope; result: AgentAnswer; modelId: string; modelName: string; providerName: string; userId?: string; automationId?: string; tenantId: string };
-type ProviderAnswer = { answer: string; inputTokens: number; outputTokens: number; measured: boolean; toolCalls: { callId: string; name: string }[] };
+type ProviderAnswer = { answer: string; inputTokens: number; outputTokens: number; measured: boolean; cost?: number; toolCalls: { callId: string; name: string }[] };
 const agentInclude = { models: { include: { model: { include: { provider: true } } } } } satisfies Prisma.AgentInclude;
 type LoadedAgent = Prisma.AgentGetPayload<{ include: typeof agentInclude }>;
 type LoadedModel = LoadedAgent['models'][number]['model'];
@@ -186,7 +186,7 @@ export class AiGatewayService {
     const executionAgent = { ...agent, maxTokens: maxOutput };
     const provider = model.provider.slug.toLowerCase();
     const settings = { temperature: Number(agent.temperature), maxTokens: maxOutput, advancedReasoning: agent.advancedReasoning };
-    const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice) || 0 });
+    const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice ?? model.inputPrice) || 0 });
     try {
     const generated = omniConfigured
       ? await this.runOmniRouter(executionAgent, model, instructions, message, history, functions, input, quotaScope, onDelta)
@@ -195,7 +195,8 @@ export class AiGatewayService {
         : await this.openAi(executionAgent, tenantId, model, instructions, message, history, functions, input, quotaScope, onDelta);
     input.signal?.throwIfAborted();
     const { answer, inputTokens, outputTokens, measured } = generated;
-    const cost = calculateUsageCost(inputTokens, outputTokens, model.inputPrice, model.outputPrice);
+    // Same number recorded in ai_usage when the OmniRouter ran; other paths have no cache or gateway data.
+    const cost = generated.cost ?? calculateUsageCost(inputTokens, outputTokens, model.inputPrice, model.outputPrice);
     const costConfigured = measured && model.inputPrice != null && model.outputPrice != null;
     return { quotaScope, tenantId, userId: input.userId, automationId: input.automationId, modelId: model.id, modelName: model.name || model.slug, providerName: model.provider.name, result: { answer, sources, agentId, provider: omniConfigured ? provider : process.env.AI_GATEWAY_URL ? 'gateway' : provider, model: model.slug, ...(generated.toolCalls.length ? { toolCalls: generated.toolCalls } : {}), usage: { inputTokens, outputTokens, cost, costConfigured, latencyMs: Date.now() - started, measured } } };
     } catch (error) { await this.quota.finish(quotaScope, 'FAILED'); throw error; }
