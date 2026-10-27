@@ -207,8 +207,9 @@ services:
         order: start-first
       labels:
         - traefik.enable=true
+        # Só o rótulo traefik.docker.*: com o traefik.swarm.* junto, o Traefik 3.5
+        # desta VPS descarta o serviço ("both Docker and Swarm labels are defined").
         - traefik.docker.network=SGDMNET
-        - traefik.swarm.network=SGDMNET
         - traefik.http.routers.i7ai_plataforma.rule=Host(`${WEB_HOST:?Set WEB_HOST}`) && (Path(`/i7ai`) || PathPrefix(`/i7ai/`))
         - traefik.http.routers.i7ai_plataforma.priority=100
         - traefik.http.routers.i7ai_plataforma.entrypoints=websecure
