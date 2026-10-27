@@ -7,7 +7,7 @@ const { settingsFromSgdm } = require('../dist/catalog/tenant-settings');
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
 const USER = '22222222-2222-4222-8222-222222222222';
-const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_ORG_CACHE_SECONDS', 'SGDM_INTERNAL_HOSTS', 'NODE_ENV'];
+const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_ORG_CACHE_SECONDS', 'SGDM_FAILURE_CACHE_SECONDS', 'SGDM_INTERNAL_HOSTS', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 test.afterEach(() => envKeys.forEach(key => savedEnv[key] === undefined ? delete process.env[key] : process.env[key] = savedEnv[key]));
 
@@ -151,4 +151,51 @@ test('GET /settings: SGDM settings as stored, defaultModelId from the released d
   assert.deepEqual((await new CatalogService(prisma, standalone).settings(TENANT)).settings, { timezone: 'America/Cuiaba', locale: 'pt-BR', theme: 'system' });
   stored = { defaultModelId: 'local-model', retentionDays: 30 };
   assert.deepEqual((await new CatalogService(prisma, standalone).settings(TENANT)).settings, { timezone: 'America/Cuiaba', locale: 'pt-BR', theme: 'system', defaultModelId: 'local-model', retentionDays: 30 });
+});
+
+test('concurrent syncs share one SGDM fetch', async t => {
+  const calls = await sgdm(t, () => [200, { prefeitura, setores: [] }]);
+  const service = new SgdmOrganizationService(database().prisma);
+  const results = await Promise.all(Array.from({ length: 8 }, () => service.sync(TENANT)));
+  assert.equal(calls.length, 1);
+  assert.ok(results.every(result => result === results[0]));
+});
+
+test('outage: login continues, no SGDM call inside the failure window, one retry after it', async t => {
+  let reply = [500, { message: 'boom' }];
+  const calls = await sgdm(t, () => reply);
+  const service = new SgdmOrganizationService(database().prisma);
+  const warnings = []; service.logger = { warn: message => warnings.push(message) };
+  const realNow = Date.now; t.after(() => { Date.now = realNow; });
+  const start = realNow(); Date.now = () => start;
+  assert.deepEqual(await Promise.all([service.sync(TENANT), service.sync(TENANT)]), [null, null]);
+  Date.now = () => start + 14000;
+  assert.equal(await service.sync(TENANT), null);
+  assert.equal(calls.length, 1);
+  assert.equal(warnings.length, 1);
+  Date.now = () => start + 15001;
+  assert.equal(await service.sync(TENANT), null);
+  assert.equal(calls.length, 2);
+  reply = [200, { prefeitura, setores: [] }];
+  Date.now = () => start + 30002;
+  assert.equal((await service.sync(TENANT)).prefeitura.nome, prefeitura.nome.trim());
+});
+
+test('stale organization is reused without retrying SGDM inside the failure window', async t => {
+  let reply = [200, { prefeitura, setores: [] }];
+  const calls = await sgdm(t, () => reply);
+  process.env.SGDM_ORG_CACHE_SECONDS = '1'; process.env.SGDM_FAILURE_CACHE_SECONDS = '5';
+  const service = new SgdmOrganizationService(database().prisma); service.logger = { warn: () => {} };
+  const realNow = Date.now; t.after(() => { Date.now = realNow; });
+  const start = realNow(); Date.now = () => start;
+  const first = await service.sync(TENANT);
+  reply = [500, {}];
+  Date.now = () => start + 1001;
+  assert.equal(await service.sync(TENANT), first);
+  Date.now = () => start + 5000;
+  assert.equal(await service.sync(TENANT), first);
+  assert.equal(calls.length, 2);
+  Date.now = () => start + 6002;
+  assert.equal(await service.sync(TENANT), first);
+  assert.equal(calls.length, 3);
 });

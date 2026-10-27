@@ -2,19 +2,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrganizacaoI7ai, settingsFromSgdm } from '../catalog/tenant-settings';
+import { CachedFetch, envSeconds, sgdmFailureSeconds } from './cached-fetch';
 import { sgdmIntegrationEnabled, sgdmIntegrationGet } from './sgdm-integration';
 
 export type { OrganizacaoI7ai } from '../catalog/tenant-settings';
 
-type Entry = { expires: number; value: OrganizacaoI7ai };
-const MAX_CACHE = 5000;
 
 /** SGDM_ORG_CACHE_SECONDS; empty, invalid or negative values fall back to 300. */
-function cacheSeconds() {
-  const raw = process.env.SGDM_ORG_CACHE_SECONDS?.trim();
-  const value = raw ? Number(raw) : NaN;
-  return Number.isFinite(value) && value >= 0 ? value : 300;
-}
+const cacheSeconds = () => envSeconds('SGDM_ORG_CACHE_SECONDS', 300);
 
 const isString = (value: unknown): value is string => typeof value === 'string';
 const nullableString = (value: unknown) => value === null || value === undefined || typeof value === 'string';
@@ -67,37 +62,29 @@ export function departmentExternalIdFor(org: OrganizacaoI7ai, userId: string): s
 @Injectable()
 export class SgdmOrganizationService {
   private readonly logger = new Logger(SgdmOrganizationService.name);
-  private readonly cache = new Map<string, Entry>();
-  private readonly pending = new Map<string, Promise<OrganizacaoI7ai | null>>();
+  // Stale values never expire here: the last answer is used for as long as SGDM stays down.
+  private readonly cache = new CachedFetch<OrganizacaoI7ai>({ ttlSeconds: cacheSeconds, staleSeconds: Infinity, failureSeconds: sgdmFailureSeconds });
 
   constructor(private readonly prisma: PrismaService) {}
 
   /** null when the SGDM integration is off: standalone mode keeps local departments and settings. */
   async sync(tenantId: string): Promise<OrganizacaoI7ai | null> {
     if (!sgdmIntegrationEnabled()) return null;
-    const hit = this.cache.get(tenantId);
-    if (hit && hit.expires > Date.now()) return hit.value;
-    // Concurrent logins of one prefeitura share a single refresh instead of racing on the same rows.
-    const running = this.pending.get(tenantId);
-    if (running) return running;
-    const refresh = this.refresh(tenantId, hit).finally(() => this.pending.delete(tenantId));
-    this.pending.set(tenantId, refresh);
-    return refresh;
+    try {
+      // Concurrent logins of one prefeitura share a single refresh instead of racing on the same rows.
+      return await this.cache.get(tenantId, () => this.refresh(tenantId), (error, servedStale) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn('Não foi possível sincronizar a organização da prefeitura ' + tenantId + ' com o SGDM (' + reason + ')' + (servedStale ? '; usando a última resposta.' : '.'));
+      });
+    } catch {
+      return null; // never blocks a login; the failure is remembered for a short window
+    }
   }
 
-  private async refresh(tenantId: string, hit: Entry | undefined): Promise<OrganizacaoI7ai | null> {
-    try {
-      const org = parseOrganization(await sgdmIntegrationGet<unknown>('/integracoes/i7ai/organizacao/' + encodeURIComponent(tenantId)));
-      await this.store(tenantId, org);
-      this.cache.delete(tenantId);
-      if (this.cache.size >= MAX_CACHE) this.cache.delete(this.cache.keys().next().value as string);
-      this.cache.set(tenantId, { expires: Date.now() + cacheSeconds() * 1000, value: org });
-      return org;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      this.logger.warn('Não foi possível sincronizar a organização da prefeitura ' + tenantId + ' com o SGDM (' + reason + ')' + (hit ? '; usando a última resposta.' : '.'));
-      return hit?.value ?? null;
-    }
+  private async refresh(tenantId: string): Promise<OrganizacaoI7ai> {
+    const org = parseOrganization(await sgdmIntegrationGet<unknown>('/integracoes/i7ai/organizacao/' + encodeURIComponent(tenantId)));
+    await this.store(tenantId, org);
+    return org;
   }
 
   private async store(tenantId: string, org: OrganizacaoI7ai) {

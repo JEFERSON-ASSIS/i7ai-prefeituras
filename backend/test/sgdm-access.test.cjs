@@ -8,7 +8,7 @@ const { sgdmIntegrationGet, sgdmIntegrationEnabled, SgdmNotFound, SgdmUnavailabl
 
 const TENANT = '00000000-0000-0000-0000-000000000001';
 const USER = '00000000-0000-0000-0000-000000000002';
-const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_ACCESS_CACHE_SECONDS', 'SGDM_INTERNAL_HOSTS', 'NODE_ENV'];
+const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_ACCESS_CACHE_SECONDS', 'SGDM_FAILURE_CACHE_SECONDS', 'SGDM_INTERNAL_HOSTS', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 test.afterEach(() => envKeys.forEach(key => savedEnv[key] === undefined ? delete process.env[key] : process.env[key] = savedEnv[key]));
 
@@ -139,4 +139,53 @@ test('404 do SGDM gera um aviso por entrada nova de cache', async t => {
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], new RegExp(TENANT));
   assert.ok(!warnings[0].includes('integration-secret'));
+});
+
+test('concurrent calls share one SGDM fetch', async t => {
+  const calls = await sgdm(t, () => [200, { modelos: ['openai/gpt-5.5'], padrao: null }]);
+  const service = new SgdmAccessService();
+  const results = await Promise.all(Array.from({ length: 8 }, () => service.allowed(TENANT, USER)));
+  assert.equal(calls.length, 1);
+  assert.ok(results.every(result => result.slugs[0] === 'openai/gpt-5.5'));
+});
+
+test('outage: 503 within the failure window without calling SGDM, one retry after it', async t => {
+  let reply = [500, { message: 'boom' }];
+  const calls = await sgdm(t, () => reply);
+  const service = new SgdmAccessService();
+  const logs = []; service.logger = { warn: () => {}, error: message => logs.push(message) };
+  const realNow = Date.now; t.after(() => { Date.now = realNow; });
+  const start = realNow(); Date.now = () => start;
+  const denied = () => assert.rejects(service.allowed(TENANT, USER), error => error instanceof ServiceUnavailableException && error.message === NOT_CONFIRMED);
+  await Promise.all([denied(), denied(), denied()]);
+  assert.equal(calls.length, 1);
+  Date.now = () => start + 14000;
+  await denied();
+  assert.equal(calls.length, 1);
+  assert.equal(logs.length, 1);
+  Date.now = () => start + 15001;
+  await denied();
+  assert.equal(calls.length, 2);
+  reply = [200, { modelos: ['a'], padrao: null }];
+  Date.now = () => start + 30002;
+  assert.deepEqual(await service.allowed(TENANT, USER), { slugs: ['a'], defaultSlug: null });
+});
+
+test('SGDM_FAILURE_CACHE_SECONDS tunes the failure window; stale value is not retried inside it', async t => {
+  let reply = [200, { modelos: ['a'], padrao: null }];
+  const calls = await sgdm(t, () => reply);
+  process.env.SGDM_ACCESS_CACHE_SECONDS = '1'; process.env.SGDM_FAILURE_CACHE_SECONDS = '5';
+  const service = new SgdmAccessService(); service.logger = { warn: () => {}, error: () => {} };
+  const realNow = Date.now; t.after(() => { Date.now = realNow; });
+  const start = realNow(); Date.now = () => start;
+  await service.allowed(TENANT, USER);
+  reply = [500, {}];
+  Date.now = () => start + 1001;
+  assert.equal((await service.allowed(TENANT, USER)).slugs[0], 'a');
+  Date.now = () => start + 5000;
+  assert.equal((await service.allowed(TENANT, USER)).slugs[0], 'a');
+  assert.equal(calls.length, 2);
+  Date.now = () => start + 6002;
+  await service.allowed(TENANT, USER);
+  assert.equal(calls.length, 3);
 });

@@ -6,7 +6,7 @@ const { SgdmLimitsService } = require('../dist/sgdm/sgdm-limits.service');
 
 const TENANT = '00000000-0000-0000-0000-000000000001';
 const USER = '00000000-0000-0000-0000-000000000002';
-const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_LIMITS_CACHE_SECONDS', 'NODE_ENV'];
+const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_LIMITS_CACHE_SECONDS', 'SGDM_FAILURE_CACHE_SECONDS', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 test.afterEach(() => envKeys.forEach(key => savedEnv[key] === undefined ? delete process.env[key] : process.env[key] = savedEnv[key]));
 
@@ -105,4 +105,51 @@ test('SGDM 404 is a definitive answer: cached as no user limit and logged once',
   assert.equal(calls.length, 1);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /404/);
+});
+
+test('concurrent calls share one SGDM fetch', async t => {
+  const calls = await sgdm(t, () => [200, { usuario: LIMITE }]);
+  const service = new SgdmLimitsService(); service.logger = quietLogger().logger;
+  const results = await Promise.all(Array.from({ length: 8 }, () => service.forUser(TENANT, USER)));
+  assert.equal(calls.length, 1);
+  assert.ok(results.every(result => result.block === EXPECTED.block));
+});
+
+test('outage fails open: no SGDM call inside the failure window, one retry after it', async t => {
+  let reply = [500, { message: 'boom' }];
+  const calls = await sgdm(t, () => reply);
+  const service = new SgdmLimitsService(); const { warnings, logger } = quietLogger(); service.logger = logger;
+  const realNow = Date.now; t.after(() => { Date.now = realNow; });
+  const start = realNow(); Date.now = () => start;
+  assert.deepEqual(await Promise.all([service.forUser(TENANT, USER), service.forUser(TENANT, USER)]), [null, null]);
+  Date.now = () => start + 14000;
+  assert.equal(await service.forUser(TENANT, USER), null);
+  assert.equal(calls.length, 1);
+  assert.equal(warnings.length, 1);
+  Date.now = () => start + 15001;
+  assert.equal(await service.forUser(TENANT, USER), null);
+  assert.equal(calls.length, 2);
+  reply = [200, { usuario: LIMITE }];
+  Date.now = () => start + 30002;
+  assert.deepEqual(await service.forUser(TENANT, USER), EXPECTED);
+});
+
+test('stale value is served without retrying SGDM inside the failure window', async t => {
+  let reply = [200, { usuario: LIMITE }];
+  const calls = await sgdm(t, () => reply);
+  process.env.SGDM_LIMITS_CACHE_SECONDS = '1'; process.env.SGDM_FAILURE_CACHE_SECONDS = '5';
+  const service = new SgdmLimitsService(); const { warnings, logger } = quietLogger(); service.logger = logger;
+  const realNow = Date.now; t.after(() => { Date.now = realNow; });
+  const start = realNow(); Date.now = () => start;
+  await service.forUser(TENANT, USER);
+  reply = [500, {}];
+  Date.now = () => start + 1001;
+  assert.deepEqual(await service.forUser(TENANT, USER), EXPECTED);
+  Date.now = () => start + 5000;
+  assert.deepEqual(await service.forUser(TENANT, USER), EXPECTED);
+  assert.equal(calls.length, 2);
+  assert.equal(warnings.length, 1);
+  Date.now = () => start + 6002;
+  assert.deepEqual(await service.forUser(TENANT, USER), EXPECTED);
+  assert.equal(calls.length, 3);
 });
