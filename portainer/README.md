@@ -103,7 +103,7 @@ docker service update --with-registry-auth --image ghcr.io/jeferson-assis/i7ai-f
 
 Backend e frontend usam `update_config: order: start-first, failure_action: rollback`: a versão nova sobe ao lado da antiga e, se não ficar saudável (por exemplo, migration que falhou), o Swarm volta sozinho para a anterior. O motivo fica em `docker service logs i7ai-plataforma_i7ai-backend`.
 
-**Alterou `deploy/litellm/config.yaml`?** Configs do Swarm são imutáveis: no mesmo commit, troque o sufixo de `name: i7ai_litellm_config_v1` (v1 → v2) em `i7ai.stack.yml`, senão o redeploy falha.
+**Alterou `deploy/litellm/config.yaml`?** Configs do Swarm são imutáveis: no mesmo commit, troque o sufixo do `name` da config (hoje `i7ai_litellm_config_v2`; a próxima alteração usa `_v3`) em `i7ai.stack.yml`, senão o redeploy falha.
 
 Para fixar uma versão, defina `I7AI_IMAGE_TAG` (padrão `main`) nas variáveis da stack.
 

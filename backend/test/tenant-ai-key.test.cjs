@@ -5,7 +5,7 @@ require('reflect-metadata');
 const { TenantAiKeyService } = require('../dist/ai/tenant-ai-key.service');
 
 const TENANT = '00000000-0000-0000-0000-000000000001';
-const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_AI_KEY_CACHE_SECONDS', 'SGDM_INTERNAL_HOSTS', 'NODE_ENV'];
+const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_AI_KEY_CACHE_SECONDS', 'SGDM_FAILURE_CACHE_SECONDS', 'SGDM_INTERNAL_HOSTS', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 test.afterEach(() => envKeys.forEach(key => savedEnv[key] === undefined ? delete process.env[key] : process.env[key] = savedEnv[key]));
 
@@ -39,6 +39,7 @@ test('disabled, missing, failing or unconfigured SGDM falls back to the platform
   let reply = [200, { habilitado: false }];
   const calls = await sgdm(t, () => reply);
   process.env.SGDM_AI_KEY_CACHE_SECONDS = '0';
+  process.env.SGDM_FAILURE_CACHE_SECONDS = '0';
   const service = new TenantAiKeyService();
   assert.equal(await service.forModel(TENANT, 'anthropic/x'), undefined);
   reply = [401, { message: 'chave' }];
@@ -50,4 +51,22 @@ test('disabled, missing, failing or unconfigured SGDM falls back to the platform
   delete process.env.SGDM_INTEGRATION_KEY;
   assert.equal(await service.forModel(TENANT, 'anthropic/x'), undefined);
   assert.equal(calls.length, 3);
+});
+
+test('a failed SGDM read is cached only for the short failure window, not for the key TTL', async t => {
+  let reply = [503, { message: 'indisponível' }];
+  const calls = await sgdm(t, () => reply);
+  process.env.SGDM_AI_KEY_CACHE_SECONDS = '300';
+  process.env.SGDM_FAILURE_CACHE_SECONDS = '0.05';
+  const service = new TenantAiKeyService();
+  assert.equal(await service.forModel(TENANT, 'anthropic/x'), undefined);
+  assert.equal(await service.forModel(TENANT, 'anthropic/x'), undefined);
+  assert.equal(calls.length, 1, 'inside the failure window SGDM is not asked again');
+  await new Promise(resolve => setTimeout(resolve, 80));
+  reply = [200, { habilitado: true, provedor: 'anthropic', apiKey: 'sk-ant-9' }];
+  assert.equal(await service.forModel(TENANT, 'anthropic/x'), 'sk-ant-9');
+  assert.equal(calls.length, 2, 'after the failure window SGDM is read again');
+  reply = [503, {}];
+  assert.equal(await service.forModel(TENANT, 'anthropic/x'), 'sk-ant-9');
+  assert.equal(calls.length, 2, 'a good read keeps the long TTL');
 });

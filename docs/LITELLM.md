@@ -51,7 +51,7 @@ Rotas do OmniRoute como `antigravity/...` e `cx/...` não existem no LiteLLM. Tr
 
 Não há fallback automático entre modelos. O i7Ai registra custo e provedor pelo modelo escolhido, e um fallback mandaria dados para outro provedor com o preço errado.
 
-Na VPS o arquivo entra como *config* do Swarm, que é imutável: no mesmo commit que alterar `deploy/litellm/config.yaml`, troque o sufixo de `name: i7ai_litellm_config_v1` (v1 → v2) em `portainer/i7ai.stack.yml` e faça **Pull and redeploy** da stack `i7ai-plataforma` no Portainer. Sem a troca do nome, o redeploy falha.
+Na VPS o arquivo entra como *config* do Swarm, que é imutável: no mesmo commit que alterar `deploy/litellm/config.yaml`, troque o sufixo do `name` da config (hoje `i7ai_litellm_config_v2`; a próxima alteração usa `_v3`) em `portainer/i7ai.stack.yml` e faça **Pull and redeploy** da stack `i7ai-plataforma` no Portainer. Sem a troca do nome, o redeploy falha.
 
 ## Acesso aos modelos e organização
 
@@ -144,6 +144,21 @@ O passo a passo está em [docs/DEPLOY_VPS.md](./DEPLOY_VPS.md): stack Swarm `i7a
 - Modelos: ativados na **Central de IA** do SGDM (que também define o padrão e as liberações por prefeitura e usuário). O i7Ai copia o catálogo do SGDM a cada `MODEL_SYNC_SECONDS` e os preços (USD por milhão de tokens) e o contexto do LiteLLM; **Modelos** no i7Ai é só consulta. Sem preço no LiteLLM, o custo aparece como não configurado.
 - Ensaio dos limites: depois de salvar um limite de prefeitura na Central, consulte `GET /budget/info` do LiteLLM (com a chave mestra) e confirme que `budget_reset_at` é o dia 1º do próximo mês às 00:00Z.
 - Faça uma conversa real com cada modelo, com e sem streaming, e um envio de imagem com GPT-4o Mini.
+
+## Ordem do deploy da Central de IA
+
+O deploy conjunto com o SGDM segue a mesma ordem descrita em `docs/deploy-portainer.md` do SGDM (seção 11). Resumo do lado do i7Ai:
+
+1. Merge dos dois repositórios em `main`.
+2. Variáveis: `REDIS_CACHE_PASSWORD`; `I7AI_INTEGRACAO_CHAVE` (SGDM) igual a `SGDM_INTEGRATION_KEY` (i7Ai), com 32 caracteres ou mais; `LITELLM_ADMIN_KEY` (SGDM) igual a `LITELLM_MASTER_KEY` (i7Ai). Chaves diferentes dão 401 entre as stacks (chat fechado, limites e modelos sem sincronizar).
+3. Antes: `SELECT tenant_id FROM perfis WHERE nome = 'DONO_PLATAFORMA'` no banco do SGDM deve devolver uma única linha, da prefeitura da plataforma.
+4. Deploy do **SGDM primeiro**, com `LITELLM_URL` vazio em `sgdm-app`. O contrário (i7Ai novo com SGDM antigo) deixa o chat fechado.
+5. O dono ativa modelos e liberações em `/central-ia/modelos`.
+6. Deploy do i7Ai com a config do LiteLLM `i7ai_litellm_config_v2`. Os índices de `ai_usage` e `conversations` não são concorrentes: use horário de baixo movimento.
+7. Confirme que a stack i7Ai e o LiteLLM estão saudáveis; só então preencha `LITELLM_URL` em `sgdm-app` e refaça o deploy.
+8. Gere uma peça com a chave própria de uma prefeitura e outra com a da plataforma.
+
+Notas de versão: `retentionDays` volta ao padrão e os departamentos legados ficam inativos. SMTP precisa estar configurado no SGDM para os e-mails de alerta. Rode o ensaio `e4t4-live.cjs` (ou equivalente) com uma chave real da Anthropic antes de confiar na economia do cache de prompt.
 
 ## Central de IA no SGDM
 

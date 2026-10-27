@@ -262,10 +262,10 @@ services:
         - traefik.http.services.i7ai_plataforma.loadbalancer.passHostHeader=true
 
 # Configs do Swarm são imutáveis: ao alterar deploy/litellm/config.yaml,
-# troque o sufixo do "name" (v1 → v2) no mesmo commit, senão o redeploy falha.
+# troque o sufixo do "name" (hoje v2; próxima: v3) no mesmo commit, senão o redeploy falha.
 configs:
   litellm_config:
-    name: i7ai_litellm_config_v1
+    name: i7ai_litellm_config_v2
     file: ../deploy/litellm/config.yaml
   litellm_db:
     file: ./litellm-db.sql

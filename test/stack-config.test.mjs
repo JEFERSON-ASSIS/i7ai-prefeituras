@@ -29,7 +29,7 @@ test('a pilha renderiza com o exemplo e não publica portas', () => {
     'SGDMNET', 'litellm', 'start-first',
     'i7ai-postgres', 'i7ai-redis',
     'i7ai-backend', 'i7ai-frontend', 'traefik.http.routers.i7ai_plataforma.rule: Host(`sgdm.com.br`) && (Path(`/i7ai`) || PathPrefix(`/i7ai/`))',
-    'traefik.swarm.network: SGDMNET', 'traefik.docker.network: SGDMNET',
+    'traefik.docker.network: SGDMNET', 'name: i7ai_litellm_config_v2',
     'ghcr.io/berriai/litellm@sha256:c169fb3adc514fcf210377c203f3de406d54f10bfdacf13948a4a839db9af7de',
     'OMNIROUTER_BASE_URL: http://litellm:4000/v1', 'SGDM_API_URL: http://sgdm-api:3001/api/v1',
     '@i7ai-postgres:5432/i7ai', '@i7ai-postgres:5432/litellm', 'S3_ENDPOINT: http://minio:9000',
@@ -38,6 +38,8 @@ test('a pilha renderiza com o exemplo e não publica portas', () => {
   // Depending on the CLI version, 1200M renders as-is or in bytes.
   assert.match(out, /memory: "?(1200M|1258291200)"?/);
   assert.ok(!out.includes('published:'), 'no port may be published');
+  assert.ok(!out.includes('traefik.swarm.network'), 'traefik.swarm.network was removed on purpose (2f64e12)');
+  assert.ok(!out.includes('i7ai_litellm_config_v1'), 'the changed LiteLLM config needs a new immutable Swarm config name');
   // read_only services need /tmp as a tmpfs mount that Swarm honours (long volume syntax).
   for (const service of ['i7ai-backend', 'i7ai-frontend']) {
     const block = out.split(new RegExp(`^  ${service}:$`, 'm'))[1]?.split(/^  \S/m)[0] ?? '';
