@@ -46,7 +46,7 @@ Para testar a plataforma real sem depender do SGDM durante o desenvolvimento, ex
 3. Configure um agente com instruções, modelo principal, bases e ferramentas. Ative-o antes de conversar ou executar: a interface e a API exigem agente `ACTIVE`, inclusive em streaming e automações.
 4. Abra o agente no chat. Conversas e fontes são persistidas por usuário e prefeitura. O streaming confirma o salvamento ao concluir; respostas parciais interrompidas não entram no histórico.
 5. Crie uma automação com etapas de agente ou ferramenta HTTP. Execute manualmente ou cadastre cron com fuso horário. Acompanhe estado, resultado, erro e duração em Execuções.
-6. Consulte consumo, auditoria e limites em Relatórios e Licenciamento.
+6. Consulte consumo e auditoria em Relatórios; limites, alertas e licenças ficam na Central de IA do SGDM (veja [docs/LITELLM.md](docs/LITELLM.md)).
 
 O servidor verifica limites de usuários, agentes, bases, automações e armazenamento. Cada rodada de IA reserva saldo sob bloqueio da prefeitura no PostgreSQL antes da chamada, considerando consumo e reservas simultâneas. Contadores do provedor são registrados mesmo em respostas incompletas ou falhas. Interrupções sem contadores mantêm uma reserva pendente; o sistema não apresenta estimativas como consumo medido. O gateway deve respeitar `maxTokens`.
 

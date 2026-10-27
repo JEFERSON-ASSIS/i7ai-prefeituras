@@ -79,6 +79,50 @@ Regras da Entrega 2, definidas na Central de IA do SGDM:
 
 Migrations novas: i7Ai `20261028000100_ai_models_active` e `20261028000200_departments_external_id`; SGDM `20261212100000_i7ai_fora_do_administrador` e `20261213100000_ia_modelos_liberacoes`.
 
+## Limites e orçamento
+
+Regras da Entrega 3, definidas na Central de IA do SGDM (**Limites e alertas**) e aplicadas pelo LiteLLM e pelo i7Ai.
+
+- **Orçamento por prefeitura.** O SGDM cria um budget no LiteLLM com id `ia-prefeitura-<id>-<ms>`, duração `1mo`, ligado ao customer (`user` = uuid da prefeitura). Ele reinicia no dia 1º do mês UTC. O gasto das duas chaves (da plataforma e própria da prefeitura) entra no mesmo orçamento, porque o customer recebe todo o gasto; a Central mostra a divisão.
+- **Competência = mês UTC.** O mês da Central, dos alertas e do orçamento é o mês calendário em UTC, não o do fuso da prefeitura.
+- **Gasto anterior ao primeiro orçamento.** O primeiro budget conta o gasto anterior do mês (o customer acumula o gasto desde que foi criado): o orçamento nasce já abatido, e isso vale até o mês virar. Depois da virada o gasto recomeça do zero.
+- **Aviso e bloqueio.** O aviso (percentual do orçamento) gera um alerta e nunca recusa chamadas. Com "bloquear ao atingir 100%", o gateway recusa as chamadas seguintes; sem a opção, o orçamento é só registrado.
+- **Chamadas por minuto da prefeitura.** Limite de requisições por minuto aplicado no customer (`end_user`), com limite de tokens por minuto quando preenchido.
+- **Limites por usuário no i7Ai.** Chamadas e tokens por minuto e por mês de cada usuário, definidos na Central e lidos pelo backend em `GET /integracoes/i7ai/limites/:tenantId` (cache `SGDM_LIMITS_CACHE_SECONDS`). Valem só para o i7Ai; as peças do SGDM entram no orçamento da prefeitura.
+- **Regra de recusa por orçamento (só End User).** Só vira recusa de orçamento da prefeitura a mensagem do gateway que começa com `ExceededBudget: End User=` (e `Rate limit exceeded for end_user` para o minuto). Budgets de chave ou de equipe não são traduzidos. A regra é a mesma nos dois repositórios (`backend/src/ai/omnirouter.service.ts` no i7Ai e `apps/api/src/modules/ia/limite-gateway.ts` no SGDM).
+
+Mensagens de recusa (idênticas no chat, nas automações e na geração de peças):
+
+| Situação | Mensagem |
+| --- | --- |
+| Orçamento do mês da prefeitura | A prefeitura atingiu o limite de IA deste mês. Fale com o administrador da plataforma. |
+| Minuto da prefeitura | A prefeitura atingiu o limite de uso de IA por minuto. Aguarde um instante e tente novamente. |
+| Mês do usuário | Você atingiu o seu limite de IA deste mês. Fale com o administrador da plataforma. |
+| Minuto do usuário | Você atingiu o seu limite de uso de IA por minuto. Aguarde um instante e tente novamente. |
+
+**Alertas.** A API do SGDM avalia os limites a cada `IA_ALERTAS_INTERVALO_MS` e grava alertas na Central (Visão geral e aba Limites e alertas): orçamento perto do limite, orçamento atingido, limite por minuto e uso de usuário acima de N× a média. Um alerta resolvido não volta na rodada seguinte. O e-mail sai só para quem tem a permissão `IA_CENTRAL` (dono da plataforma); a contagem de alertas abertos aparece até 100. A **cotação do dólar** (US$ para R$) também se configura nessa tela e substitui a antiga `NEXT_PUBLIC_COTACAO_USD`, que não existe mais.
+
+### Licenças do i7Ai
+
+As licenças das prefeituras são editadas no SGDM, em **Central de IA › Licenças i7Ai** (editar limites e vigência, suspender e importar as licenças que já existiam no i7Ai). O i7Ai não tem mais a tela Licenciamento (`#/licensing` abre o Dashboard) e espelha a licença do SGDM a cada `SGDM_LICENSE_SYNC_SECONDS` e no login.
+
+- **Licenças nunca são apagadas.** Para revogar, marque **Suspensa**.
+- **Fim inclusivo.** O dia final vale inteiro: o `fim` informado vira `endDate` no dia seguinte às 03:00 UTC.
+- **Importar cria só o que falta.** A importação copia as licenças do i7Ai para prefeituras que ainda não têm licença no SGDM; nunca sobrescreve uma existente.
+- **Limite de usuários.** Excedido o `maxUsuarios`, o usuário novo não entra no i7Ai e vê "Limite de usuários da licença atingido".
+- **SGDM fora do ar.** A licença espelhada continua valendo, o login conclui e o chat segue com o último limite de usuário em cache.
+
+### Variáveis (Entrega 3)
+
+| Variável | Onde | Padrão | Uso |
+| --- | --- | --- | --- |
+| `SGDM_LIMITS_CACHE_SECONDS` | backend do i7Ai | 60 | validade do cache dos limites por usuário |
+| `SGDM_LICENSE_SYNC_SECONDS` | backend do i7Ai | 60 | intervalo do espelhamento das licenças do SGDM |
+| `SGDM_FAILURE_CACHE_SECONDS` | backend do i7Ai | 15 | quanto tempo uma leitura falha do SGDM é lembrada antes de tentar de novo |
+| `IA_ALERTAS_INTERVALO_MS` | API do SGDM (`sgdm-app`) | 900000 (15 min) | intervalo da avaliação dos alertas; `0` desliga |
+
+Migrations novas: SGDM `20261214100000_ia_limites_alertas_licencas` e i7Ai `20261028000300_ai_token_reservations_user`. Aviso de implantação: a do i7Ai cria índices com `CREATE INDEX` simples em `ai_usage` e `ai_token_reservations`, que bloqueiam escritas enquanto constroem; aplique em janela tranquila. Os dados de demonstração da fumaça local (cotação, limite da prefeitura Demo) existem só na máquina local.
+
 ## Local (Windows)
 
 Esta máquina usa `docker-compose.local.yml` (Postgres 5435, Redis 6381, MinIO 9004, LiteLLM 4000).
@@ -140,4 +184,4 @@ O LiteLLM guarda respostas inteiras num Redis só de cache, o `i7ai-redis-cache`
 2. Dividir o prompt de sistema em parte fixa e trechos dos documentos, com `cache_control` para o Claude.
 3. Resumir o histórico antigo com um modelo barato.
 4. Imagens com `detail: 'low'` quando não for preciso ler detalhes.
-5. Chaves virtuais do LiteLLM por prefeitura, com teto de gasto.
+5. Chaves virtuais do LiteLLM por prefeitura (o teto de gasto por prefeitura já existe: veja Limites e orçamento).

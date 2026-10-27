@@ -168,6 +168,12 @@ services:
       SGDM_ACCESS_CACHE_SECONDS: ${SGDM_ACCESS_CACHE_SECONDS:-60}
       SGDM_ORG_CACHE_SECONDS: ${SGDM_ORG_CACHE_SECONDS:-300}
       MODEL_SYNC_SECONDS: ${MODEL_SYNC_SECONDS:-300}
+      # Limites por usuário e licenças vêm da Central de IA do SGDM: cache dos
+      # limites, intervalo do espelhamento das licenças e memória das leituras que
+      # falharam (com o SGDM fora do ar, cada rodada não espera o timeout de novo).
+      SGDM_LIMITS_CACHE_SECONDS: ${SGDM_LIMITS_CACHE_SECONDS:-60}
+      SGDM_LICENSE_SYNC_SECONDS: ${SGDM_LICENSE_SYNC_SECONDS:-60}
+      SGDM_FAILURE_CACHE_SECONDS: ${SGDM_FAILURE_CACHE_SECONDS:-15}
       # Gateway de IA (LiteLLM desta pilha). OPENAI_* e AI_GATEWAY_* ficam de fora
       # de propósito: chaves de provedor vivem só no LiteLLM, nunca no i7Ai.
       OMNIROUTER_BASE_URL: http://litellm:4000/v1
