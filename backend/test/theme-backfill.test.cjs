@@ -1,5 +1,6 @@
 const test = require('node:test'); const assert = require('node:assert/strict'); require('reflect-metadata');
 const { ThemeBackfillService, themeBackfillInterval } = require('../dist/sgdm/theme-backfill.service');
+const { THEME_VERSION } = require('../dist/sgdm/themes');
 
 function memoryPrisma(count) {
   const rows = Array.from({ length: count }, (_, index) => ({ id: String(index).padStart(6, '0'), title: index % 2 ? 'Edital do pregão SECRETO-' + index : 'Ofício ao gabinete SECRETO-' + index, theme: null, themeVersion: 0, agent: { name: 'Assistente' } }));
@@ -30,7 +31,7 @@ test('one round classifies 1,200 conversations in batches of 500, one updateMany
   const { prisma, rows, calls } = memoryPrisma(1200);
   const service = new ThemeBackfillService(prisma); const lines = capture(service);
   assert.deepEqual(await service.run(), { updated: 1200, batches: 3 });
-  assert.ok(rows.every(row => row.themeVersion === 1 && row.theme));
+  assert.ok(rows.every(row => row.themeVersion === THEME_VERSION && row.theme));
   assert.equal(rows[1].theme, 'licitacoes'); assert.equal(rows[0].theme, 'documentos');
   assert.ok(calls.findMany.every(args => args.take === 500));
   assert.equal(calls.updateMany.length, 6);
@@ -46,7 +47,7 @@ test('10,001 conversations: first round does 10,000, the second the rest', async
   assert.deepEqual(await service.run(), { updated: 10000, batches: 20 });
   assert.equal(rows.filter(row => row.themeVersion === 0).length, 1);
   assert.deepEqual(await service.run(), { updated: 1, batches: 1 });
-  assert.ok(rows.every(row => row.themeVersion === 1));
+  assert.ok(rows.every(row => row.themeVersion === THEME_VERSION));
   assert.ok(lines.every(line => !/SECRETO|Edital|Ofício|pregão/.test(line)));
 });
 

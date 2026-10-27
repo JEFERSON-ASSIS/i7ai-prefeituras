@@ -101,7 +101,7 @@ test('JSON gateway streaming emits only genuine completion without slicing a fab
   global.fetch = async () => jsonResponse({ answer: 'Resposta do gateway', usage: { inputTokens: 10, outputTokens: 5 } });
   await service.chatStream('agent-a', 'tenant-a', { message: 'Resuma' }, 'user-a', (event) => { events.push(event); assert.equal(records.messages.length, 2); });
   assert.deepEqual(events, ['complete']);
-  assert.equal(records.conversations[0].theme, 'texto'); assert.equal(records.conversations[0].themeVersion, 1);
+  assert.equal(records.conversations[0].theme, 'texto'); assert.equal(records.conversations[0].themeVersion, 2);
 });
 
 test('gateway null or primitive JSON returns an explicit provider contract error without saving history', async () => {
