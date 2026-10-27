@@ -5,13 +5,19 @@ import { gatewayBaseAllowed, isAllowedRoute, routePolicyMessage } from '../catal
 import { TenantAiKeyService } from './tenant-ai-key.service';
 import { LIMIT_MESSAGES } from './limit-messages';
 import type { OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
+import { SplitInstructions, joinedInstructions } from './instructions';
 
 export type OmniRouterInput = {
   agent: { id: string; tenantId: string; systemPrompt?: string | null; temperature: unknown; maxTokens: number; advancedReasoning: boolean };
   model: { slug: string; capabilities?: unknown; provider?: { config?: unknown } };
-  instructions: string;
+  /** Stable part (agent prompt + rules) and per-message part (document snippets + conversation files). */
+  instructions: SplitInstructions;
+  /** Conversation summary, sent as a second system message when present. */
+  summary?: string;
   message: string;
   history: { role: string; content: string }[];
+  /** True when no message was left out of `history` (or a summary covers them); only then is its end marked for caching. */
+  historyComplete: boolean;
   images?: { name: string; mimeType: string; dataUrl: string }[];
   functions: AgentFunction[];
   userId?: string;
@@ -130,7 +136,7 @@ export class OmniRouterService {
     if (supportsTemperature && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) throw new BadRequestException('A temperatura do agente deve estar entre 0 e 2.');
     // The prefeitura's own key from SGDM, sent only on the wire (never in the quota or logs).
     const providerKey = await this.tenantKeys?.forModel(input.agent.tenantId, input.model.slug);
-    const messages: ChatMessage[] = [{ role: 'system', content: input.instructions }, ...this.history(input.history), { role: 'user', content: this.userContent(input) }];
+    const messages = this.messagesFor(input);
     const usedCalls: { callId: string; name: string }[] = [];
     let inputTokens = 0; let outputTokens = 0; let measured = true; let cost = 0;
     for (let round = 0; round < 8; round++) {
@@ -213,9 +219,38 @@ export class OmniRouterService {
     return Buffer.byteLength(JSON.stringify({ ...request, messages }), 'utf8') + 2048;
   }
 
+  private messagesFor(input: OmniRouterInput): ChatMessage[] {
+    const history = this.history(input.history);
+    // Off: exactly the layout before prompt caching (one system string with the sources inline).
+    if (!input.optimization.cachePrompt.ligado) {
+      return [{ role: 'system', content: joinedInstructions(input.instructions) }, ...history, { role: 'user', content: this.userContent(input) }];
+    }
+    // On: the fixed part stays alone at the top so the prefix repeats; Anthropic needs explicit markers
+    // (at most 2), the other providers cache prefixes on their own.
+    const anthropic = input.model.slug.startsWith('anthropic/');
+    const marker = anthropic ? { cache_control: { type: 'ephemeral' } } : {};
+    const messages: ChatMessage[] = [{ role: 'system', content: [{ type: 'text', text: input.instructions.fixed, ...marker }] }];
+    if (input.summary) messages.push({ role: 'system', content: input.summary });
+    // A cut history shifts every turn, so writing it to the cache (1.25x) would cost more than it saves.
+    const markHistory = anthropic && input.historyComplete === true && history.length > 0 && history.length === input.history.length;
+    messages.push(...history.map((item, index) => markHistory && index === history.length - 1
+      ? { role: item.role, content: [{ type: 'text', text: item.content as string, ...marker }] }
+      : item));
+    messages.push({ role: 'user', content: [
+      { type: 'text', text: '<fontes_e_arquivos>\n' + input.instructions.variable + '\n</fontes_e_arquivos>' },
+      { type: 'text', text: input.message },
+      ...this.imageParts(input),
+    ] });
+    return messages;
+  }
+
   private userContent(input: OmniRouterInput): unknown {
     if (!input.images?.length) return input.message;
-    const images = input.images.map(image => {
+    return [{ type: 'text', text: input.message }, ...this.imageParts(input)];
+  }
+
+  private imageParts(input: OmniRouterInput): unknown[] {
+    return (input.images || []).map(image => {
       if (!['image/png', 'image/jpeg', 'image/webp'].includes(image.mimeType) || !image.dataUrl.startsWith('data:' + image.mimeType + ';base64,') ||
           !/^[A-Za-z0-9+/]+={0,2}$/.test(image.dataUrl.slice(image.dataUrl.indexOf(',') + 1))) {
         throw new BadRequestException('O anexo de imagem deve possuir conteúdo PNG, JPEG ou WEBP válido.');
@@ -223,7 +258,6 @@ export class OmniRouterService {
       // "Baixa" = detail low; "alta" = auto (the provider decides, as before this setting existed).
       return { type: 'image_url', image_url: { url: image.dataUrl, detail: input.optimization.imagensBaixa.ligado ? 'low' : 'auto' } };
     });
-    return [{ type: 'text', text: input.message }, ...images];
   }
 
   // Ids only, never person names: the gateway groups spend by these tags.

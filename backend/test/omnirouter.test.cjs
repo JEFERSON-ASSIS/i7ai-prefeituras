@@ -39,9 +39,10 @@ function fixture(functions = []) {
   const input = {
     agent: { id: 'agent-a', tenantId: 'tenant-a', temperature: 0.2, maxTokens: 500, advancedReasoning: false },
     model: { slug: 'openai/model-from-catalog', capabilities: null, provider: { config: null } },
-    instructions: 'Responda em português. O agente é um analista administrativo.',
+    instructions: { fixed: 'Responda em português. O agente é um analista administrativo.', variable: '[Fonte 1] Lei 10 (trecho 1)\nOrçamento aprovado.' },
+    historyComplete: true,
     message: 'Analise o orçamento.', history: [{ role: 'user', content: 'Contexto anterior' }, { role: 'assistant', content: 'Resposta anterior' }],
-    functions, userId: 'user-a', origin: 'i7ai-chat', optimization: JSON.parse(JSON.stringify(OPTIMIZATION_DEFAULTS)),
+    functions, userId: 'user-a', origin: 'i7ai-chat', optimization: { ...JSON.parse(JSON.stringify(OPTIMIZATION_DEFAULTS)), cachePrompt: { ligado: false } },
     quotaScope: quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cacheWriteInputPrice: 0, kind: 'resposta' }),
   };
   return { service: new OmniRouterService(runtime, quota), input, records, quota, runtime, prisma };
@@ -105,7 +106,7 @@ test('uses real HTTP Chat Completions, central catalog model, agent context, his
   assert.equal(request.url, '/v1/chat/completions'); assert.equal(request.headers.authorization, 'Bearer local-test-key-never-used-outside-fixture');
   assert.equal(request.body.model, input.model.slug); assert.equal(request.body.max_tokens, 500); assert.equal(request.body.stream, false);
   assert.equal(request.body.temperature, undefined); assert.equal(request.body.reasoning, undefined);
-  assert.deepEqual(request.body.messages.map(message => message.content), [input.instructions, 'Contexto anterior', 'Resposta anterior', input.message]);
+  assert.deepEqual(request.body.messages.map(message => message.content), [input.instructions.fixed + '\n\n' + input.instructions.variable, 'Contexto anterior', 'Resposta anterior', input.message]);
   assert.equal(records.reservations.length, 1); assert.equal(records.reservations[0].reservedTokens, 0n);
   assert.equal(records.usage[0].inputTokens, 30); assert.equal(records.usage[0].usageMeasured, true);
 });
@@ -688,3 +689,99 @@ for (const streaming of [false, true]) {
     assert.equal(records.usage[0].truncated, true);
   });
 }
+
+// Prompt cache (Entrega 4, Task 4): fixed part alone in the system message, sources at the start of the last user message.
+function cacheOn(slug, history, historyComplete) {
+  const setup = fixture();
+  setup.input.optimization.cachePrompt = { ligado: true };
+  setup.input.model.slug = slug;
+  if (history) setup.input.history = history;
+  setup.input.historyComplete = historyComplete;
+  return setup;
+}
+const countMarkers = body => (JSON.stringify(body).match(/cache_control/g) || []).length;
+const SOURCES = input => '<fontes_e_arquivos>\n' + input.instructions.variable + '\n</fontes_e_arquivos>';
+
+test('cache de prompt ligado com Claude: parte fixa e fim do histórico completo marcados (2 marcações), fontes no fim', async t => {
+  const { service, input } = cacheOn('anthropic/claude-haiku-5-5', undefined, true);
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  await service.generate(input);
+  const body = local.requests[0].body;
+  assert.deepEqual(body.messages[0], { role: 'system', content: [{ type: 'text', text: input.instructions.fixed, cache_control: { type: 'ephemeral' } }] });
+  assert.deepEqual(body.messages[0].content[0].cache_control, { type: 'ephemeral' });
+  assert.equal(body.messages[1].content, 'Contexto anterior');
+  assert.deepEqual(body.messages[2], { role: 'assistant', content: [{ type: 'text', text: 'Resposta anterior', cache_control: { type: 'ephemeral' } }] });
+  assert.equal(countMarkers(body), 2);
+  const last = body.messages.at(-1);
+  assert.equal(last.role, 'user');
+  assert.deepEqual(last.content, [{ type: 'text', text: SOURCES(input) }, { type: 'text', text: input.message }]);
+  assert.ok(last.content[0].text.startsWith('<fontes_e_arquivos>'));
+});
+
+test('cache de prompt ligado com Claude e histórico cortado (41 mensagens): só a parte fixa é marcada', async t => {
+  const history = Array.from({ length: 41 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: 'Turno ' + index }));
+  const { service, input } = cacheOn('anthropic/claude-haiku-5-5', history, false);
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  await service.generate(input);
+  const body = local.requests[0].body;
+  assert.equal(countMarkers(body), 1);
+  assert.deepEqual(body.messages[0].content[0].cache_control, { type: 'ephemeral' });
+  assert.ok(body.messages.slice(1, -1).every(message => typeof message.content === 'string'));
+  assert.ok(body.messages.at(-1).content[0].text.startsWith('<fontes_e_arquivos>'));
+});
+
+test('cache de prompt ligado com Claude e histórico vazio: só a parte fixa é marcada; imagens seguem no fim', async t => {
+  const { service, input } = cacheOn('anthropic/claude-haiku-5-5', [], true);
+  input.model.capabilities = { supportsVision: true, contextWindow: 200000 };
+  input.images = [{ name: 'foto.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,aGVsbG8=' }];
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  await service.generate(input);
+  const body = local.requests[0].body;
+  assert.equal(countMarkers(body), 1);
+  assert.equal(body.messages.length, 2);
+  assert.deepEqual(body.messages[1].content, [{ type: 'text', text: SOURCES(input) }, { type: 'text', text: input.message }, { type: 'image_url', image_url: { url: input.images[0].dataUrl, detail: 'low' } }]);
+});
+
+test('cache de prompt ligado com OpenAI: mesma disposição em blocos e nenhum cache_control', async t => {
+  const { service, input } = cacheOn('openai/gpt-4o-mini', undefined, true);
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  await service.generate(input);
+  const body = local.requests[0].body;
+  assert.ok(!JSON.stringify(body).includes('cache_control'));
+  assert.deepEqual(body.messages[0], { role: 'system', content: [{ type: 'text', text: input.instructions.fixed }] });
+  assert.equal(body.messages[1].content, 'Contexto anterior'); assert.equal(body.messages[2].content, 'Resposta anterior');
+  assert.deepEqual(body.messages.at(-1).content, [{ type: 'text', text: SOURCES(input) }, { type: 'text', text: input.message }]);
+});
+
+test('cache de prompt ligado: o resumo vai como segunda mensagem de sistema, sem marcação própria', async t => {
+  const { service, input } = cacheOn('anthropic/claude-haiku-5-5', undefined, true);
+  input.summary = 'Resumo da conversa até aqui.';
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  await service.generate(input);
+  const body = local.requests[0].body;
+  assert.deepEqual(body.messages[1], { role: 'system', content: 'Resumo da conversa até aqui.' });
+  assert.equal(countMarkers(body), 2);
+});
+
+test('cache de prompt ligado com ferramentas: as rodadas seguintes continuam com no máximo 2 marcações', async t => {
+  const functions = [localFunction()];
+  const setup = fixture(functions);
+  setup.input.optimization.cachePrompt = { ligado: true };
+  setup.input.model = { slug: 'anthropic/claude-haiku-5-5', capabilities: { supportsTools: true }, provider: { config: null } };
+  const local = await provider(t, (_body, response, count) => json(response, count === 1 ? completion(null, { finishReason: 'tool_calls', calls: [call()] }) : completion()));
+  await setup.service.generate(setup.input);
+  assert.equal(local.requests.length, 2);
+  for (const request of local.requests) assert.equal(countMarkers(request.body), 2);
+});
+
+test('cache de prompt desligado: mensagem de sistema é a string de hoje (parte fixa + parte variável)', async t => {
+  const { service, input } = fixture();
+  input.model.slug = 'anthropic/claude-haiku-5-5';
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  await service.generate(input);
+  const body = local.requests[0].body;
+  assert.equal(typeof body.messages[0].content, 'string');
+  assert.equal(body.messages[0].content, input.instructions.fixed + '\n\n' + input.instructions.variable);
+  assert.equal(body.messages.at(-1).content, input.message);
+  assert.ok(!JSON.stringify(body).includes('cache_control'));
+});

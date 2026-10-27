@@ -40,7 +40,7 @@ test('chat switches the execution model without modifying the agent default, and
   process.env.AI_GATEWAY_URL = 'https://legacy.invalid';
   const result = await service.chat('agent', 'tenant', { message: 'Olá', modelId: 'selected-model' }, 'user');
   assert.equal(records.requests[0].model.slug, 'account-specific-claude');
-  assert.match(records.requests[0].instructions, /Instruções originais/);
+  assert.match(records.requests[0].instructions.fixed, /Instruções originais/);
   assert.equal(agent.models[0].model.id, 'default-model');
   assert.equal(records.conversations[0].modelId, 'selected-model');
   assert.equal(result.modelId, 'selected-model'); assert.equal(result.provider, 'anthropic');
@@ -67,7 +67,7 @@ test('owned attachments enter the model context and are linked to the user messa
   const { service, records } = fixture();
   await service.chat('agent', 'tenant', { message: 'Analise', modelId: 'selected-model', attachmentIds: ['file'] }, 'user');
   assert.deepEqual(records.preparedFiles[0], ['tenant', 'user', ['file']]);
-  assert.match(records.requests[0].instructions, /Despesa de 100 reais/);
+  assert.match(records.requests[0].instructions.variable, /Despesa de 100 reais/);
   assert.deepEqual(records.messages[0].attachments.create, [{ documentId: 'file' }]);
   assert.equal(records.messages[0].metadata.attachments[0].name, 'relatório.txt');
   assert.equal(records.messages[1].attachments, undefined);
@@ -78,7 +78,7 @@ test('historical attachments are reauthorized for the current owner on every tur
   prisma.conversation.findFirst = async () => ({ id: 'conversation', modelId: 'selected-model', messages: [{ role: 'user', content: 'Analise este arquivo', attachments: [{ documentId: 'file' }] }] });
   await service.chat('agent', 'tenant', { message: 'Qual o total?', conversationId: 'conversation' }, 'user');
   assert.deepEqual(records.preparedFiles[0], ['tenant', 'user', ['file']]);
-  assert.match(records.requests[0].instructions, /100 reais/);
+  assert.match(records.requests[0].instructions.variable, /100 reais/);
   assert.equal(records.messages[0].attachments, undefined);
 });
 
