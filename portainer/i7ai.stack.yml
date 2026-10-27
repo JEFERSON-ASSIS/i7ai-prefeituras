@@ -62,9 +62,7 @@ services:
     image: redis:7-alpine
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
-    # Filas BullMQ + cache exato de respostas do LiteLLM. "volatile-ttl" só despeja
-    # chaves com validade (o cache); as filas não têm validade e nunca são despejadas.
-    command: [sh, -ec, 'exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}" --maxmemory 200mb --maxmemory-policy volatile-ttl']
+    command: [sh, -ec, 'exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"']
     volumes:
       - i7ai_redis:/data
     networks:
@@ -79,7 +77,30 @@ services:
       placement: *placement
       resources:
         limits:
-          # 200 MB de dados + folga para o AOF. Soma da pilha: 512 + 256 + 1200 + 768 + 128 = 2864 MB.
+          memory: 128M
+
+  i7ai-redis-cache:
+    # Só o cache exato de respostas do LiteLLM. Fica separado do i7ai-redis porque
+    # as filas BullMQ precisam de "noeviction": qualquer despejo lá pode soltar a
+    # trava de um job e fazê-lo rodar de novo (automação cobrada duas vezes).
+    # Aqui tudo é descartável: sem disco (sem RDB/AOF) e, cheio, despeja o menos usado.
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_CACHE_PASSWORD:?Set REDIS_CACHE_PASSWORD}
+    command: [sh, -ec, 'exec redis-server --requirepass "$${REDIS_PASSWORD}" --maxmemory 200mb --maxmemory-policy allkeys-lru --save "" --appendonly no']
+    networks:
+      - interna
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      replicas: 1
+      placement: *placement
+      resources:
+        limits:
+          # 200 MB de dados + folga. Soma da pilha: 512 + 128 + 256 + 1200 + 768 + 128 = 2992 MB.
           memory: 256M
 
   litellm:
@@ -93,10 +114,11 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY}
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY}
       STORE_MODEL_IN_DB: 'True'
-      # Cache exato de respostas: só o Redis do i7Ai, com senha (nunca o "redis" do SGDM na SGDMNET).
-      REDIS_HOST: i7ai-redis
+      # Cache exato de respostas: só o i7ai-redis-cache, com senha (nunca o "redis"
+      # do SGDM na SGDMNET, nem o i7ai-redis das filas).
+      REDIS_HOST: i7ai-redis-cache
       REDIS_PORT: '6379'
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+      REDIS_PASSWORD: ${REDIS_CACHE_PASSWORD:?Set REDIS_CACHE_PASSWORD}
     configs:
       - source: litellm_config
         target: /app/config.yaml

@@ -125,6 +125,15 @@ As peças do SGDM passam pelo LiteLLM só se `LITELLM_URL` e `LITELLM_ADMIN_KEY`
 
 **Retenção.** Usuário, origem e conversas por prefeitura dependem dos logs do LiteLLM; se ele apagar logs antigos (retenção configurada), esses números somem do período. Os totais de gasto não dependem disso.
 
+## Cache exato de respostas
+
+O LiteLLM guarda respostas inteiras num Redis só de cache, o `i7ai-redis-cache`. Ele tem senha própria (`REDIS_CACHE_PASSWORD`), 200 MB, `allkeys-lru` e não grava em disco. Fica separado do `i7ai-redis` das filas BullMQ, que precisa de `noeviction`. Nunca é o Redis do SGDM.
+
+- **Quando vale.** O modo é `default_off` (`deploy/litellm/config.yaml`), então nada é cacheado sem pedido. O backend pede `cache: { 'use-cache': true, ttl, namespace: 'i7ai:<prefeitura>' }` só em chamadas sem stream: em automações, e no chat quando a Central liga `chat`. O namespace por prefeitura foi testado no LiteLLM 1.106.4: o mesmo pedido de outra prefeitura não acerta o cache.
+- **Acerto.** O LiteLLM envia `x-litellm-cache-key` só quando a resposta vem do cache. O `x-litellm-response-cost` repete o custo original, por isso o i7Ai grava `cacheHit = true` e custo 0 sem usar esse cabeçalho. Os tokens ficam na linha para medir a economia, mas saem do saldo da licença, dos tokens por minuto do usuário e dos totais do painel (contados à parte em `cacheHits`).
+- **Gasto do LiteLLM.** Num acerto, `LiteLLM_SpendLogs` grava `spend = 0` e `cache_hit = True` (conferido no 1.106.4). Os números da Central, que vêm do `/spend/...`, não somam o custo de um acerto.
+- **Redis fora do ar.** Com `socket_connect_timeout: 1` e `socket_timeout: 1`, a chamada segue sem cache. No teste local, as primeiras chamadas tiveram uns 2 s a mais e as seguintes, nenhum atraso.
+
 ## Próximas etapas de redução de custo
 
 1. Ler tokens em cache no consumo e cadastrar preço de entrada em cache.

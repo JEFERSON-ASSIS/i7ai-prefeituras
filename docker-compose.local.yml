@@ -26,6 +26,14 @@ services:
     volumes:
       - i7ai_redis_data:/data
 
+  # Só o cache exato do LiteLLM, separado das filas BullMQ (que exigem noeviction).
+  # Descartável: sem disco e, cheio, despeja o menos usado.
+  redis-cache:
+    image: redis:7-alpine
+    container_name: i7ai-prefeituras-local-redis-cache
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "200mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+
   minio:
     image: minio/minio:latest
     container_name: i7ai-prefeituras-local-minio
@@ -65,10 +73,10 @@ services:
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-i7ai-dev-salt}
       # Recarrega do banco as chaves cadastradas pelo i7Ai ao iniciar.
       STORE_MODEL_IN_DB: "True"
-      # Cache exato de respostas no Redis do i7Ai (vazio = sem senha no local).
-      REDIS_HOST: redis
+      # Cache exato de respostas no Redis só de cache (vazio = sem senha no local).
+      REDIS_HOST: redis-cache
       REDIS_PORT: "6379"
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD: ${REDIS_CACHE_PASSWORD:-}
     volumes:
       - ./deploy/litellm/config.yaml:/app/config.yaml:ro
     ports:
@@ -76,7 +84,7 @@ services:
     depends_on:
       litellm-db-init:
         condition: service_completed_successfully
-      redis:
+      redis-cache:
         condition: service_started
 
 volumes:

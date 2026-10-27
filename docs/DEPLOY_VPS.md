@@ -25,7 +25,7 @@ Referências: [portainer/README.md](../portainer/README.md) (stack), [portainer/
 | Banco do SGDM | banco **`postgres`**, usuário `postgres` (não o `sgdm` dos exemplos) |
 | Stack do SGDM | `sgdm-app` → serviços `sgdm-app_sgdm-api` e `sgdm-app_sgdm-web`; hosts `sgdm.com.br` e `api.sgdm.com.br` |
 | MinIO compartilhado | stack `minio`, serviço `minio_minio`; o i7Ai usa o bucket `i7ai-documents` e um usuário próprio (passo 6.1) |
-| Stack nova | **`i7ai-plataforma`** → `i7ai-plataforma_i7ai-postgres`, `_i7ai-redis`, `_litellm`, `_i7ai-backend`, `_i7ai-frontend` |
+| Stack nova | **`i7ai-plataforma`** → `i7ai-plataforma_i7ai-postgres`, `_i7ai-redis`, `_i7ai-redis-cache`, `_litellm`, `_i7ai-backend`, `_i7ai-frontend` |
 | Stack que NÃO se mexe | **`i7ai`** — é o site institucional `i7ai.com.br`. Nunca use esse nome nem rode `docker stack rm i7ai`. |
 | Backup do SGDM | i7ai-cloud, backup diário do banco do SGDM (usuário `backup_leitura`, só leitura) |
 
@@ -223,6 +223,7 @@ Parta de [portainer/stack.env.example](../portainer/stack.env.example) e preench
 | `I7AI_IMAGE_TAG` | `main` |
 | `POSTGRES_PASSWORD` | `openssl rand -hex 32` |
 | `REDIS_PASSWORD` | `openssl rand -hex 32` |
+| `REDIS_CACHE_PASSWORD` | `openssl rand -hex 32`, diferente do `REDIS_PASSWORD` (Redis só do cache exato do LiteLLM) |
 | `I7AI_S3_ACCESS_KEY` | `i7ai-app` (usuário do MinIO do SGDM criado no passo 6.1) |
 | `I7AI_S3_SECRET_KEY` | `openssl rand -hex 32`; o mesmo valor é usado no passo 6.1 e na stack |
 | `S3_BUCKET` | `i7ai-documents` (criado no passo 6.1) |
@@ -466,7 +467,7 @@ ss -tulpn | grep LISTEN
 free -h
 ```
 
-**Esperado:** comparado ao passo 2, nenhuma porta nova em `0.0.0.0` ou `[::]` (a pilha não publica portas; só o Traefik expõe 80/443). A memória livre caiu no máximo uns 3 GB (limites: Postgres 512M, Redis 128M, LiteLLM 1200M, backend 768M, frontend 128M). Opcional, da sua máquina: `nmap -Pn -p 4000,5432,6379,9000,9001 162.141.109.168` → todas `filtered` ou `closed`.
+**Esperado:** comparado ao passo 2, nenhuma porta nova em `0.0.0.0` ou `[::]` (a pilha não publica portas; só o Traefik expõe 80/443). A memória livre caiu no máximo uns 3 GB (limites: Postgres 512M, Redis 128M, Redis do cache 256M, LiteLLM 1200M, backend 768M, frontend 128M). Opcional, da sua máquina: `nmap -Pn -p 4000,5432,6379,9000,9001 162.141.109.168` → todas `filtered` ou `closed`.
 
 ---
 

@@ -20,12 +20,14 @@ flowchart LR
   B --> S[sgdm-api :3001]
   S --> L
   L --> P
+  L --> C[(i7ai-redis-cache)]
 ```
 
 | Serviço (no Swarm: `i7ai-plataforma_<serviço>`) | Redes | Observação |
 |-------|--------|------------|
 | `i7ai-postgres` | `interna` | pgvector; usuário e banco `i7ai`; banco `litellm` criado na 1ª subida |
-| `i7ai-redis` | `interna` | com senha e AOF |
+| `i7ai-redis` | `interna` | filas BullMQ; com senha e AOF |
+| `i7ai-redis-cache` | `interna` | só o cache exato do LiteLLM; senha própria (`REDIS_CACHE_PASSWORD`), 200 MB, `allkeys-lru`, sem disco |
 | `litellm` | `interna` + `SGDMNET` | o SGDM chama `http://litellm:4000` |
 | `i7ai-backend` | `interna` + `SGDMNET` | migrations e bucket no entrypoint |
 | `i7ai-frontend` | `SGDMNET` | rota do Traefik `i7ai_plataforma` |
