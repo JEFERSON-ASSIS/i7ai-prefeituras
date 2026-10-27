@@ -392,6 +392,8 @@ model Conversation {
   /// Theme from the fixed list in src/sgdm/themes.ts (keywords, no model); recalculated while themeVersion < THEME_VERSION.
   theme        String? @db.VarChar(30)
   themeVersion Int     @default(0)
+  /// 'chat' (page) or 'assistente' (floating assistant in the SGDM).
+  channel      String  @default("chat") @db.VarChar(20)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 

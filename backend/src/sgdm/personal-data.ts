@@ -22,3 +22,19 @@ export function maskPersonalData(text: string): string {
     .replace(SEPARATED_DIGITS, '[número]')
     .replace(DIGITS, '[número]');
 }
+
+// Screen text (assistente flutuante): masks CPF, RG, CNS, e-mail and phone; keeps CNPJ, process numbers, codes and values.
+const SCREEN_CNPJ_OR_CPF = /((?<![\d])\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}(?!\d))|((?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d))/g;
+const SCREEN_CNS = /(?<!\d)(?:\d{15}|\d{3}\s\d{4}\s\d{4}\s\d{4})(?!\d)/g;
+const SCREEN_RG_LABELED = /\b(RG|R\.G\.|identidade)(\s*(?:n[º°o.]*|:)?\s*)\d[\d.\-]{4,}[\dXx]/gi;
+const SCREEN_RG_FORMATTED = /(?<![\d.])\d{1,2}\.\d{3}\.\d{3}-[\dXx](?![\d\w])/g;
+
+export function maskScreenText(text: string): string {
+  return (text || '')
+    .replace(EMAIL, '[e-mail]')
+    .replace(SCREEN_CNPJ_OR_CPF, (match, cnpj) => cnpj ? match : '[CPF]')
+    .replace(SCREEN_CNS, '[CNS]')
+    .replace(SCREEN_RG_LABELED, (_m, label, gap) => label + gap + '[RG]')
+    .replace(SCREEN_RG_FORMATTED, '[RG]')
+    .replace(PHONE, '[telefone]');
+}

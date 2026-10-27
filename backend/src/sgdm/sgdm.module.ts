@@ -13,6 +13,8 @@ import { SgdmThemesController } from './sgdm-themes.controller';
 import { SgdmThemesService } from './sgdm-themes.service';
 import { SgdmResearchController } from './sgdm-research.controller';
 import { SgdmResearchService } from './sgdm-research.service';
+import { SgdmAgentsController } from './sgdm-agents.controller';
+import { SgdmAgentsService } from './sgdm-agents.service';
 import { ThemeBackfillService } from './theme-backfill.service';
 
 /**
@@ -20,8 +22,8 @@ import { ThemeBackfillService } from './theme-backfill.service';
  * CatalogModule or AiGatewayModule (they import this one).
  */
 @Module({
-  controllers: [SgdmNamesController, SgdmLicensesController, SgdmOptimizationController, SgdmThemesController, SgdmResearchController],
-  providers: [SgdmAccessService, SgdmOrganizationService, SgdmNamesService, SgdmLimitsService, SgdmLicenseService, SgdmOptimizationService, SgdmSavingsService, SgdmThemesService, SgdmResearchService, ThemeBackfillService],
+  controllers: [SgdmNamesController, SgdmLicensesController, SgdmOptimizationController, SgdmThemesController, SgdmResearchController, SgdmAgentsController],
+  providers: [SgdmAccessService, SgdmOrganizationService, SgdmNamesService, SgdmLimitsService, SgdmLicenseService, SgdmOptimizationService, SgdmSavingsService, SgdmThemesService, SgdmResearchService, SgdmAgentsService, ThemeBackfillService],
   exports: [SgdmAccessService, SgdmOrganizationService, SgdmLimitsService, SgdmLicenseService, SgdmOptimizationService],
 })
 export class SgdmModule {}
