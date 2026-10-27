@@ -7,8 +7,8 @@ import { SgdmAccessService } from './sgdm-access.service';
 import { SgdmOptimizationService } from './sgdm-optimization.service';
 import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from './optimization-defaults';
 import {
-  ModelPrices, ModelSwapEvent, SummaryConversation, UsageRow, exactCacheEstimate, exactCacheSavings, imageSavings, median,
-  modelSwapSavings, percentile, price, promptCacheEstimate, promptCacheSavings, summaryEstimate, summarySavings,
+  ExactCacheEstimate, ExactCacheSavings, ImageSavings, ModelSwapSavings, PREFIX_MIN_TOKENS, PromptCacheEstimate, PromptCacheSavings,
+  SummaryConversation, SummarySavings, UsageRow, median, percentile, price, summaryEstimate,
 } from './savings';
 
 export interface EconomiaItem { realUsd: number | null; estimativaUsd: number | null }
@@ -22,6 +22,8 @@ export interface EconomiaPrefeitura {
 }
 export interface EconomiaAgente {
   id: string; tenantId: string; nome: string; modeloSlug: string | null; maxTokens: number; temFerramentas: boolean;
+  /** The agent's advanced reasoning flag: a swap to a model without reasoning is refused (SGDM skips that suggestion). */
+  raciocinioAvancado: boolean;
   chamadas: number; saidaMediana: number | null; saidaP95: number | null; entradaMediana: number | null;
   tokensEntrada: number; tokensCache: number; tokensSaida: number; custoUsd: number; prefixoTokens: number;
 }
@@ -37,16 +39,31 @@ export type ModelSwap = { agentId: string; from: string | null; to: string };
 
 export const MODEL_NOT_RELEASED = 'Este modelo não está liberado para esta prefeitura.';
 export const MODEL_WITHOUT_TOOLS = 'O modelo escolhido não aceita as ferramentas deste agente.';
+export const MODEL_WITHOUT_REASONING = 'O modelo escolhido não aceita o raciocínio avançado deste agente.';
+export const MODEL_CHANGED_SINCE = 'O modelo do agente foi alterado depois da troca; desfaça manualmente.';
+/** Rows read per query; the endpoint never holds more than one batch of `ai_usage`. */
+export const USAGE_BATCH_SIZE = 5000;
 const MAX_SUMMARY_CONVERSATIONS = 2000;
-const PREFIX_MIN_TOKENS = 1024;
 const SUMMARY_EVENTS = ['conversation.summary_created', 'conversation.summary_rejected', 'conversation.summary_disabled'] as const;
 
 const modelSelect = { id: true, slug: true, inputPrice: true, outputPrice: true, cachedInputPrice: true, cacheWriteInputPrice: true, active: true, capabilities: true } satisfies Prisma.AiModelSelect;
 type ModelRow = Prisma.AiModelGetPayload<{ select: typeof modelSelect }>;
 const round = (value: number) => Number(value.toFixed(6));
 /** Same rule as the gateway: anything but an explicit `supportsTools: true` cannot run the agent's tools. */
-const supportsTools = (capabilities: unknown) => Boolean(capabilities) && typeof capabilities === 'object' && !Array.isArray(capabilities) && (capabilities as Record<string, unknown>).supportsTools === true;
+const supports = (capabilities: unknown, name: 'supportsTools') => Boolean(capabilities) && typeof capabilities === 'object' && !Array.isArray(capabilities) && (capabilities as Record<string, unknown>)[name] === true;
+/** Same rule as the gateway's direct path: an explicit `supportsReasoning`, else the o1+/gpt-5+ slug heuristic. */
+function supportsReasoning(model: ModelRow) {
+  const capabilities = model.capabilities && typeof model.capabilities === 'object' && !Array.isArray(model.capabilities) ? model.capabilities as Record<string, unknown> : {};
+  return typeof capabilities.supportsReasoning === 'boolean' ? capabilities.supportsReasoning : /^(o[1-9]([.-]|$)|gpt-[56])/.test(model.slug);
+}
 const toolsWhere = (tenantId: string) => ({ enabled: true, tool: { tenantId, status: 'ACTIVE' as const } });
+
+type TenantAcc = {
+  promptCache: PromptCacheSavings; promptEstimate: PromptCacheEstimate; exact: ExactCacheSavings; exactEstimate: ExactCacheEstimate;
+  summary: SummarySavings; images: ImageSavings; swaps: ModelSwapSavings;
+  tokensLidos: number; tokensEscritos: number; acertos: number; baixa: number; alta: number; truncadas: number;
+};
+type AgentAcc = { chamadas: number; input: number[]; output: number[]; tokensEntrada: number; tokensCache: number; tokensSaida: number; custo: number };
 
 function group<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
   const map = new Map<string, T[]>();
@@ -61,6 +78,8 @@ function group<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
 @Injectable()
 export class SgdmSavingsService {
   private readonly logger = new Logger(SgdmSavingsService.name);
+  /** Overridable by tests to exercise the pagination. */
+  batchSize = USAGE_BATCH_SIZE;
   constructor(private readonly prisma: PrismaService, @Optional() private readonly optimization?: SgdmOptimizationService, @Optional() private readonly access?: SgdmAccessService) {}
 
   private config(tenantId: string, agentId: string): Promise<OtimizacaoEfetiva> {
@@ -70,30 +89,92 @@ export class SgdmSavingsService {
   async economia(query: EconomiaQuery): Promise<EconomiaI7ai> {
     const tenantFilter = query.tenantId ? { tenantId: query.tenantId } : {};
     const period = { gte: query.from, lt: query.to };
-    const [usage, events, audits] = await Promise.all([
-      this.prisma.aiUsage.findMany({
-        where: { ...tenantFilter, createdAt: period, status: { not: 'PENDING' } },
-        select: {
-          tenantId: true, agentId: true, userId: true, modelId: true, inputTokens: true, outputTokens: true, cost: true,
-          cachedInputTokens: true, cacheWriteInputTokens: true, cacheHit: true, historySavedTokens: true, lowDetailImages: true,
-          highDetailImages: true, requestHash: true, kind: true, truncated: true, createdAt: true,
-        },
-      }),
+    const [events, audits] = await Promise.all([
       // Swaps before the period still count: their window covers the period's rows.
       this.prisma.optimizationEvent.findMany({ where: { ...tenantFilter, kind: 'TROCA_MODELO', createdAt: { lt: query.to } }, select: { tenantId: true, agentId: true, kind: true, fromModelId: true, toModelId: true, createdAt: true } }),
       this.prisma.auditLog.groupBy({ by: ['tenantId', 'event'], where: { ...tenantFilter, event: { in: [...SUMMARY_EVENTS] }, createdAt: period }, _count: { _all: true } }),
     ]);
-    const modelIds = new Set<string>();
-    for (const row of usage) if (row.modelId) modelIds.add(row.modelId);
-    for (const event of events) { if (event.fromModelId) modelIds.add(event.fromModelId); if (event.toModelId) modelIds.add(event.toModelId); }
-    const models = new Map((modelIds.size ? await this.prisma.aiModel.findMany({ where: { id: { in: [...modelIds] } }, select: modelSelect }) : []).map(row => [row.id, row]));
-    const rows: UsageRow[] = usage.map(row => ({ ...row, model: (row.modelId && models.get(row.modelId)) || null }));
-    const swaps: (ModelSwapEvent & { tenantId: string })[] = events.map(event => ({ ...event, from: (event.fromModelId && models.get(event.fromModelId)) || null }));
+    const models = new Map<string, ModelRow | null>();
+    const loadModels = async (ids: (string | null)[]) => {
+      const missing = [...new Set(ids.filter((id): id is string => Boolean(id) && !models.has(id as string)))];
+      if (!missing.length) return;
+      const found = await this.prisma.aiModel.findMany({ where: { id: { in: missing } }, select: modelSelect });
+      for (const id of missing) models.set(id, found.find(row => row.id === id) ?? null);
+    };
+    await loadModels(events.flatMap(event => [event.fromModelId, event.toModelId]));
+    const swapsByTenant = group(events.map(event => ({ ...event, from: (event.fromModelId && models.get(event.fromModelId)) || null })), event => event.tenantId);
 
-    const agentIds = [...new Set(rows.map(row => row.agentId).filter((id): id is string => Boolean(id)))];
+    // Streamed in (createdAt, id) order; only per-tenant, per-agent and per-user accumulators stay in memory
+    // (plus, per agent, the input/output token counts of its answers for the medians and the p95).
+    const tenants = new Map<string, TenantAcc>();
+    const tenantAcc = async (tenantId: string) => {
+      let acc = tenants.get(tenantId);
+      if (!acc) {
+        const defaults = await this.config(tenantId, '');
+        acc = {
+          promptCache: new PromptCacheSavings(), promptEstimate: new PromptCacheEstimate(), exact: new ExactCacheSavings(),
+          exactEstimate: new ExactCacheEstimate(defaults.cacheExato.ttlSegundos), summary: new SummarySavings(), images: new ImageSavings(),
+          swaps: new ModelSwapSavings(swapsByTenant.get(tenantId) ?? []), tokensLidos: 0, tokensEscritos: 0, acertos: 0, baixa: 0, alta: 0, truncadas: 0,
+        };
+        tenants.set(tenantId, acc);
+      }
+      return acc;
+    };
+    if (query.tenantId) await tenantAcc(query.tenantId);
+    const agentStats = new Map<string, AgentAcc>();
+    const users = new Map<string, { id: string; tenantId: string; porModelo: Map<string, { chamadas: number; curtas: number; custo: number }> }>();
+    let cursor: string | undefined; let total = 0;
+    for (;;) {
+      const batch = await this.prisma.aiUsage.findMany({
+        where: { ...tenantFilter, createdAt: period, status: { not: 'PENDING' } },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: this.batchSize, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        select: {
+          id: true, tenantId: true, agentId: true, userId: true, modelId: true, inputTokens: true, outputTokens: true, cost: true,
+          cachedInputTokens: true, cacheWriteInputTokens: true, cacheHit: true, historySavedTokens: true, lowDetailImages: true,
+          highDetailImages: true, requestHash: true, kind: true, truncated: true, createdAt: true,
+        },
+      });
+      if (!batch.length) break;
+      await loadModels(batch.map(row => row.modelId));
+      for (const raw of batch) {
+        const row: UsageRow = { ...raw, model: (raw.modelId && models.get(raw.modelId)) || null };
+        const acc = await tenantAcc(row.tenantId);
+        acc.promptCache.add(row); acc.promptEstimate.add(row); acc.exact.add(row); acc.exactEstimate.add(row);
+        acc.summary.add(row); acc.images.add(row); acc.swaps.add(row);
+        // Token totals ignore exact-cache hits (no provider call); US$ sums keep every row.
+        if (!row.cacheHit) { acc.tokensLidos += row.cachedInputTokens; acc.tokensEscritos += row.cacheWriteInputTokens; } else acc.acertos++;
+        acc.baixa += row.lowDetailImages; acc.alta += row.highDetailImages;
+        // Per-agent and per-user statistics only use answers: summaries (up to 1,500 output tokens) would skew the p95.
+        if (row.kind !== 'resposta') continue;
+        if (row.truncated) acc.truncadas++;
+        if (row.agentId) {
+          let stats = agentStats.get(row.agentId);
+          if (!stats) { stats = { chamadas: 0, input: [], output: [], tokensEntrada: 0, tokensCache: 0, tokensSaida: 0, custo: 0 }; agentStats.set(row.agentId, stats); }
+          stats.chamadas++; stats.custo += price(row.cost);
+          if (!row.cacheHit) {
+            stats.input.push(row.inputTokens); stats.output.push(row.outputTokens);
+            stats.tokensEntrada += row.inputTokens; stats.tokensCache += row.cachedInputTokens; stats.tokensSaida += row.outputTokens;
+          }
+        }
+        if (row.userId && row.model) {
+          const key = row.tenantId + ':' + row.userId;
+          let user = users.get(key);
+          if (!user) { user = { id: row.userId, tenantId: row.tenantId, porModelo: new Map() }; users.set(key, user); }
+          let byModel = user.porModelo.get(row.model.slug);
+          if (!byModel) { byModel = { chamadas: 0, curtas: 0, custo: 0 }; user.porModelo.set(row.model.slug, byModel); }
+          byModel.chamadas++; byModel.custo += price(row.cost);
+          if (row.outputTokens < query.saidaCurta) byModel.curtas++;
+        }
+      }
+      total += batch.length;
+      if (batch.length < this.batchSize) break;
+      cursor = batch[batch.length - 1].id;
+    }
+
+    const agentIds = [...agentStats.keys()];
     const agents = agentIds.length ? await this.prisma.agent.findMany({
       where: { id: { in: agentIds } },
-      select: { id: true, tenantId: true, name: true, systemPrompt: true, maxTokens: true, models: { select: { isPrimary: true, model: { select: { slug: true } } } } },
+      select: { id: true, tenantId: true, name: true, systemPrompt: true, maxTokens: true, advancedReasoning: true, models: { select: { isPrimary: true, model: { select: { slug: true } } } } },
     }) : [];
     const withTools = new Set(agentIds.length ? (await this.prisma.agentTool.findMany({ where: { agentId: { in: agentIds }, enabled: true, tool: { status: 'ACTIVE' } }, select: { agentId: true, tool: { select: { tenantId: true } } } }))
       .filter(binding => agents.some(agent => agent.id === binding.agentId && agent.tenantId === binding.tool.tenantId)).map(binding => binding.agentId) : []);
@@ -101,60 +182,45 @@ export class SgdmSavingsService {
     const configs = new Map<string, OtimizacaoEfetiva>();
     await Promise.all(agents.map(async agent => configs.set(agent.id, await this.config(agent.tenantId, agent.id))));
 
-    const tenantIds = new Set(rows.map(row => row.tenantId));
-    if (query.tenantId) tenantIds.add(query.tenantId);
-    const byTenant = group(rows, row => row.tenantId);
     const prefeituras: Record<string, EconomiaPrefeitura> = {};
-    for (const tenantId of tenantIds) {
-      const list = byTenant.get(tenantId) ?? [];
-      const defaults = await this.config(tenantId, '');
+    for (const [tenantId, acc] of tenants) {
       const count = (event: string) => audits.find(item => item.tenantId === tenantId && item.event === event)?._count._all ?? 0;
-      const answers = list.filter(row => row.kind === 'resposta');
       const prefixOff: Record<string, number> = {};
       for (const agent of agents) {
         const tokens = prefix.get(agent.id) ?? 0;
         if (agent.tenantId === tenantId && configs.get(agent.id)?.cachePrompt.ligado === false && tokens >= PREFIX_MIN_TOKENS) prefixOff[agent.id] = tokens;
       }
-      const images = imageSavings(list);
+      const images = acc.images.value();
       prefeituras[tenantId] = {
-        cachePrompt: {
-          realUsd: promptCacheSavings(list), estimativaUsd: promptCacheEstimate(list, prefixOff),
-          tokensLidos: list.reduce((sum, row) => sum + row.cachedInputTokens, 0), tokensEscritos: list.reduce((sum, row) => sum + row.cacheWriteInputTokens, 0),
-        },
+        cachePrompt: { realUsd: acc.promptCache.value(), estimativaUsd: acc.promptEstimate.value(prefixOff), tokensLidos: acc.tokensLidos, tokensEscritos: acc.tokensEscritos },
+        // Priced at the full input price: overstates the savings when the prompt cache is also on (see SummarySavings).
         resumoHistorico: {
-          realUsd: summarySavings(list), estimativaUsd: await this.summaryEstimateFor(tenantId, query, configs),
+          realUsd: acc.summary.value(), estimativaUsd: await this.summaryEstimateFor(tenantId, query, configs),
           resumos: count('conversation.summary_created'), rejeitados: count('conversation.summary_rejected'), desligadosPeloUsuario: count('conversation.summary_disabled'),
         },
-        cacheExato: { realUsd: exactCacheSavings(list), estimativaUsd: exactCacheEstimate(list, defaults.cacheExato.ttlSegundos), acertos: list.filter(row => row.cacheHit).length },
-        imagensBaixa: { realUsd: images.real, estimativaUsd: images.estimate, baixa: list.reduce((sum, row) => sum + row.lowDetailImages, 0), alta: list.reduce((sum, row) => sum + row.highDetailImages, 0) },
+        cacheExato: { realUsd: acc.exact.value(), estimativaUsd: acc.exactEstimate.value(), acertos: acc.acertos },
+        imagensBaixa: { realUsd: images.real, estimativaUsd: images.estimate, baixa: acc.baixa, alta: acc.alta },
         // The estimate of an expensive model is computed in SGDM (Task 9).
-        modeloCaro: { realUsd: modelSwapSavings(list, swaps.filter(event => event.tenantId === tenantId)), estimativaUsd: null },
-        limiteSaida: { realUsd: null, truncadas: answers.filter(row => row.truncated).length },
+        modeloCaro: { realUsd: acc.swaps.value(), estimativaUsd: null },
+        limiteSaida: { realUsd: null, truncadas: acc.truncadas },
       };
     }
 
-    // Per-agent and per-user statistics only use answers: summaries (up to 1,500 output tokens) would skew the p95.
-    const answers = rows.filter(row => row.kind === 'resposta');
-    const answersByAgent = group(answers.filter(row => row.agentId), row => row.agentId as string);
-    const agentes: EconomiaAgente[] = agents.filter(agent => answersByAgent.has(agent.id)).map(agent => {
-      const list = answersByAgent.get(agent.id) ?? [];
-      const output = list.map(row => row.outputTokens); const input = list.map(row => row.inputTokens);
+    const agentes: EconomiaAgente[] = agents.map(agent => {
+      const stats = agentStats.get(agent.id) as AgentAcc;
       const primary = agent.models.find(binding => binding.isPrimary) ?? agent.models[0];
       return {
-        id: agent.id, tenantId: agent.tenantId, nome: agent.name, modeloSlug: primary?.model.slug ?? null, maxTokens: agent.maxTokens, temFerramentas: withTools.has(agent.id),
-        chamadas: list.length, saidaMediana: median(output), saidaP95: percentile(output, 95), entradaMediana: median(input),
-        tokensEntrada: input.reduce((a, b) => a + b, 0), tokensCache: list.reduce((sum, row) => sum + row.cachedInputTokens, 0), tokensSaida: output.reduce((a, b) => a + b, 0),
-        custoUsd: round(list.reduce((sum, row) => sum + price(row.cost), 0)), prefixoTokens: prefix.get(agent.id) ?? 0,
+        id: agent.id, tenantId: agent.tenantId, nome: agent.name, modeloSlug: primary?.model.slug ?? null, maxTokens: agent.maxTokens, temFerramentas: withTools.has(agent.id), raciocinioAvancado: agent.advancedReasoning,
+        chamadas: stats.chamadas, saidaMediana: median(stats.output), saidaP95: percentile(stats.output, 95), entradaMediana: median(stats.input),
+        tokensEntrada: stats.tokensEntrada, tokensCache: stats.tokensCache, tokensSaida: stats.tokensSaida,
+        custoUsd: round(stats.custo), prefixoTokens: prefix.get(agent.id) ?? 0,
       };
     });
-    const usuarios: EconomiaUsuario[] = [...group(answers.filter(row => row.userId), row => row.tenantId + ':' + row.userId)].map(([, list]) => ({
-      id: list[0].userId as string, tenantId: list[0].tenantId,
-      porModelo: [...group(list.filter(row => row.model), row => (row.model as ModelPrices).slug)].map(([modeloSlug, items]) => ({
-        modeloSlug, chamadas: items.length, curtas: items.filter(row => row.outputTokens < query.saidaCurta).length,
-        custoUsd: round(items.reduce((sum, row) => sum + price(row.cost), 0)),
-      })),
+    const usuarios: EconomiaUsuario[] = [...users.values()].map(user => ({
+      id: user.id, tenantId: user.tenantId,
+      porModelo: [...user.porModelo].map(([modeloSlug, item]) => ({ modeloSlug, chamadas: item.chamadas, curtas: item.curtas, custoUsd: round(item.custo) })),
     }));
-    this.logger.log(`savings: prefeituras=${tenantIds.size} linhas=${rows.length} agentes=${agentes.length}`);
+    this.logger.log(`savings: prefeituras=${tenants.size} linhas=${total} agentes=${agentes.length}`);
     return { periodo: { inicio: query.inicio, fim: query.fim }, prefeituras, agentes, usuarios };
   }
 
@@ -194,25 +260,26 @@ export class SgdmSavingsService {
 
   /** Swaps the agent's main model for `slug`, with the checks that keep the agent working. */
   async swapModel(tenantId: string, agentId: string, slug: string): Promise<ModelSwap> {
-    await this.agentOf(tenantId, agentId);
+    const agent = await this.agentOf(tenantId, agentId);
     const target = await this.prisma.aiModel.findFirst({ where: { slug, active: true }, select: modelSelect, orderBy: { id: 'asc' } });
-    return this.apply(tenantId, agentId, target);
+    return this.apply(tenantId, agentId, target, undefined, agent.advancedReasoning);
   }
 
   /** Back to the `from` of the agent's last swap, with the same checks, recorded as a new swap. */
   async undoSwap(tenantId: string, agentId: string): Promise<ModelSwap> {
-    await this.agentOf(tenantId, agentId);
+    const agent = await this.agentOf(tenantId, agentId);
     const last = await this.prisma.optimizationEvent.findFirst({ where: { tenantId, agentId, kind: 'TROCA_MODELO' }, orderBy: { createdAt: 'desc' } });
     if (!last || !last.fromModelId) throw new BadRequestException('Não há troca de modelo para desfazer neste agente.');
     const current = await this.primaryModel(this.prisma, agentId);
-    if ((current?.id ?? null) !== last.toModelId) throw new BadRequestException('O modelo do agente mudou depois da troca; não há o que desfazer.');
+    if ((current?.id ?? null) !== last.toModelId) throw new BadRequestException(MODEL_CHANGED_SINCE);
     const target = await this.prisma.aiModel.findUnique({ where: { id: last.fromModelId }, select: modelSelect });
-    return this.apply(tenantId, agentId, target);
+    return this.apply(tenantId, agentId, target, last.toModelId, agent.advancedReasoning);
   }
 
   private async agentOf(tenantId: string, agentId: string) {
-    const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId }, select: { id: true } });
+    const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId }, select: { id: true, advancedReasoning: true } });
     if (!agent) throw new NotFoundException('Agente não encontrado.');
+    return agent;
   }
 
   private async primaryModel(client: Prisma.TransactionClient | PrismaService, agentId: string) {
@@ -220,15 +287,18 @@ export class SgdmSavingsService {
     return (bindings.find(binding => binding.isPrimary) ?? bindings[0])?.model ?? null;
   }
 
-  private async apply(tenantId: string, agentId: string, target: ModelRow | null): Promise<ModelSwap> {
+  /** `expectedFromId`: for an undo, the model the agent must still have once locked (else it changed since). */
+  private async apply(tenantId: string, agentId: string, target: ModelRow | null, expectedFromId: string | undefined, advancedReasoning: boolean): Promise<ModelSwap> {
     if (!target || target.active === false) throw new BadRequestException(MODEL_NOT_RELEASED);
     // null = standalone (no SGDM): nothing to filter. An unconfirmed list fails closed (503 from the access service).
     const allowed = this.access ? await this.access.allowed(tenantId) : null;
     if (allowed && !allowed.slugs.includes(target.slug)) throw new BadRequestException(MODEL_NOT_RELEASED);
-    if (!supportsTools(target.capabilities) && await this.prisma.agentTool.count({ where: { agentId, ...toolsWhere(tenantId) } })) throw new BadRequestException(MODEL_WITHOUT_TOOLS);
+    if (advancedReasoning && !supportsReasoning(target)) throw new BadRequestException(MODEL_WITHOUT_REASONING);
+    if (!supports(target.capabilities, 'supportsTools') && await this.prisma.agentTool.count({ where: { agentId, ...toolsWhere(tenantId) } })) throw new BadRequestException(MODEL_WITHOUT_TOOLS);
     return this.prisma.$transaction(async tx => {
       await tx.$queryRaw(Prisma.sql`SELECT id FROM agents WHERE id = ${agentId}::uuid AND "tenantId" = ${tenantId}::uuid FOR UPDATE`);
       const from = await this.primaryModel(tx, agentId);
+      if (expectedFromId !== undefined && (from?.id ?? null) !== expectedFromId) throw new BadRequestException(MODEL_CHANGED_SINCE);
       if (from?.id === target.id) throw new BadRequestException('O agente já usa este modelo.');
       await tx.agentModel.deleteMany({ where: { agentId } });
       await tx.agentModel.create({ data: { agentId, modelId: target.id, isPrimary: true } });
