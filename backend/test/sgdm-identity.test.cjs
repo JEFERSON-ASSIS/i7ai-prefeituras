@@ -214,6 +214,21 @@ test('a user with only IA_CENTRAL takes no license seat, even when the license i
   assert.ok(db.users.some(user => user.id === USER));
 });
 
+test('a roleless user gaining an i7Ai role takes a seat: refused when the license is full, allowed with a free seat', async t => {
+  process.env.NODE_ENV = 'test';
+  const roles = ['I7AI_USAR'];
+  await sgdm(t, () => [200, me(roles)]);
+  const other = { id: '44444444-4444-4444-8444-444444444444', tenantId: TENANT, email: 'outro@prefeitura.gov.br', name: 'Outro', status: 'ACTIVE' };
+  const mine = { id: USER, tenantId: TENANT, email: 'maria@prefeitura.gov.br', name: 'Maria', status: 'ACTIVE' };
+  const full = { status: 'ACTIVE', startDate: new Date(0), endDate: null, maxUsers: 2 };
+  const first = database({ users: [other, mine], licenses: [full] });
+  await assert.rejects(new SgdmIdentityService(first.prisma).resolve(token()), /Limite de usuários/);
+  const free = database({ users: [other, mine], licenses: [{ ...full, maxUsers: 3 }] });
+  await new SgdmIdentityService(free.prisma).resolve(token());
+  assert.deepEqual(free.roleNames(USER), ['USUARIO']);
+  assert.deepEqual(first.roleNames(USER), []);
+});
+
 test('SGDM URL follows the HTTPS policy, with internal Docker hosts opt-in', async t => {
   await sgdm(t, () => [200, me(['I7AI_USAR'])]);
   const { prisma } = database();

@@ -1,4 +1,5 @@
 const test = require('node:test');
+const { THEME_VERSION } = require('../dist/sgdm/themes');
 const assert = require('node:assert/strict');
 require('reflect-metadata');
 const { AiGatewayService } = require('../dist/ai/ai-gateway.service');
@@ -121,7 +122,7 @@ test('the first call of a brand-new conversation already carries its id, which i
   const id = records.requests[0].conversationId;
   assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   assert.equal(records.conversations[0].id, id);
-  assert.equal(records.conversations[0].theme, 'outros'); assert.equal(records.conversations[0].themeVersion, 2);
+  assert.equal(records.conversations[0].theme, 'outros'); assert.equal(records.conversations[0].themeVersion, THEME_VERSION);
 });
 
 test('a failed first generation creates no conversation row', async () => {

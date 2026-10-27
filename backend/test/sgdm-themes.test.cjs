@@ -5,13 +5,14 @@ const { NotFoundException, UnauthorizedException, BadRequestException } = requir
 const { SgdmThemesController } = require('../dist/sgdm/sgdm-themes.controller');
 const { SgdmThemesService } = require('../dist/sgdm/sgdm-themes.service');
 
+const { THEME_VERSION } = require('../dist/sgdm/themes');
 const T1 = '11111111-1111-4111-8111-111111111111';
 const T2 = '11111111-1111-4111-8111-222222222222';
 const U1 = 'u1'; const U2 = 'u2';
 const saved = process.env.SGDM_INTEGRATION_KEY;
 test.afterEach(() => saved === undefined ? delete process.env.SGDM_INTEGRATION_KEY : process.env.SGDM_INTEGRATION_KEY = saved);
 
-const row = (theme, userId, tenantId, createdAt, themeVersion = 1) => ({ theme, userId, tenantId, createdAt: new Date(createdAt), themeVersion });
+const row = (theme, userId, tenantId, createdAt, themeVersion = THEME_VERSION) => ({ theme, userId, tenantId, createdAt: new Date(createdAt), themeVersion });
 const ROWS = [
   row('licitacoes', U1, T1, '2026-10-02T12:00:00Z'), row('licitacoes', U1, T1, '2026-10-03T12:00:00Z'), row('licitacoes', U2, T1, '2026-10-31T23:59:00Z'),
   row('saude', U1, T1, '2026-10-05T12:00:00Z'), row('saude', U1, T1, '2026-11-01T00:00:00Z'),
@@ -27,13 +28,13 @@ function build(rows = ROWS) {
       const inScope = rows.filter(r => r.createdAt >= from && r.createdAt < to && (!tenant || r.tenantId === tenant));
       if (/GROUP BY/.test(query.sql)) {
         const groups = new Map();
-        for (const r of inScope.filter(r => r.themeVersion >= 1 && r.theme)) {
+        for (const r of inScope.filter(r => r.themeVersion >= THEME_VERSION && r.theme)) {
           const g = groups.get(r.theme) ?? { theme: r.theme, n: 0, u: new Set(), t: new Set() };
           g.n++; g.u.add(r.userId); g.t.add(r.tenantId); groups.set(r.theme, g);
         }
         return [...groups.values()].map(g => ({ theme: g.theme, conversas: BigInt(g.n), usuarios: BigInt(g.u.size), prefeituras: BigInt(g.t.size) }));
       }
-      return [{ total: BigInt(inScope.filter(r => r.themeVersion < 1 || !r.theme).length) }];
+      return [{ total: BigInt(inScope.filter(r => r.themeVersion < THEME_VERSION || !r.theme).length) }];
     },
   };
   return new SgdmThemesController(new SgdmThemesService(prisma));

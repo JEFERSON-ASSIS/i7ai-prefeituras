@@ -8,7 +8,7 @@
     "local:session": "node backend/scripts/create-local-session.cjs",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test test/event-stream.test.mjs",
+    "test": "node --test test/event-stream.test.mjs test/central-format.test.mjs",
     "audit:design": "node scripts/audit-sgdm.cjs",
     "test:visual": "playwright test"
   },

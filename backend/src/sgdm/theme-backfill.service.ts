@@ -50,7 +50,7 @@ export class ThemeBackfillService implements OnApplicationBootstrap, OnModuleDes
       const rows = await this.prisma.conversation.findMany({
         where: { themeVersion: { lt: THEME_VERSION } },
         select: { id: true, title: true, agent: { select: { name: true } } },
-        orderBy: { id: 'asc' },
+        orderBy: { createdAt: 'desc' },
         take: THEME_BACKFILL_BATCH,
       });
       if (!rows.length) break;

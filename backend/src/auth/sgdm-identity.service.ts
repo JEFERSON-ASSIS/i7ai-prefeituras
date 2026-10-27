@@ -162,6 +162,8 @@ export class SgdmIdentityService {
 
       const current = await tx.userRole.findMany({ where: { userId: identity.id, role: { name: { in: SGDM_MANAGED_ROLES } } }, include: { role: true } });
       const currentNames = current.map(link => link.role.name);
+      // A user that had only IA_CENTRAL (no seat) and now gains an i7Ai role takes a seat from here on.
+      if (existing && !current.length && identity.roles.length && await tx.license.findFirst({ where: { tenantId: identity.tenantId }, select: { id: true } })) await assertLicenseCapacity(tx, identity.tenantId, 'users');
       const stale = current.filter(link => !identity.roles.includes(link.role.name)).map(link => link.roleId);
       if (stale.length) await tx.userRole.deleteMany({ where: { userId: identity.id, roleId: { in: stale } } });
       for (const roleName of identity.roles.filter(name => !currentNames.includes(name))) {

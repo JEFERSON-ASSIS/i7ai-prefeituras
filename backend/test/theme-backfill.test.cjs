@@ -34,6 +34,7 @@ test('one round classifies 1,200 conversations in batches of 500, one updateMany
   assert.ok(rows.every(row => row.themeVersion === THEME_VERSION && row.theme));
   assert.equal(rows[1].theme, 'licitacoes'); assert.equal(rows[0].theme, 'documentos');
   assert.ok(calls.findMany.every(args => args.take === 500));
+  assert.ok(calls.findMany.every(args => args.where.themeVersion.lt === THEME_VERSION && args.orderBy.createdAt === 'desc'));
   assert.equal(calls.updateMany.length, 6);
   assert.equal(lines.length, 1);
   assert.ok(lines.every(line => !/SECRETO|Edital|Ofício/.test(line)));

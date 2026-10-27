@@ -2,9 +2,10 @@ import { Alert, Button, Card, Textarea } from '@sgdm/design';
 import { useState } from 'react';
 import { Paperclip } from 'lucide-react';
 import { apiRequest } from '../api/client';
+import { formatDate } from './central-format.mjs';
 
 const MIN = 10, MAX = 300;
-const date = value => { try { return new Date(value).toLocaleString('pt-BR'); } catch { return ''; } };
+const date = formatDate;
 
 // Read-only view of a conversation opened by the SGDM Central de IA. Content is plain text only.
 export function CentralConversationPage({ token, conversationId, onClose }) {

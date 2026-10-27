@@ -44,6 +44,15 @@ test('masks e-mail, CNPJ, CPF, phone and long digit runs, in that order', () => 
   assert.equal(maskPersonalData('Ligar 9999-1234'), 'Ligar [telefone]');
 });
 
+test('masks long digit runs with single separators and keeps laws, dates and money', () => {
+  assert.equal(maskPersonalData('CPF 123 456 789 00'), 'CPF [número]');
+  assert.equal(maskPersonalData('RG 12.345.678-9'), 'RG [número]');
+  assert.equal(maskPersonalData('tel 99999 1234'), 'tel [número]');
+  assert.equal(maskPersonalData('898 0012 3456 7890'), '[número]');
+  assert.equal(maskPersonalData('CPF 123.456.789.00'), 'CPF [número]');
+  for (const keep of ['Lei 14.133 de 2021', 'Lei 14.133/2021', 'Reunião em 27/10/2026', 'Valor R$ 1.234.567,89']) assert.equal(maskPersonalData(keep), keep);
+});
+
 test('version 2 keywords cover common municipal requests', () => {
   const cases = {
     documentos: ['Ata da reunião do conselho', 'Convite para audiência', 'Convocação dos membros', 'Declaração de residência', 'Certidão negativa', 'Discurso do prefeito'],

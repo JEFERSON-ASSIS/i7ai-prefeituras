@@ -10,6 +10,7 @@ const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const CNPJ = /(?<!\d)\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}(?!\d)/g;
 const CPF = /(?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d)/g;
 const PHONE = /(?:\+\s?55[\s-]?)?(?<![\d+])(?:\(\d{2}\)\s?9?\d{4}[\s-]?\d{4}|\d{2}[\s-]9?\d{4}[\s-]\d{4}|9?\d{4}-\d{4})(?!\d)/g;
+const SEPARATED_DIGITS = /(?<!\d)\d(?:[\s.\-]?\d){8,}(?!\d)/g;
 const DIGITS = /\d{6,}/g;
 
 export function maskPersonalData(text: string): string {
@@ -18,5 +19,6 @@ export function maskPersonalData(text: string): string {
     .replace(CNPJ, '[CNPJ]')
     .replace(CPF, '[CPF]')
     .replace(PHONE, '[telefone]')
+    .replace(SEPARATED_DIGITS, '[número]')
     .replace(DIGITS, '[número]');
 }

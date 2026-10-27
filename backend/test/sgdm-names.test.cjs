@@ -5,6 +5,7 @@ const { NotFoundException, UnauthorizedException, BadRequestException } = requir
 const { SgdmNamesController } = require('../dist/sgdm/sgdm-names.controller');
 const { SgdmNamesService } = require('../dist/sgdm/sgdm-names.service');
 
+const { THEME_VERSION } = require('../dist/sgdm/themes');
 const A1 = '11111111-1111-4111-8111-111111111111';
 const A2 = '11111111-1111-4111-8111-222222222222';
 const C1 = '22222222-2222-4222-8222-111111111111';
@@ -18,8 +19,8 @@ function build() {
   const prisma = {
     agent: { findMany: async args => { queries.push(['agent', args]); return [{ id: A1, name: 'Agente Jurídico' }].filter(row => args.where.id.in.includes(row.id)); } },
     conversation: { findMany: async args => { queries.push(['conversation', args]); return [
-      { id: C1, title: 'Parecer', theme: 'juridico', themeVersion: 1, agent: { name: 'Agente Jurídico' } },
-      { id: C2, title: null, theme: null, themeVersion: 1, agent: { name: 'Agente Jurídico' } },
+      { id: C1, title: 'Parecer', theme: 'juridico', themeVersion: THEME_VERSION, agent: { name: 'Agente Jurídico' } },
+      { id: C2, title: null, theme: null, themeVersion: THEME_VERSION, agent: { name: 'Agente Jurídico' } },
       { id: C3, title: 'CPF 123.456.789-00 licitação', theme: null, themeVersion: 0, agent: { name: 'Geral' } },
     ].filter(row => args.where.id.in.includes(row.id)); } },
   };
