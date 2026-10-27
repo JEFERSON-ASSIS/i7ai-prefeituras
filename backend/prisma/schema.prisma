@@ -389,12 +389,18 @@ model Conversation {
   /// Last message of the batch whose summary was rejected, and consecutive rejections (counts only, never text).
   summaryRejectedThroughMessageId String? @db.Uuid
   summaryRejections               Int     @default(0)
+  /// Theme from the fixed list in src/sgdm/themes.ts (keywords, no model); recalculated while themeVersion < THEME_VERSION.
+  theme        String? @db.VarChar(30)
+  themeVersion Int     @default(0)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
   @@index([tenantId, userId])
   @@index([tenantId, updatedAt])
   @@index([modelId])
+  @@index([createdAt])
+  @@index([tenantId, createdAt])
+  @@index([themeVersion])
   @@map("conversations")
 }
 

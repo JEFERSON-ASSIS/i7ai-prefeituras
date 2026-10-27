@@ -78,6 +78,8 @@ test('chat uses primary model/settings, parses real Responses output and persist
   assert.ok(records.messages[1].createdAt > records.messages[0].createdAt);
   assert.equal(records.usage[0].modelId, 'model-primary'); assert.equal(records.usage[0].userId, 'user-a'); assert.equal(records.usage[0].inputTokens, 200);
   assert.equal(result.usage.cost, 0.00006); assert.equal(result.usage.costConfigured, true); assert.equal(records.audit[0].metadata.conversationId, 'conversation-a');
+  // Theme from the fixed keyword list: "orçamento" in the title.
+  assert.equal(records.conversationCreates[0].theme, 'financas'); assert.equal(records.conversationCreates[0].themeVersion, 1);
 });
 
 test('cross-user or cross-agent conversation is rejected before provider/retrieval', async () => {

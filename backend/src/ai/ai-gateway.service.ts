@@ -19,6 +19,7 @@ import { CHAT_EXPORT_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedI
 import { EXPORT_MIME, ExportFormat, exportFileName, exportTitle, parseAnswer, renderExport } from './chat-export';
 import { ConversationSummaryService } from './conversation-summary.service';
 import { SUMMARY_MAX_REJECTIONS, estimateTokens, historyWindow, summaryMessage, summaryThreshold } from './history-summary';
+import { THEME_VERSION, classifyTheme } from '../sgdm/themes';
 
 export { CHAT_EXPORT_INSTRUCTIONS };
 
@@ -30,7 +31,7 @@ export type AgentExecutionInput = { message: string; userId?: string; automation
   /** Conversation summary system message (OmniRouter only) and the history that would go without it (savings baseline). */
   summary?: string; summaryBaseline?: HistoryItem[] };
 export type AgentAnswer = { answer: string; sources: RagSource[]; agentId: string; provider: string; model: string; toolCalls?: { callId: string; name: string }[]; usage: { inputTokens: number; outputTokens: number; cost: number; costConfigured: boolean; latencyMs: number; measured: boolean } };
-type PreparedAnswer = { quotaScope: QuotaScope; result: AgentAnswer; modelId: string; modelName: string; providerName: string; userId?: string; automationId?: string; tenantId: string };
+type PreparedAnswer = { quotaScope: QuotaScope; result: AgentAnswer; modelId: string; modelName: string; providerName: string; agentName: string; userId?: string; automationId?: string; tenantId: string };
 type ProviderAnswer = { answer: string; inputTokens: number; outputTokens: number; measured: boolean; cost?: number; toolCalls: { callId: string; name: string }[] };
 const HISTORY_MESSAGES = 40;
 /** Unsummarized messages loaded when a summary replaces the older ones (the byte budget still bounds the prompt). */
@@ -118,7 +119,9 @@ export class AiGatewayService {
         if (!owned) throw new NotFoundException('Conversa não encontrada.');
         await tx.conversation.update({ where: { id }, data: { updatedAt: new Date(), modelId: prepared.modelId } });
       } else {
-        const conversation = await tx.conversation.create({ data: { id: newConversationId, tenantId, userId, agentId, modelId: prepared.modelId, title: input.message.trim().slice(0, 120) } });
+        const title = input.message.trim().slice(0, 120);
+        // Theme from the fixed keyword list (no model call); older rows are filled by ThemeBackfillService.
+        const conversation = await tx.conversation.create({ data: { id: newConversationId, tenantId, userId, agentId, modelId: prepared.modelId, title, theme: classifyTheme(title, prepared.agentName), themeVersion: THEME_VERSION } });
         id = conversation.id;
       }
       const attachments = (attachmentContext?.documents || []).filter(document => attachmentIds.includes(document.id));
@@ -297,7 +300,7 @@ export class AiGatewayService {
     // Same number recorded in ai_usage when the OmniRouter ran; other paths have no cache or gateway data.
     const cost = generated.cost ?? calculateUsageCost(inputTokens, outputTokens, model.inputPrice, model.outputPrice);
     const costConfigured = measured && model.inputPrice != null && model.outputPrice != null;
-    return { quotaScope, tenantId, userId: input.userId, automationId: input.automationId, modelId: model.id, modelName: model.name || model.slug, providerName: model.provider.name, result: { answer, sources, agentId, provider: omniConfigured ? provider : process.env.AI_GATEWAY_URL ? 'gateway' : provider, model: model.slug, ...(generated.toolCalls.length ? { toolCalls: generated.toolCalls } : {}), usage: { inputTokens, outputTokens, cost, costConfigured, latencyMs: Date.now() - started, measured } } };
+    return { quotaScope, tenantId, userId: input.userId, automationId: input.automationId, modelId: model.id, modelName: model.name || model.slug, providerName: model.provider.name, agentName: agent.name, result: { answer, sources, agentId, provider: omniConfigured ? provider : process.env.AI_GATEWAY_URL ? 'gateway' : provider, model: model.slug, ...(generated.toolCalls.length ? { toolCalls: generated.toolCalls } : {}), usage: { inputTokens, outputTokens, cost, costConfigured, latencyMs: Date.now() - started, measured } } };
     } catch (error) { await this.quota.finish(quotaScope, 'FAILED'); throw error; }
   }
 
