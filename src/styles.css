@@ -40,7 +40,7 @@ html.sgdm-app-shell, html.sgdm-app-shell body, html.sgdm-app-shell #root { heigh
 .usage-bar-fill { width: 100%; max-width: 38px; background: rgb(var(--sd-color-chart-bar)); border-radius: var(--sd-radius-xs) var(--sd-radius-xs) 0 0; }
 .usage-bar small { color: rgb(var(--sd-color-text-muted)); font-size: var(--sd-font-size-xs2); }
 /* Chat: two panels sharing one viewport-bound height; only the message column scrolls. */
-.chat-layout { display: grid; grid-template-columns: 288px minmax(0, 1fr); gap: 24px; height: clamp(520px, calc(100dvh - 200px), 960px); }
+.chat-layout { display: grid; grid-template-columns: clamp(220px, 20vw, 288px) minmax(0, 1fr); gap: 24px; height: clamp(520px, calc(100dvh - 200px), 960px); }
 .chat-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: rgb(var(--sd-color-surface)); border: 1px solid rgb(var(--sd-color-border)); border-radius: var(--sd-radius-card); box-shadow: var(--sd-shadow-card); overflow: hidden; }
 .chat-panel h2 { margin: 0; font-size: 15px; font-weight: 600; color: rgb(var(--sd-color-text-title)); }
 .chat-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 16px 12px 20px; border-bottom: 1px solid rgb(var(--sd-color-border-subtle)); }
@@ -53,7 +53,9 @@ html.sgdm-app-shell, html.sgdm-app-shell body, html.sgdm-app-shell #root { heigh
 .messages { flex: 1; min-height: 0; overflow: auto; padding: 24px 28px 8px; display: flex; flex-direction: column; gap: 24px; background: rgb(var(--sd-color-surface-hover)); }
 .message { display: flex; flex-direction: column; min-width: 0; }
 .message.user { align-self: flex-end; align-items: flex-end; max-width: 72%; }
-.message.agent { align-self: flex-start; max-width: 72ch; }
+.message.agent { align-self: flex-start; max-width: 100%; }
+/* Answer text keeps a readable line length; tables and code use the whole conversation width. */
+.message.agent .message-markdown > :not(table):not(pre) { max-width: 76ch; }
 .message-text { display: block; padding: 10px 14px; border-radius: var(--sd-radius-panel) var(--sd-radius-panel) var(--sd-radius-xs) var(--sd-radius-panel); background: rgb(var(--sd-color-primary-soft)); border: 1px solid rgb(var(--sd-color-primary-ring)); color: rgb(var(--sd-color-text)); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .message-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
 .message-meta small { color: rgb(var(--sd-color-text-muted)); font-size: 12px; }

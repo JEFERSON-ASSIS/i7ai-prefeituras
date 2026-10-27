@@ -1,7 +1,7 @@
 // Shell used when the module runs on its own page (https://<sgdm>/i7ai/ or local
 // development): it supplies the SGDM-style menu that a host would otherwise provide.
 import React, { useEffect, useState } from 'react';
-import { AppLayout, Button, Select, Sidebar, ToastProvider } from '@sgdm/design';
+import { AppLayout, Button, Header, Select, Sidebar, ToastProvider } from '@sgdm/design';
 import { Shield } from 'lucide-react';
 import { App, moduleNavigationGroups } from './app-shell';
 import { getSgdmContext, getSgdmToken } from './integration/sgdmBridge';
@@ -32,6 +32,8 @@ export function StandaloneHost({ initialPage, notice = null, exitLabel = 'Voltar
   const sections = availableGroups.map(([label, items]) => ({ label,
     items: items.map(([id, title, icon]) => ({ href: '#/' + id, label: title, icon, exact: true })),
   }));
+  // Same top bar as the SGDM: its menu button collapses the sidebar and frees room for the content.
+  const pageTitle = moduleNavigationGroups.flatMap(([, items]) => items).find(([id]) => id === active)?.[1] ?? 'IA do SGDM';
   function update(page, notifyModule, pushHistory = true) {
     if (!pages.has(page)) return;
     window.__SGDM_CONTEXT__.modulePage = page;
@@ -66,7 +68,7 @@ export function StandaloneHost({ initialPage, notice = null, exitLabel = 'Voltar
     sidebar={<Sidebar brand={{ name: 'SGDM', subtitle: 'Gestão Digital Municipal', icon: <Shield /> }}
       sections={sections} currentPath={'#/' + active} onNavigate={href => update(href.slice(2), true)}
       onLogout={exit} label="Menu do SGDM" />}
-    header={null}>
+    header={<Header title={pageTitle} menuLabel="Mostrar ou recolher o menu" />}>
     <div className="page-content">
       <div className="preview-mobile-navigation"><div className="form-stack"><Select label="Área da IA do SGDM" value={active}
         onChange={event => update(event.target.value, true)}>{availableGroups.map(([label, items]) =>
