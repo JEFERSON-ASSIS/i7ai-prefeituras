@@ -219,3 +219,11 @@ test('rodada agendada: catálogo do SGDM e depois preços; sem integração, só
   await service.runScheduled();
   assert.deepEqual(order, ['prices']);
 });
+
+test('sync de preços só percorre modelos ativos', async t => {
+  await gateway(t, 200, { data: [] });
+  const queries = [];
+  const prisma = { aiModel: { findMany: async query => { queries.push(query); return []; }, update: async () => ({}) } };
+  await new ModelPricingSyncService(prisma).sync();
+  assert.deepEqual(queries[0].where, { active: true });
+});

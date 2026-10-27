@@ -12,9 +12,9 @@ Navegador → frontend → backend ──(rede Docker interna, HTTP)──→ li
 
 **Produção:** o LiteLLM é o serviço `litellm` da stack Swarm `i7ai-plataforma` ([portainer/i7ai.stack.yml](../portainer/i7ai.stack.yml)), na mesma VPS do SGDM. A stack exige `LITELLM_MASTER_KEY` e `LITELLM_SALT_KEY`; o banco `litellm` fica no Postgres próprio do i7Ai. Roteiro completo em [docs/DEPLOY_VPS.md](./DEPLOY_VPS.md).
 
-## Chaves dos provedores (tela do SUPER_ADMIN)
+## Chaves dos provedores (Central de IA no SGDM)
 
-As chaves da OpenAI, da Anthropic e do Gemini são cadastradas em **Modelos › Chaves dos provedores de IA**, visível só para `SUPER_ADMIN`.
+As chaves da plataforma (OpenAI, Anthropic e Gemini) são cadastradas no SGDM, na **Central de IA**. A tela de chaves do i7Ai (**Modelos › Chaves dos provedores de IA**) foi removida.
 
 - A chave é enviada uma vez ao LiteLLM, que a guarda criptografada no banco `litellm` com `LITELLM_SALT_KEY`. O i7Ai não grava a chave no próprio banco, em logs ou na auditoria. A auditoria registra só quem salvou ou removeu e o provedor.
 - Depois de salva, a tela mostra só o início e o fim mascarados (`sk****88`).
@@ -38,7 +38,7 @@ Um subdomínio no Cloudflare só é necessário se o LiteLLM ficar em outro serv
 
 Os modelos ficam em [deploy/litellm/config.yaml](../deploy/litellm/config.yaml). Cada `model_name` deve ser igual ao slug cadastrado em **Modelos** no i7Ai e usar um prefixo liberado (`openai/`, `anthropic/`, `gemini/`, `xai/`). Cada modelo aponta para a credencial do provedor (`litellm_credential_name: openai`, `anthropic` ou `gemini`).
 
-Os preços (entrada, saída e entrada em cache, em USD por milhão de tokens) e a janela de contexto vêm do LiteLLM. O i7Ai os lê de `/model/info` 1 minuto depois de iniciar e a cada 6 horas, e grava em **Modelos**. Os campos de preço e de contexto em **Modelos** passam a ser informativos: o que for digitado ali é sobrescrito na próxima sincronização. Modelo sem preço no LiteLLM fica sem alteração. Sem `OMNIROUTER_BASE_URL`, a sincronização fica desligada.
+Os preços (entrada, saída e entrada em cache, em USD por milhão de tokens) e a janela de contexto vêm do LiteLLM. O i7Ai os lê de `/model/info` 1 minuto depois de iniciar e a cada `MODEL_SYNC_SECONDS` (padrão 300 s), só para os modelos ativos, e grava em **Modelos**, que é só consulta. Modelo sem preço no LiteLLM fica sem alteração. Sem `OMNIROUTER_BASE_URL`, a sincronização fica desligada.
 
 Rotas do OmniRoute como `antigravity/...` e `cx/...` não existem no LiteLLM. Troque o modelo dos agentes que as usam.
 
@@ -59,7 +59,7 @@ Esta máquina usa `docker-compose.local.yml` (Postgres 5435, Redis 6381, MinIO 9
 1. No `.env` da raiz: `OMNIROUTER_BASE_URL="http://localhost:4000/v1"` e `OMNIROUTER_API_KEY` igual a `LITELLM_MASTER_KEY`.
 2. `docker compose -p i7ai-prefeituras-local -f docker-compose.local.yml up -d`
 3. Inicie a API e o frontend e abra `http://127.0.0.1:5173/preview/local.html` (depois de `npm run local:session`).
-4. Em **Modelos**, cadastre a chave da OpenAI e clique em **Testar**.
+4. Sem `SGDM_API_URL`/`SGDM_INTEGRATION_KEY` (modo avulso), todos os modelos do banco local ficam disponíveis no chat; com a integração, o catálogo e as liberações vêm da Central de IA do SGDM.
 
 ## VPS (produção)
 
@@ -68,8 +68,8 @@ O passo a passo está em [docs/DEPLOY_VPS.md](./DEPLOY_VPS.md): stack Swarm `i7a
 - `LITELLM_MASTER_KEY`: `echo sk-$(openssl rand -hex 32)`; o mesmo valor vai em `LITELLM_ADMIN_KEY` da stack `sgdm-app`. O backend recebe a chave como `OMNIROUTER_API_KEY` pela própria stack.
 - `LITELLM_SALT_KEY`: `openssl rand -hex 32`; guarde uma cópia segura e nunca troque.
 - A imagem do LiteLLM está fixada por digest em `portainer/i7ai.stack.yml`. Para atualizar, escolha uma versão em https://github.com/BerriAI/litellm/releases e fixe o novo digest; não use `latest`.
-- Chaves dos provedores: as da plataforma, pelo `SUPER_ADMIN` em **Modelos › Chaves dos provedores de IA**; a de cada prefeitura, no SGDM em **Cadastros › Inteligência Artificial**.
-- Modelos e agente iniciais: `scripts/configure-omniroute.cjs` dentro do contêiner do backend (passo 10 do roteiro). Depois ajuste em **Modelos** visão, ferramentas e preços (USD por milhão de tokens); sem preço, o custo aparece como não configurado.
+- Chaves dos provedores: as da plataforma, na **Central de IA** do SGDM; a de cada prefeitura, no SGDM em **Cadastros › Inteligência Artificial**.
+- Modelos: ativados na **Central de IA** do SGDM (que também define o padrão e as liberações por prefeitura e usuário). O i7Ai copia o catálogo do SGDM a cada `MODEL_SYNC_SECONDS` e os preços (USD por milhão de tokens) e o contexto do LiteLLM; **Modelos** no i7Ai é só consulta. Sem preço no LiteLLM, o custo aparece como não configurado.
 - Faça uma conversa real com cada modelo, com e sem streaming, e um envio de imagem com GPT-4o Mini.
 
 ## Central de IA no SGDM

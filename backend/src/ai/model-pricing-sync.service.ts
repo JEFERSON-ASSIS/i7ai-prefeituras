@@ -123,7 +123,8 @@ export class ModelPricingSyncService implements OnModuleInit, OnModuleDestroy {
       if (typeof item?.model_name !== 'string' || item.model_name.includes('*')) continue;
       if (item.model_info && typeof item.model_info === 'object') info.set(item.model_name, item.model_info as Record<string, unknown>);
     }
-    const models = await this.prisma.aiModel.findMany({ select: { id: true, slug: true, capabilities: true } });
+    // Inactive (legacy) models are not priced: they cannot be used and would only add "sem preço" warnings.
+    const models = await this.prisma.aiModel.findMany({ where: { active: true }, select: { id: true, slug: true, capabilities: true } });
     let updated = 0;
     const unknown: string[] = [];
     for (const model of models) {

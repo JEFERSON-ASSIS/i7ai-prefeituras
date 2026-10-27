@@ -9,6 +9,13 @@ const STALE_SECONDS = 600;
 const NOT_CONFIRMED = 'Não foi possível confirmar os modelos liberados para você. Tente novamente em instantes.';
 const NOT_ALLOWED = 'Este modelo não está liberado para você. Escolha outro no seletor do chat.';
 
+/** SGDM_ACCESS_CACHE_SECONDS; empty, invalid or negative values fall back to 60. */
+function cacheSeconds() {
+  const raw = process.env.SGDM_ACCESS_CACHE_SECONDS?.trim();
+  const value = raw ? Number(raw) : NaN;
+  return Number.isFinite(value) && value >= 0 ? value : 60;
+}
+
 /**
  * Models a user (or, for automations, the whole prefeitura) may use, as released in SGDM's Central de IA.
  * Kept in a short cache; when SGDM is down the last answer is served for up to 10 minutes past its TTL,
@@ -38,7 +45,7 @@ export class SgdmAccessService {
       this.logger.error('SGDM indisponível ao consultar os modelos liberados (' + reason + ').');
       throw new ServiceUnavailableException(NOT_CONFIRMED);
     }
-    const ttl = Math.max(0, Number(process.env.SGDM_ACCESS_CACHE_SECONDS ?? 60) || 0) * 1000;
+    const ttl = cacheSeconds() * 1000;
     this.cache.delete(key);
     if (this.cache.size >= MAX_CACHE) this.cache.delete(this.cache.keys().next().value as string);
     this.cache.set(key, { expires: now + ttl, staleUntil: now + ttl + STALE_SECONDS * 1000, value });
@@ -57,7 +64,11 @@ export class SgdmAccessService {
       body = await sgdmIntegrationGet<{ modelos?: unknown; padrao?: unknown }>(path);
     } catch (error) {
       // A definitive "unknown tenant/user" closes access instead of being retried as an outage.
-      if (error instanceof SgdmNotFound) return { slugs: [], defaultSlug: null };
+      if (error instanceof SgdmNotFound) {
+        // Logged once per new cache entry so a misconfigured SGDM (e.g. integration key unset there) is visible.
+        this.logger.warn('SGDM respondeu 404 ao consultar os modelos liberados (prefeitura ' + tenantId + (userId ? ', usuário ' + userId : '') + '); nenhum modelo liberado.');
+        return { slugs: [], defaultSlug: null };
+      }
       throw error;
     }
     const { modelos, padrao } = body ?? {};

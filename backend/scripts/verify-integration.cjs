@@ -269,7 +269,11 @@ async function verifyFlows() {
   stage('catálogo e agente');
   const models = await request('/models', a.token); expectStatus(models, 200, 'Modelos'); assert.equal(models.data.length, 1);
   const providers = await request('/providers', a.token); expectStatus(providers, 200, 'Provedores'); assert.ok(providers.data.every(provider => !('config' in provider)));
-  expectStatus(await request('/models/' + models.data[0].id, a.token, 'PATCH', { inputPrice: 99 }), 403, 'ADMIN municipal não altera catálogo global');
+  // Modelos is read-only: the catalog comes from SGDM and prices from LiteLLM, so the write routes no longer exist.
+  expectStatus(await request('/models/' + models.data[0].id, a.token, 'PATCH', { inputPrice: 99 }), 404, 'Catálogo de modelos sem rota de edição');
+  expectStatus(await request('/models', a.token, 'POST', { providerId: models.data[0].providerId, name: 'Intruso', slug: 'intruso' }), 404, 'Catálogo de modelos sem rota de criação');
+  const unchanged = await request('/models', a.token); expectStatus(unchanged, 200, 'Modelos após tentativas de escrita');
+  assert.equal(unchanged.data.length, 1); assert.equal(unchanged.data[0].inputPrice, models.data[0].inputPrice);
   const department = await request('/departments', a.token, 'POST', { name: 'Compras' }); expectStatus(department, 201, 'Departamento');
   const knowledge = await request('/knowledge-bases', a.token, 'POST', { name: 'Licitações de Teste' }); expectStatus(knowledge, 201, 'Base de conhecimento');
   const creation = await request('/agents', a.token, 'POST', { name: 'Agente de Teste Integrado', description: 'Fixture local descartável', systemPrompt: 'Responda com fontes.', status: 'ACTIVE', departmentId: department.data.id, modelId: models.data[0].id, knowledgeBaseIds: [knowledge.data.id], toolIds: [], temperature: 0.2, maxTokens: 1000, advancedReasoning: false });

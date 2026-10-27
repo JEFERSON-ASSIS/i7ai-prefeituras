@@ -99,3 +99,44 @@ test('sgdmIntegrationGet: 404 vira SgdmNotFound, outros erros SgdmUnavailable se
   assert.deepEqual(await sgdmIntegrationGet('/integracoes/i7ai/modelos'), { modelos: [] });
   await assert.rejects(sgdmIntegrationGet('/x', { ...process.env, NODE_ENV: 'production', SGDM_API_URL: 'http://public.example/api' }), SgdmUnavailable);
 });
+
+test('fim da janela stale: após TTL + 600 s com SGDM fora, 503 com a mensagem exata', async t => {
+  let reply = [200, { modelos: ['openai/gpt-5.5'], padrao: null }];
+  await sgdm(t, () => reply);
+  process.env.SGDM_ACCESS_CACHE_SECONDS = '60';
+  const service = new SgdmAccessService();
+  service.logger = { warn: () => {}, error: () => {} };
+  const realNow = Date.now;
+  t.after(() => { Date.now = realNow; });
+  const start = realNow();
+  Date.now = () => start;
+  await service.allowed(TENANT, USER);
+  reply = [500, { message: 'boom' }];
+  Date.now = () => start + (60 + 600) * 1000 - 1;
+  assert.deepEqual(await service.allowed(TENANT, USER), { slugs: ['openai/gpt-5.5'], defaultSlug: null });
+  Date.now = () => start + (60 + 600) * 1000 + 1;
+  await assert.rejects(service.allowed(TENANT, USER), error => error instanceof ServiceUnavailableException && error.message === NOT_CONFIRMED);
+});
+
+test('SGDM_ACCESS_CACHE_SECONDS vazio ou inválido usa o padrão de 60 s', async t => {
+  for (const value of ['', 'abc', '-5']) {
+    const calls = await sgdm(t, () => [200, { modelos: [], padrao: null }]);
+    process.env.SGDM_ACCESS_CACHE_SECONDS = value;
+    const service = new SgdmAccessService();
+    await service.allowed(TENANT, USER);
+    await service.allowed(TENANT, USER);
+    assert.equal(calls.length, 1, 'valor ' + JSON.stringify(value) + ' deve cachear');
+  }
+});
+
+test('404 do SGDM gera um aviso por entrada nova de cache', async t => {
+  await sgdm(t, () => [404, {}]);
+  const service = new SgdmAccessService();
+  const warnings = [];
+  service.logger = { warn: message => warnings.push(message), error: () => {} };
+  await service.allowed(TENANT, USER);
+  await service.allowed(TENANT, USER);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], new RegExp(TENANT));
+  assert.ok(!warnings[0].includes('integration-secret'));
+});
