@@ -14,10 +14,11 @@ Navegador → frontend → backend ──(rede Docker interna, HTTP)──→ li
 
 ## Chaves dos provedores (Central de IA no SGDM)
 
-As chaves da plataforma (OpenAI, Anthropic e Gemini) são cadastradas no SGDM, na **Central de IA**. A tela de chaves do i7Ai (**Modelos › Chaves dos provedores de IA**) foi removida.
+As chaves da plataforma (OpenAI, Anthropic e Gemini) são cadastradas no SGDM, em **Central de IA › Modelos e acesso › Chaves da plataforma** (permissão `IA_CENTRAL`). A tela de chaves do i7Ai (**Modelos › Chaves dos provedores de IA**) foi removida.
 
 - A chave é enviada uma vez ao LiteLLM, que a guarda criptografada no banco `litellm` com `LITELLM_SALT_KEY`. O i7Ai não grava a chave no próprio banco, em logs ou na auditoria. A auditoria registra só quem salvou ou removeu e o provedor.
-- Depois de salva, a tela mostra só o início e o fim mascarados (`sk****88`).
+- Depois de salva, a tela mostra só o início e o fim mascarados (`sk****88`), exatamente como o LiteLLM devolve.
+- Remover uma chave que ainda atende modelos ativos é aceito pelo LiteLLM; por isso a tela avisa quantos modelos ficam sem chave e pede confirmação.
 - **Testar** envia uma pergunta de poucos tokens por um modelo daquele provedor publicado no gateway e mostra a resposta ou o erro do provedor.
 - Salvar, trocar e remover valem na hora, sem reiniciar. Com `STORE_MODEL_IN_DB=True`, as chaves continuam valendo depois de reiniciar o contêiner.
 - **Nunca altere `LITELLM_SALT_KEY`** depois de salvar chaves; elas deixariam de ser lidas.
@@ -36,9 +37,9 @@ Um subdomínio no Cloudflare só é necessário se o LiteLLM ficar em outro serv
 
 ## Modelos
 
-Os modelos ficam em [deploy/litellm/config.yaml](../deploy/litellm/config.yaml). Cada `model_name` deve ser igual ao slug cadastrado em **Modelos** no i7Ai e usar um prefixo liberado (`openai/`, `anthropic/`, `gemini/`, `xai/`). Cada modelo aponta para a credencial do provedor (`litellm_credential_name: openai`, `anthropic` ou `gemini`).
+Os modelos são ativados na Central de IA do SGDM (**Modelos e acesso**). Ao ativar, o SGDM cria o modelo no LiteLLM com `/model/new`, apontando para a credencial do provedor. Os curingas de [deploy/litellm/config.yaml](../deploy/litellm/config.yaml) continuam no arquivo e roteiam a maioria dos slugs; por isso o `/model/new` só é chamado para modelos ativos que o `/model/info` ainda não lista. Quem remover os curingas depois precisará chamar `/model/new` para todos os modelos ativos. O catálogo do SGDM é copiado para `ai_models` no i7Ai a cada `MODEL_SYNC_SECONDS`. Cada `model_name` deve ser igual ao slug do catálogo e usar um prefixo liberado (`openai/`, `anthropic/`, `gemini/`, `xai/`). Cada modelo aponta para a credencial do provedor (`litellm_credential_name: openai`, `anthropic` ou `gemini`).
 
-Os preços (entrada, saída e entrada em cache, em USD por milhão de tokens) e a janela de contexto vêm do LiteLLM. O i7Ai os lê de `/model/info` 1 minuto depois de iniciar e a cada `MODEL_SYNC_SECONDS` (padrão 300 s), só para os modelos ativos, e grava em **Modelos**, que é só consulta. Modelo sem preço no LiteLLM fica sem alteração. Sem `OMNIROUTER_BASE_URL`, a sincronização fica desligada.
+Os preços (entrada, saída e entrada em cache, em USD por milhão de tokens) e a janela de contexto vêm do LiteLLM. O i7Ai os lê de `/model/info` 1 minuto depois de iniciar e a cada `MODEL_SYNC_SECONDS` (padrão 300 s), só para os modelos ativos, e grava em **Modelos**, que é só consulta. Ativar um modelo sem preço no LiteLLM é recusado (400). Modelo sem preço no LiteLLM fica sem alteração. Sem `OMNIROUTER_BASE_URL`, a sincronização fica desligada.
 
 Rotas do OmniRoute como `antigravity/...` e `cx/...` não existem no LiteLLM. Troque o modelo dos agentes que as usam.
 
@@ -51,6 +52,31 @@ Rotas do OmniRoute como `antigravity/...` e `cx/...` não existem no LiteLLM. Tr
 Não há fallback automático entre modelos. O i7Ai registra custo e provedor pelo modelo escolhido, e um fallback mandaria dados para outro provedor com o preço errado.
 
 Na VPS o arquivo entra como *config* do Swarm, que é imutável: no mesmo commit que alterar `deploy/litellm/config.yaml`, troque o sufixo de `name: i7ai_litellm_config_v1` (v1 → v2) em `portainer/i7ai.stack.yml` e faça **Pull and redeploy** da stack `i7ai-plataforma` no Portainer. Sem a troca do nome, o redeploy falha.
+
+## Acesso aos modelos e organização
+
+Regras da Entrega 2, definidas na Central de IA do SGDM:
+
+- **Fechado por padrão.** Prefeitura sem liberação não recebe nenhum modelo no i7Ai. Um 404 do SGDM no endpoint de acesso vale como "nada liberado".
+- **Liberação por prefeitura.** Lista de provedores e de modelos. Lista de modelos vazia na regra = todos os modelos ativos dos provedores liberados.
+- **Exceção por usuário.** A lista da exceção substitui a da prefeitura (não soma).
+- **Desativar um modelo** o remove das regras. Se a liberação da prefeitura ficar vazia, ela é apagada (volta ao fechado).
+- **Peças do SGDM.** Continuam com o `modelo` de Cadastros › IA (ou o padrão do adapter) e ignoram as liberações. Com o LiteLLM ligado, o dono ainda precisa ligar a IA por prefeitura em Cadastros › IA.
+- **Permissões `I7AI_*`.** Só o dono da plataforma as tem; o ADMINISTRADOR de prefeitura deixou de recebê-las (migration `20261212100000`) e só o dono atribui perfis com códigos reservados.
+- **Organização.** Os departamentos do i7Ai são os setores da prefeitura no SGDM (cada usuário em um departamento: CHEFE > ordem > nome), e nome, fuso e retenção vêm do `/settings` do SGDM. As telas Usuários, Departamentos e Configurações saíram do i7Ai.
+- **Consumo** agrupado por agente e por conversa, com nomes: a API do SGDM consulta o i7Ai (`I7AI_API_URL`) para traduzir os ids das tags.
+- **SGDM fora do ar.** O i7Ai usa o último acesso em cache por até 10 minutos (60 s de validade + janela de 600 s). No login, com o cache de organização frio, a espera pelo SGDM pode chegar a 8 s (endurecimento previsto).
+
+### Variáveis
+
+| Variável | Onde | Padrão | Uso |
+| --- | --- | --- | --- |
+| `SGDM_ACCESS_CACHE_SECONDS` | backend do i7Ai | 60 | validade do cache das liberações |
+| `SGDM_ORG_CACHE_SECONDS` | backend do i7Ai | 300 | validade do cache de setores e configurações |
+| `MODEL_SYNC_SECONDS` | backend do i7Ai | 300 | sincronização do catálogo e dos preços |
+| `I7AI_API_URL` | API do SGDM (`sgdm-app`) | vazio | `http://i7ai-backend:3000/api`; sem ela o Consumo mostra ids em vez de nomes |
+
+Migrations novas: i7Ai `20261028000100_ai_models_active` e `20261028000200_departments_external_id`; SGDM `20261212100000_i7ai_fora_do_administrador` e `20261213100000_ia_modelos_liberacoes`.
 
 ## Local (Windows)
 

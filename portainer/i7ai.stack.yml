@@ -133,6 +133,12 @@ services:
       SGDM_INTERNAL_HOSTS: sgdm-api
       # Mesmo valor do I7AI_INTEGRACAO_CHAVE da stack sgdm-app.
       SGDM_INTEGRATION_KEY: ${SGDM_INTEGRATION_KEY:?Set SGDM_INTEGRATION_KEY}
+      # Modelos e acesso vêm da Central de IA do SGDM (fechado por padrão: prefeitura
+      # sem liberação não recebe modelo). Cache das liberações e da organização
+      # (setores, nome e fuso da prefeitura) e intervalo da sincronização do catálogo.
+      SGDM_ACCESS_CACHE_SECONDS: ${SGDM_ACCESS_CACHE_SECONDS:-60}
+      SGDM_ORG_CACHE_SECONDS: ${SGDM_ORG_CACHE_SECONDS:-300}
+      MODEL_SYNC_SECONDS: ${MODEL_SYNC_SECONDS:-300}
       # Gateway de IA (LiteLLM desta pilha). OPENAI_* e AI_GATEWAY_* ficam de fora
       # de propósito: chaves de provedor vivem só no LiteLLM, nunca no i7Ai.
       OMNIROUTER_BASE_URL: http://litellm:4000/v1

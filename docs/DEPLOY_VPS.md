@@ -416,7 +416,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://api.sgdm.com.br/api/v1/auth/me
 1. Entre no SGDM (`https://sgdm.com.br/login`) como **dono da plataforma** (perfil com `PLATAFORMA_ADMINISTRAR`, que no i7Ai vira `SUPER_ADMIN`).
 2. Menu **Inteligência Artificial › i7Ai**. **Esperado:** abre `https://sgdm.com.br/i7ai/` em outra aba, já logado; a prefeitura e o usuário são criados no i7Ai nesse primeiro acesso.
 3. **Chaves de IA.** Cada chave fica num lugar:
-   - **Chaves da plataforma** (valem para todas as prefeituras): cadastradas pelo `SUPER_ADMIN` no i7Ai, em **Modelos › Chaves dos provedores de IA** (só ele vê a seção). Cadastre a da OpenAI e/ou da Anthropic e clique em **Testar**. ⚠ **altera a VPS** (grava a chave cifrada no banco `litellm`).
+   - **Chaves da plataforma** (valem para todas as prefeituras): cadastradas pelo dono da plataforma no SGDM, em **Central de IA › Modelos e acesso › Chaves da plataforma** (permissão `IA_CENTRAL`). Cadastre a da OpenAI e/ou da Anthropic e clique em **Testar**. A chave segue direto para o LiteLLM e fica cifrada no banco `litellm`; o SGDM e o i7Ai não a gravam. ⚠ **altera a VPS** (grava a chave cifrada no banco `litellm`).
    - **Chave da prefeitura** (cobrança direta da prefeitura): fica no SGDM, em **Cadastros › Inteligência Artificial** (`/cadastros/ia`, permissão `IA_CONFIGURAR`; a mensagem de erro do i7Ai a chama de "Cadastros › IA"). O i7Ai a busca pela integração.
 
    **Esperado:** **Testar** mostra a resposta do provedor; a tela exibe a chave mascarada (ex.: `sk****88`).
@@ -428,13 +428,13 @@ curl -s -o /dev/null -w "%{http_code}\n" https://api.sgdm.com.br/api/v1/auth/me
      docker exec -e PROVISION_TENANT_NAME='<nome da prefeitura>' -e PROVISION_TENANT_SLUG='sgdm-<UUID_DO_TENANT>' -e PROVISION_ADMIN_EMAIL='<email do usuário>' -e PROVISION_ADMIN_NAME='<nome do usuário>' -e PROVISION_CREATE_LICENSE=true -e PROVISION_MAX_USERS=50 -e PROVISION_MAX_AGENTS=20 -e PROVISION_MAX_AUTOMATIONS=20 -e PROVISION_MAX_KNOWLEDGE_BASES=20 -e PROVISION_MAX_TOKENS=100000000 -e PROVISION_MAX_STORAGE_BYTES=10737418240 $(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-backend | head -1) node scripts/provision.cjs
      ```
    **Esperado:** a tela de Licenciamento mostra a licença **Ativa** com os limites; pelo script, a saída JSON traz `"license": true` em `created` e um `licenseId`.
-5. **Catálogo e agente.** Uma prefeitura nova não tem modelos nem agentes. Cadastre-os em **Modelos** e **Agentes**, ou pelo script, que lê `/v1/models` do LiteLLM (⚠ **altera a VPS** só com `--apply`; o UUID do `tenant` e do `usuario` vêm do `SELECT` do passo 4):
+5. **Catálogo e agente.** Os modelos são ativados no SGDM, em **Central de IA › Modelos e acesso** (ativar, escolher o padrão e liberar por prefeitura e por usuário). O i7Ai copia o catálogo a cada `MODEL_SYNC_SECONDS`; **Modelos** no i7Ai é só consulta e os preços vêm do LiteLLM. Uma prefeitura sem liberação não recebe nenhum modelo no i7Ai (fechado por padrão). Os agentes se criam em **Agentes**, ou pelo script, que lê `/v1/models` do LiteLLM (⚠ **altera a VPS** só com `--apply`; o UUID do `tenant` e do `usuario` vêm do `SELECT` do passo 4):
    ```bash
    docker exec $(docker ps -q -f label=com.docker.swarm.service.name=i7ai-plataforma_i7ai-backend | head -1) node scripts/configure-omniroute.cjs --models=openai/gpt-4o-mini,anthropic/claude-haiku-5-5,anthropic/claude-sonnet-5-5 --tenant=<UUID> --user=<UUID>
    # confira a saída (mode "review") e repita com --apply
    ```
-   **Esperado:** a revisão lista os três modelos; com `--apply`, imprime `configuredModels` e o agente `Assistente da Prefeitura`. Depois ajuste os preços (USD por milhão de tokens) em **Modelos**.
-6. **Chat.** Abra o agente e envie uma pergunta curta. **Esperado:** a resposta chega. Sem chave válida, a mensagem é *"A chave do provedor de IA não está cadastrada ou foi recusada. Cadastre a chave da prefeitura no SGDM (Cadastros › IA) ou a chave da plataforma em Modelos › Chaves dos provedores de IA."*
+   **Esperado:** a revisão lista os três modelos; com `--apply`, imprime `configuredModels` e o agente `Assistente da Prefeitura`. Os preços (USD por milhão de tokens) vêm do LiteLLM; confira em **Modelos** (só consulta). O script não libera modelos: faça a liberação da prefeitura na Central de IA.
+6. **Chat.** Abra o agente e envie uma pergunta curta. **Esperado:** a resposta chega. Sem chave válida, a mensagem é *"A chave do provedor de IA não está cadastrada ou foi recusada. Cadastre a chave da prefeitura no SGDM (Cadastros › IA) ou a chave da plataforma em Central de IA › Modelos e acesso › Chaves da plataforma, no SGDM."*
 
 ---
 
