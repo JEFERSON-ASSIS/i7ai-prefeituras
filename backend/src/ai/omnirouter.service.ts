@@ -5,7 +5,7 @@ import { gatewayBaseAllowed, isAllowedRoute, routePolicyMessage } from '../catal
 import { TenantAiKeyService } from './tenant-ai-key.service';
 import { LIMIT_MESSAGES } from './limit-messages';
 import type { OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
-import { SplitInstructions, joinedInstructions } from './instructions';
+import { SplitInstructions, joinedInstructions, neutralizeTags } from './instructions';
 
 export type OmniRouterInput = {
   agent: { id: string; tenantId: string; systemPrompt?: string | null; temperature: unknown; maxTokens: number; advancedReasoning: boolean };
@@ -28,6 +28,8 @@ export type OmniRouterInput = {
   quotaScope: QuotaScope;
   /** Optimization settings from SGDM (or the defaults), read once per call by the gateway. */
   optimization: OtimizacaoEfetiva;
+  /** True when the platform output cap (not the agent or the model) is what bounds max_tokens. */
+  outputCapApplied?: boolean;
 };
 
 export type OmniRouterAnswer = {
@@ -223,7 +225,7 @@ export class OmniRouterService {
     const history = this.history(input.history);
     // Off: exactly the layout before prompt caching (one system string with the sources inline).
     if (!input.optimization.cachePrompt.ligado) {
-      return [{ role: 'system', content: joinedInstructions(input.instructions) }, ...history, { role: 'user', content: this.userContent(input) }];
+      return [{ role: 'system', content: joinedInstructions({ ...input.instructions, variable: neutralizeTags(input.instructions.variable, ['fontes_e_arquivos']) }) }, ...history, { role: 'user', content: this.userContent(input) }];
     }
     // On: the fixed part stays alone at the top so the prefix repeats; Anthropic needs explicit markers
     // (at most 2), the other providers cache prefixes on their own.
@@ -237,7 +239,7 @@ export class OmniRouterService {
       ? { role: item.role, content: [{ type: 'text', text: item.content as string, ...marker }] }
       : item));
     messages.push({ role: 'user', content: [
-      { type: 'text', text: '<fontes_e_arquivos>\n' + input.instructions.variable + '\n</fontes_e_arquivos>' },
+      { type: 'text', text: '<fontes_e_arquivos>\n' + neutralizeTags(input.instructions.variable, ['fontes_e_arquivos']) +'\n</fontes_e_arquivos>' },
       { type: 'text', text: input.message },
       ...this.imageParts(input),
     ] });
@@ -336,7 +338,8 @@ export class OmniRouterService {
 
   private httpError(status: number, reason = ''): HttpException {
     // LiteLLM refusing the prefeitura's own limits (customer budget): a clear 429 instead of a gateway error.
-    if (/ExceededBudget|over budget|Budget has been exceeded/i.test(reason)) return Object.assign(new HttpException(LIMIT_MESSAGES.tenantMonth, 429), { providerStatus: status });
+    // Only the end user (prefeitura) budget is shown as the prefeitura's limit; key/team/tag budgets stay a generic gateway error.
+    if (/ExceededBudget:\s*End User=/i.test(reason)) return Object.assign(new HttpException(LIMIT_MESSAGES.tenantMonth, 429), { providerStatus: status });
     if (/Rate limit exceeded for end_user/i.test(reason)) return Object.assign(new HttpException(LIMIT_MESSAGES.tenantMinute, 429), { providerStatus: status });
     const missingKey = /api_key client option must be set|api key|x-api-key|authentication/i.test(reason);
     const unknownModel = /invalid model name|model.*not found|does not exist/i.test(reason);
@@ -355,7 +358,9 @@ export class OmniRouterService {
   private validateFinish(round: ChatRound, input: OmniRouterInput): void {
     if (round.finishReason === 'length') {
       // With the platform's output cap on, the user is told the cap (not the agent setting) cut the answer.
-      throw protocolError(input.optimization.limiteSaida.ligado ? OUTPUT_LIMIT_MESSAGE : 'O OmniRouter encerrou uma resposta incompleta por limite de tokens. Aumente o limite de resposta do agente.');
+      const cap = input.optimization.limiteSaida;
+      const capBound = Boolean(input.outputCapApplied) && cap.ligado && cap.tokens === input.agent.maxTokens;
+      throw protocolError(capBound ? OUTPUT_LIMIT_MESSAGE : 'O OmniRouter encerrou uma resposta incompleta por limite de tokens. Aumente o limite de resposta do agente.');
     }
     if (round.finishReason === 'content_filter') throw protocolError('O OmniRouter interrompeu a resposta por restrições do modelo.');
     if (!['stop', 'tool_calls'].includes(round.finishReason) || (round.finishReason === 'tool_calls') !== Boolean(round.calls.length)) {

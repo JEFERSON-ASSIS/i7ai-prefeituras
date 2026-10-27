@@ -192,7 +192,10 @@ export class AiGatewayService {
     const joined = joinedInstructions(instructions);
     // The platform's per-agent output cap only lowers agent.maxTokens, never raises it.
     const outputCap = optimization.limiteSaida.ligado && Number.isSafeInteger(optimization.limiteSaida.tokens) && optimization.limiteSaida.tokens! >= 1 ? optimization.limiteSaida.tokens! : Infinity;
-    const maxOutput = Math.min(agent.maxTokens, typeof capabilities.maxOutputTokens === 'number' ? capabilities.maxOutputTokens : Infinity, outputCap);
+    const ownLimit = Math.min(agent.maxTokens, typeof capabilities.maxOutputTokens === 'number' ? capabilities.maxOutputTokens : Infinity);
+    const maxOutput = Math.min(ownLimit, outputCap);
+    // True only when the platform cap is what bounds the answer (strictly below the agent's and the model's limits).
+    const outputCapApplied = outputCap < ownLimit;
     const configuredWindow = typeof capabilities.contextWindow === 'number' ? capabilities.contextWindow : undefined;
     let historyBudget = 48000;
     if (configuredWindow) {
@@ -210,7 +213,7 @@ export class AiGatewayService {
     const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice ?? model.inputPrice) || 0, cacheWriteInputPrice: Number(model.cacheWriteInputPrice ?? model.inputPrice) || 0, conversationId: input.conversationId, kind: 'resposta' });
     try {
     const generated = omniConfigured
-      ? await this.runOmniRouter(executionAgent, model, instructions, message, history, historyComplete, functions, input, quotaScope, optimization, onDelta)
+      ? await this.runOmniRouter(executionAgent, model, instructions, message, history, historyComplete, functions, input, quotaScope, optimization, outputCapApplied, onDelta)
       : process.env.AI_GATEWAY_URL
         ? await this.externalGateway(executionAgent, model.slug, provider, joined, message, history, sources, settings, functions, input, quotaScope)
         : await this.openAi(executionAgent, tenantId, model, joined, message, history, functions, input, quotaScope, onDelta);
@@ -223,9 +226,9 @@ export class AiGatewayService {
     } catch (error) { await this.quota.finish(quotaScope, 'FAILED'); throw error; }
   }
 
-  private async runOmniRouter(agent: LoadedAgent, model: LoadedModel, instructions: SplitInstructions, message: string, history: HistoryItem[], historyComplete: boolean, functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, optimization: OtimizacaoEfetiva, onDelta?: (text: string) => void): Promise<ProviderAnswer> {
+  private async runOmniRouter(agent: LoadedAgent, model: LoadedModel, instructions: SplitInstructions, message: string, history: HistoryItem[], historyComplete: boolean, functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, optimization: OtimizacaoEfetiva, outputCapApplied: boolean, onDelta?: (text: string) => void): Promise<ProviderAnswer> {
     if (!this.omni) throw new ServiceUnavailableException('O adaptador OmniRouter está indisponível.');
-    return this.omni.generate({ agent, model, instructions, message, history, historyComplete, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, quotaScope, optimization });
+    return this.omni.generate({ agent, model, instructions, message, history, historyComplete, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, quotaScope, optimization, outputCapApplied });
   }
 
   private async openAi(agent: LoadedAgent, tenantId: string, selectedModel: LoadedModel, instructions: string, message: string, history: HistoryItem[], functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, onDelta?: (text: string) => void): Promise<ProviderAnswer> {
