@@ -49,7 +49,14 @@ const LEGAL_CASES = [
   ['Parágrafo único do art. 5.', 'art. 5, § único.', 'art. 5, § 1º.'],
   ['Com base no inciso IV.', 'inciso IV aplicado.', 'inciso VI aplicado.'],
   ['Art. 75, II da lei.', 'art. 75, inciso II.', 'art. 75, inciso III.'],
-  ['Prazo de 30 dias.', 'prazo: 30 dias úteis.', 'prazo de 20 dias.'],
+  ['Prazo de 30 dias.', 'prazo: 30 dias.', 'prazo de 20 dias.'],
+  ['Prazo de 30 dias úteis.', 'prazo: 30 dias úteis.', 'prazo de 30 dias corridos.'],
+  ['Prazo de 30 dias corridos.', 'prazo de 30 dias corridos.', 'prazo de 30 dias úteis.'],
+  ['Prazo de 30 dias.', 'prazo de 30 dias.', 'prazo de 30 dias úteis.'],
+  ['Por 10 dias consecutivos.', 'por 10 dias seguidos.', 'por 10 dias.'],
+  ['Lei Municipal 1.234/2020.', 'Lei Municipal nº 1.234/2020.', 'Lei Estadual 1.234/2020.'],
+  ['Lei Federal 14.133/2021.', 'Lei Federal nº 14.133/2021.', 'Lei 14.133/2021.'],
+  ['Lei Complementar 101/2000.', 'LC 101/2000.', 'Lei 101/2000.'],
   ['Vigência de 12 meses.', 'vigência 12 meses.', 'vigência 12 anos.'],
   ['Garantia de 5 anos.', 'garantia de 5 anos.', 'garantia de 3 anos.'],
   ['Multa de 500 reais.', 'multa de 500 reais.', 'multa de 50 reais.'],
@@ -61,7 +68,10 @@ const LEGAL_CASES = [
   ['Até 15/03/2026.', 'até 15 de março de 2026.', 'até 16/03/2026.'],
   ['Lei nº 14.133/2021.', 'Lei 14.133/2021.', 'Lei nº 14.133/2012.'],
   ['Lei 8.666/93.', 'Lei nº 8.666/1993.', 'Lei 8.666/94.'],
-  ['Lei 14.133.', 'Lei nº 14.133, de 2021, e Lei 14.133/2021.', 'Lei 14.113.'],
+  ['Lei 14.133.', 'Lei nº 14.133, de 2021.', 'Lei 14.113.'],
+  // The summary may not add (or change) a year the source did not have.
+  ['Lei 14.133.', 'Lei nº 14.133.', 'Lei 14.133/2012.'],
+  ['Lei 14.133/2021.', 'Lei 14.133/2021.', 'Lei 14.133.'],
   ['Lei Complementar 101/2000.', 'LC 101/2000.', 'Lei 101/2000.'],
   ['Decreto nº 10.024/2019.', 'Decreto 10.024/2019.', 'Decreto 10.024/2020.'],
   ['Valor de R$ 1.000,00.', 'R$ 1.000.', 'R$ 10.000,00.'],
@@ -85,6 +95,11 @@ test('itens jurídicos: números pequenos sem unidade não viram itens; números
   assert.deepEqual(missingItems('art. 7 e 30 dias', 'art. 75 e 300 dias'), ['art. 7', '30 dias']);
   assert.deepEqual(missingItems('§ 1º', '§ 10'), ['§ 1']);
   assert.deepEqual(missingItems('12 meses', '112 meses'), ['12 meses']);
+  // Each key only matches its own kind: an ordinal elsewhere is not an article or a paragraph, and vice versa.
+  assert.deepEqual(missingItems('Conforme o art. 2º.', 'O 2º colocado venceu.'), ['art. 2']);
+  assert.deepEqual(missingItems('Pelo § 2º.', 'O 2º colocado venceu.'), ['§ 2']);
+  assert.deepEqual(missingItems('O 2º colocado venceu.', 'Conforme o art. 2º e o § 2º.'), ['2º']);
+  assert.deepEqual(missingItems('Em 15/03/2026.', 'Processo 15.03.2026-1.'), ['15/03/2026']);
 });
 
 const messages = count => Array.from({ length: count }, (_, index) => ({ id: 'm' + (index + 1), role: index % 2 ? 'assistant' : 'user', content: 'Mensagem ' + (index + 1), createdAt: new Date(1_000 + index) }));

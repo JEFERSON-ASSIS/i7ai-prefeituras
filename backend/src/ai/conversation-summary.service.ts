@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { HttpException, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { Job, Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
@@ -19,7 +19,21 @@ export type CallBudget = { used: number; max: number; record?: (used: number) =>
 
 const QUEUE = 'conversation.summary';
 const ROLE_LABEL: Record<string, string> = { user: 'Usuário', assistant: 'Assistente' };
-class TruncatedSummary extends Error {}
+/** A model call that would fail the same way again: counted as a rejection, never retried. */
+class RejectedCall extends Error { constructor(readonly truncated: boolean) { super(); } }
+
+/**
+ * Repeatable failures: an answer cut by the token cap, a refused or malformed answer (content filter, invalid finish
+ * reason, empty text) and gateway 4xx. Network errors, timeouts, 5xx and rate limits (429) are transient: the job
+ * may retry them once, within its two-call budget.
+ */
+export function repeatableFailure(error: unknown): boolean {
+  const value = error as { truncated?: boolean; providerStatus?: number } | null;
+  if (value?.truncated) return true;
+  if (typeof value?.providerStatus === 'number') return value.providerStatus >= 400 && value.providerStatus < 500 && ![408, 429].includes(value.providerStatus);
+  if (!(error instanceof HttpException)) return false;
+  return ![408, 429, 503, 504].includes(error.getStatus());
+}
 
 /**
  * Rebuilds a conversation's history summary in batches, in a BullMQ job after the answer (never on the user's
@@ -138,12 +152,12 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
       } catch (error) {
         await this.quota.finish(quotaScope, 'FAILED');
         // A summary cut by the token cap is a rejection (retrying would cost the same), not a job failure.
-        if ((error as { truncated?: boolean } | null)?.truncated) throw new TruncatedSummary();
+        if (repeatableFailure(error)) throw new RejectedCall(Boolean((error as { truncated?: boolean }).truncated));
         throw error;
       }
     };
 
-    let missing: string[] = []; let truncated = false; let summary = '';
+    let missing: string[] = []; let truncated = false; let failed = false; let summary = '';
     try {
       summary = await run(source);
       missing = missingItems(source, summary);
@@ -152,16 +166,16 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
         missing = missingItems(source, summary);
       }
     } catch (error) {
-      if (!(error instanceof TruncatedSummary)) throw error;
-      truncated = true;
+      if (!(error instanceof RejectedCall)) throw error;
+      truncated = error.truncated; failed = !error.truncated;
     }
     const audit = (event: string, metadata: Record<string, string | number | boolean>) => ({ tenantId, userId: conversation.userId, event, resource: 'conversation', resourceId: conversationId, metadata });
     const unchanged = { id: conversationId, tenantId, summaryDisabled: false, summaryThroughMessageId: conversation.summaryThroughMessageId };
-    if (truncated || missing.length) {
+    if (truncated || failed || missing.length) {
       // The previous summary stays; the conversation keeps every message after it. Counts only, never text.
       await this.prisma.$transaction(async tx => {
         await tx.conversation.updateMany({ where: unchanged, data: { summaryRejectedThroughMessageId: plan.throughId, summaryRejections: { increment: 1 } } });
-        await tx.auditLog.create({ data: audit('conversation.summary_rejected', { missing: missing.length, messages: plan.toSummarize.length, truncated }) });
+        await tx.auditLog.create({ data: audit('conversation.summary_rejected', { missing: missing.length, messages: plan.toSummarize.length, truncated, failed }) });
       });
       return 'rejeitado';
     }

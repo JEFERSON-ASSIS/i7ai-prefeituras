@@ -64,7 +64,7 @@ function fixture({ count = 22, summary = null, through = null, disabled = false,
     const answer = queue.length > 1 ? queue.shift() : queue[0];
     // An answer is the summary text, { length: true } for a cut answer, or { status } for a gateway error.
     if (answer && typeof answer === 'object' && answer.status) return new Response('{"error":{"message":"falha"}}', { status: answer.status, headers: { 'Content-Type': 'application/json' } });
-    const finish = answer && typeof answer === 'object' && answer.length ? 'length' : 'stop';
+    const finish = answer && typeof answer === 'object' ? (answer.finish ?? (answer.length ? 'length' : 'stop')) : 'stop';
     const content = typeof answer === 'string' ? answer : 'Resumo cortado';
     return new Response(JSON.stringify({ choices: [{ index: 0, finish_reason: finish, message: { role: 'assistant', content } }], usage: { prompt_tokens: 400, completion_tokens: 60 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
@@ -104,7 +104,7 @@ test('resumo sem a data: nova tentativa com a lista de itens; ainda sem a data �
   assert.deepEqual(records.updates, [{ summaryRejectedThroughMessageId: 'm12', summaryRejections: { increment: 1 } }]);
   assert.equal(conversation.summaryRejections, 1);
   assert.equal(records.audit.length, 1); assert.equal(records.audit[0].event, 'conversation.summary_rejected');
-  assert.deepEqual(records.audit[0].metadata, { missing: 1, messages: 12, truncated: false });
+  assert.deepEqual(records.audit[0].metadata, { missing: 1, messages: 12, truncated: false, failed: false });
   const metadata = JSON.stringify(records.audit[0].metadata);
   for (const word of ['dispensa', 'Secretaria', '15/03/2026', 'Mensagem', 'Lei']) assert.ok(!metadata.includes(word), word);
   // Both paid calls were recorded like any call.
@@ -123,8 +123,32 @@ test('resposta cortada pelo limite de tokens = recusa (sem lançar, sem nova ten
   assert.equal(await service.summarize('tenant-a', 'conv-a'), 'rejeitado');
   assert.equal(records.requests.length, 1);
   assert.equal(conversation.summary, null); assert.equal(conversation.summaryRejections, 1);
-  assert.deepEqual(records.audit[0].metadata, { missing: 0, messages: 12, truncated: true });
+  assert.deepEqual(records.audit[0].metadata, { missing: 0, messages: 12, truncated: true, failed: false });
   assert.equal(records.usage.length, 1); // the cut call is still paid and recorded
+});
+
+test('falhas que se repetiriam (filtro de conteúdo, finish inválido, resposta vazia, 4xx do gateway) = recusa, sem nova tentativa', async () => {
+  for (const answer of [{ finish: 'content_filter' }, { finish: 'esquisito' }, '', { status: 400 }, { status: 404 }, { status: 422 }]) {
+    const { service, records, conversation } = fixture({ answers: [answer, FULL] });
+    assert.equal(await service.summarize('tenant-a', 'conv-a'), 'rejeitado', JSON.stringify(answer));
+    assert.equal(records.requests.length, 1, JSON.stringify(answer));
+    assert.equal(conversation.summary, null); assert.equal(conversation.summaryRejections, 1);
+    assert.equal(conversation.summaryRejectedThroughMessageId, 'm12');
+    assert.deepEqual(records.audit[0].metadata, { missing: 0, messages: 12, truncated: false, failed: true });
+  }
+});
+
+test('falhas passageiras (5xx, 429, rede) lançam para o BullMQ tentar de novo e não contam como recusa', async () => {
+  for (const answer of [{ status: 503 }, { status: 500 }, { status: 429 }]) {
+    const { service, records, conversation } = fixture({ answers: [answer] });
+    await assert.rejects(() => service.summarize('tenant-a', 'conv-a'), JSON.stringify(answer));
+    assert.equal(records.requests.length, 1);
+    assert.equal(conversation.summaryRejections, 0); assert.equal(records.audit.length, 0);
+  }
+  const { service, conversation } = fixture();
+  global.fetch = async () => { throw new TypeError('fetch failed'); };
+  await assert.rejects(() => service.summarize('tenant-a', 'conv-a'));
+  assert.equal(conversation.summaryRejections, 0);
 });
 
 test('um job nunca faz mais de 2 chamadas, contando as tentativas do BullMQ', async () => {

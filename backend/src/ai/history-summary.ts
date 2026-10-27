@@ -27,8 +27,8 @@ export function historyWindow<T extends { role: string; content: unknown }>(hist
 // the full messages, a lost item would change the answer.
 
 type Item = { key: string; text: string };
-type Found = { start: number; end: number; priority: number; items: Item[]; aliases?: string[] };
-type Extractor = { pattern: RegExp; build: (match: RegExpMatchArray) => { items: Item[]; aliases?: string[] } | null };
+type Found = { start: number; end: number; priority: number; items: Item[] };
+type Extractor = { pattern: RegExp; build: (match: RegExpMatchArray) => { items: Item[] } | null };
 
 const normalize = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.,;:]+$/, '');
 const digits = (text: string) => text.replace(/\D/g, '');
@@ -40,6 +40,8 @@ const roman = (value: string) => { const upper = value.toUpperCase(); return upp
 // A number followed by one of these units is a quantity, not the next item of an article list.
 const NOT_UNIT = '(?!\\s*(?:dias?|meses|m[eê]s|anos?|horas?|minutos?|semanas?|reais|%|por\\s*cento))';
 const UNITS: Record<string, string> = { dia: 'dia', dias: 'dia', 'mês': 'mes', mes: 'mes', meses: 'mes', ano: 'ano', anos: 'ano', hora: 'hora', horas: 'hora', minuto: 'minuto', minutos: 'minuto', semana: 'semana', semanas: 'semana', reais: 'reais' };
+// The qualifier changes the deadline: "30 dias úteis" is not "30 dias corridos" nor plain "30 dias".
+const QUALIFIERS: Record<string, string> = { 'úteis': 'uteis', uteis: 'uteis', 'útil': 'uteis', util: 'uteis', corrido: 'corridos', corridos: 'corridos', consecutivo: 'consecutivos', consecutivos: 'consecutivos', ininterrupto: 'consecutivos', ininterruptos: 'consecutivos', seguido: 'consecutivos', seguidos: 'consecutivos' };
 const listNumbers = (text: string) => text.match(/\d+/g) ?? [];
 
 function date(day: string, month: string, year: string): Item[] | null {
@@ -66,12 +68,13 @@ const EXTRACTORS: Extractor[] = [
     },
   },
   { // laws and decrees: Lei nº 14.133/2021, Lei 8.666/93, Lei Complementar 101/2000, Decreto nº 10.024/2019
-    pattern: /\b(lei\s+complementar|lei|lc|decreto-lei|decreto)(?:\s+(?:federal|estadual|municipal))?(?:\s*n(?:\.\s*)?[º°o]?\.?|\s*número)?\s*(\d+(?:\.\d+)*)(?:\s*\/\s*(\d{4}|\d{2}))?(?![\d])/gi,
+    pattern: /\b(lei\s+complementar|lei|lc|decreto-lei|decreto)(?:\s+(federal|estadual|municipal))?(?:\s*n(?:\.\s*)?[º°o]?\.?|\s*número)?\s*(\d+(?:\.\d+)*)(?:\s*\/\s*(\d{4}|\d{2}))?(?![\d])/gi,
     build: m => {
+      // Kind and sphere are part of the item: a municipal law is not the state law with the same number.
       const kind = m[1].toLowerCase().replace(/\s+/g, ' ');
-      const base = 'lei:' + (kind === 'lei complementar' || kind === 'lc' ? 'lc' : kind) + ' ' + digits(m[2]);
-      // A summary may add the year the source left out, never drop it.
-      return { items: [{ key: base + (m[3] ? '/' + year4(m[3]) : ''), text: normalize(m[0]) }], aliases: m[3] ? [base] : [] };
+      const sphere = m[2] ? ' ' + m[2].toLowerCase() : '';
+      // The year is part of the key: the summary may leave it out only where the source did, never add or change it.
+      return { items: [{ key: 'lei:' + (kind === 'lei complementar' || kind === 'lc' ? 'lc' : kind) + sphere + ' ' + digits(m[3]) + (m[4] ? '/' + year4(m[4]) : ''), text: normalize(m[0]) }] };
     },
   },
   { // articles, lists and the inciso right after them: art. 75, artigo 75, art 75, arts. 74 e 75, art. 75, II
@@ -103,9 +106,9 @@ const EXTRACTORS: Extractor[] = [
     pattern: /(?<![\d.,])(\d+(?:[.,]\d+)?)\s*(?:%|por\s*cento)/gi,
     build: m => ({ items: [{ key: 'pct:' + m[1].replace('.', ','), text: normalize(m[0]) }] }),
   },
-  { // quantities: 30 dias, 12 meses, 5 anos, 48 horas, 500 reais
-    pattern: /(?<![\d.,])(\d+(?:[.,]\d+)*)\s*(dias?|meses|m[eê]s|anos?|horas?|minutos?|semanas?|reais)(?![a-zà-ÿ])/gi,
-    build: m => ({ items: [{ key: 'qtd:' + m[1] + ' ' + UNITS[m[2].toLowerCase()], text: normalize(m[0]) }] }),
+  { // quantities: 30 dias, 30 dias úteis (≠ corridos), 12 meses, 5 anos, 48 horas, 500 reais
+    pattern: /(?<![\d.,])(\d+(?:[.,]\d+)*)\s*(dias?|meses|m[eê]s|anos?|horas?|minutos?|semanas?|reais)(?![a-zà-ÿ])(?:\s+(úteis|uteis|útil|util|corridos?|consecutivos?|ininterruptos?|seguidos?)(?![a-zà-ÿ]))?/gi,
+    build: m => ({ items: [{ key: 'qtd:' + m[1] + ' ' + UNITS[m[2].toLowerCase()] + (m[3] ? ' ' + QUALIFIERS[m[3].toLowerCase()] : ''), text: normalize(m[0]) }] }),
   },
   { // ordinals: 1º, 2ª
     pattern: /(?<![\d.,])(\d+)\s*([º°ª])/g,
@@ -138,9 +141,10 @@ function extract(text: string): Found[] {
 
 /** Items of `text` the summary must keep. A match inside a longer one (a date's year, the number of a law) is
  * carried by the longer one; on the same span the higher-priority reading wins. Deduplicated by key. */
+const inside = (a: Found, b: Found) => b !== a && b.start <= a.start && a.end <= b.end && (b.end - b.start > a.end - a.start || b.priority < a.priority);
+
 function sourceItems(text: string): Item[] {
   const found = extract(text);
-  const inside = (a: Found, b: Found) => b !== a && b.start <= a.start && a.end <= b.end && (b.end - b.start > a.end - a.start || b.priority < a.priority);
   const items = new Map<string, Item>();
   for (const entry of found) {
     if (found.some(other => inside(entry, other))) continue;
@@ -149,12 +153,17 @@ function sourceItems(text: string): Item[] {
   return [...items.values()];
 }
 
-/** Everything the summary states, nested readings included (the summary may phrase an item inside a longer one). */
+/**
+ * What the summary states, read the same way as the source: each item only as its own kind ("2º colocado" is an
+ * ordinal, never "art. 2º"; the "2º" of "§ 2º" is not a standalone ordinal). The one nested reading kept is a plain
+ * number of 4+ digits, still literally present inside a longer number (the year inside a process number).
+ */
 function summaryKeys(text: string): Set<string> {
+  const found = extract(text);
   const keys = new Set<string>();
-  for (const entry of extract(text)) {
-    entry.items.forEach(item => keys.add(item.key));
-    entry.aliases?.forEach(alias => keys.add(alias));
+  for (const entry of found) {
+    const nested = found.some(other => inside(entry, other));
+    entry.items.forEach(item => { if (!nested || item.key.startsWith('n:')) keys.add(item.key); });
   }
   return keys;
 }
