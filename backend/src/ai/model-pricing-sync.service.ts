@@ -25,9 +25,19 @@ export class ModelPricingSyncService implements OnModuleInit, OnModuleDestroy {
   private schedule(delay: number) {
     if (this.stopping) return;
     this.timer = setTimeout(() => {
-      this.running = this.sync().then(() => undefined, () => this.logger.error('Falha ao sincronizar os preços dos modelos; a próxima execução tentará novamente.')).finally(() => this.schedule(SIX_HOURS));
+      this.running = this.runScheduled().finally(() => this.schedule(SIX_HOURS));
     }, delay);
     this.timer.unref();
+  }
+  /** One scheduled run: never throws; logs the failure reason and unknown slugs (no keys reach the logs). */
+  async runScheduled(): Promise<void> {
+    try {
+      const { unknown } = await this.sync();
+      if (unknown.length) this.logger.warn(`Modelos sem preço no gateway de IA: ${unknown.join(', ')}`);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Falha ao sincronizar os preços dos modelos (${reason}); a próxima execução tentará novamente.`);
+    }
   }
   async onModuleDestroy() { this.stopping = true; clearTimeout(this.timer); await this.running; }
 
@@ -59,8 +69,9 @@ export class ModelPricingSyncService implements OnModuleInit, OnModuleDestroy {
       // No cache price at LiteLLM: null makes the cost fall back to the input price.
       if (input !== null) data.cachedInputPrice = perMillion(pricing.cache_read_input_token_cost);
       const window = pricing.max_input_tokens;
-      if (typeof window === 'number' && Number.isSafeInteger(window) && window >= 4096 && window <= 2_000_000) {
-        const current = model.capabilities && typeof model.capabilities === 'object' && !Array.isArray(model.capabilities) ? model.capabilities : {};
+      const current = model.capabilities && typeof model.capabilities === 'object' && !Array.isArray(model.capabilities) ? model.capabilities as Record<string, unknown> : {};
+      // Fill the context window only when empty: an admin-set value is never overwritten.
+      if (current.contextWindow == null && typeof window === 'number' && Number.isSafeInteger(window) && window >= 4096 && window <= 2_000_000) {
         data.capabilities = { ...current, contextWindow: window } as Prisma.InputJsonObject;
       }
       if (!Object.keys(data).length) continue;

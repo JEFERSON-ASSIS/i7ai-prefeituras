@@ -34,6 +34,8 @@ type ChatRound = { content: string; calls: ChatToolCall[]; finishReason: string;
 type UsageReporter = (usage: QuotaUsage) => Promise<void>;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_FRAME_BYTES = 256 * 1024;
+/** Bounded input estimate per attached image, above what current vision models bill for one image. */
+export const IMAGE_TOKEN_ALLOWANCE = 16_384;
 
 function object(value: unknown): JsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
@@ -136,9 +138,12 @@ export class OmniRouterService {
       if (contextWindow && this.textInputUpperBound(request) + input.agent.maxTokens > contextWindow) {
         throw new BadRequestException('A mensagem, os anexos, o histórico e as ferramentas excedem o contexto configurado para este modelo. Reduza o conteúdo ou escolha um modelo com contexto maior.');
       }
-      // Vision accounting is model-specific. The verified catalog window bounds
-      // the complete accepted request; reserve it rather than guessing image cost.
-      const inputUpperBound = hasImages ? contextWindow! - input.agent.maxTokens : undefined;
+      // Vision accounting is model-specific and base64 bytes are not tokens. Reserve
+      // the text bound plus a fixed allowance per image, capped by the catalog window:
+      // reserving the whole window would refuse every image chat on 1M-context models.
+      const inputUpperBound = hasImages
+        ? Math.min(contextWindow! - input.agent.maxTokens, this.textInputUpperBound(request) + input.images!.length * IMAGE_TOKEN_ALLOWANCE)
+        : undefined;
       const generated = await this.quota.runRound(input.quotaScope, request, input.agent.maxTokens, record => this.round(endpoint, apiKey, request, input, record, providerKey), inputUpperBound);
       input.signal?.throwIfAborted();
       inputTokens += generated.usage.inputTokens; outputTokens += generated.usage.outputTokens; measured = measured && generated.usage.measured;
@@ -211,11 +216,14 @@ export class OmniRouterService {
   }
 
   // Ids only, never person names: the gateway groups spend by these tags.
-  private tags(input: OmniRouterInput): string[] {
+  private tags(input: OmniRouterInput, providerKey?: string): string[] {
     return [
       ...(input.userId ? ['usuario:' + input.userId] : []),
       'origem:' + input.origin,
       ...(input.conversationId ? ['conversa:' + input.conversationId] : []),
+      ...(input.agent.id ? ['agente:' + input.agent.id] : []),
+      // Key source only, never the key itself.
+      providerKey ? 'chave:propria' : 'chave:plataforma',
     ];
   }
 
@@ -226,7 +234,7 @@ export class OmniRouterService {
       const response = await fetch(endpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: input.onDelta ? 'text/event-stream' : 'application/json', Authorization: 'Bearer ' + apiKey },
         // `user` = prefeitura: the gateway groups spend by it (Relatórios › Custos de IA).
-        body: JSON.stringify({ ...(request as object), user: input.agent.tenantId, metadata: { tags: this.tags(input) }, ...(providerKey ? { api_key: providerKey } : {}) }), signal, redirect: 'error',
+        body: JSON.stringify({ ...(request as object), user: input.agent.tenantId, metadata: { tags: this.tags(input, providerKey) }, ...(providerKey ? { api_key: providerKey } : {}) }), signal, redirect: 'error',
       });
       input.signal?.throwIfAborted();
       if (!response.ok) throw this.httpError(response.status, await this.gatewayReason(response));

@@ -74,7 +74,7 @@ O passo a passo está em [docs/DEPLOY_VPS.md](./DEPLOY_VPS.md): stack Swarm `i7a
 
 ## Central de IA no SGDM
 
-A Central de IA é a visão do consumo e do custo de IA de todas as prefeituras, dentro do SGDM (`/central-ia` e `/central-ia/consumo`). Só quem tem a permissão `IA_CENTRAL` vê: ela existe apenas no perfil `DONO_PLATAFORMA`. Qualquer outro usuário recebe 403 na API.
+A Central de IA é a visão do consumo e do custo de IA de todas as prefeituras, dentro do SGDM (`/central-ia` e `/central-ia/consumo`). Só quem tem a permissão `IA_CENTRAL` vê. Ela é reservada à prefeitura da plataforma: o perfil `DONO_PLATAFORMA` já vem com ela, e um perfil da prefeitura da plataforma (por exemplo `GESTOR_IA`) pode recebê-la; perfis das demais prefeituras não podem. Qualquer outro usuário recebe 403 na API.
 
 **De onde vêm os números.** O SGDM consulta o LiteLLM com `LITELLM_URL` e `LITELLM_ADMIN_KEY` (as duas precisam estar preenchidas; uma só desliga). O consumo e o custo saem do gasto que o próprio LiteLLM registra (`/spend/...`); a divisão por usuário, origem e conversa de uma prefeitura sai de `/spend/logs/v2`. O i7Ai grava o mesmo em `ai_usage` (tokens, tokens em cache e `costSource`: `gateway` quando vem do `x-litellm-response-cost`, `catalog` quando é calculado com os preços sincronizados do `/model/info`, de 6 em 6 horas).
 
@@ -83,8 +83,14 @@ A Central de IA é a visão do consumo e do custo de IA de todas as prefeituras,
 | Tag | Valor |
 | --- | --- |
 | `usuario:` | usuário que originou a chamada |
-| `origem:` | `i7ai-chat`, `i7ai-automacao` ou `sgdm-pecas` (geração de peças no SGDM) |
+| `origem:` | `i7ai-chat`, `i7ai-automacao`, `sgdm-pecas` (geração de peças no SGDM) ou `sgdm-teste` (teste de chave no SGDM) |
 | `conversa:` | conversa do chat (a primeira mensagem de uma conversa nova já leva a tag) |
+| `agente:` | uuid do agente do i7Ai que respondeu (só chamadas do i7Ai; as peças do SGDM não têm agente) |
+| `chave:` | `propria` quando a chamada levou a chave da própria prefeitura (`api_key` por requisição), `plataforma` quando usou a chave da plataforma |
+
+Todas as tags levam só ids e valores fixos, nunca nomes de pessoas nem chaves. O teste de chave em **Cadastros › IA** do SGDM sai com `origem:sgdm-teste` e não conta como peça.
+
+Ficam fora dessas tags por prefeitura: o teste das credenciais de provedor feito pelo i7Ai (passa pelo gateway sem `user` nem `metadata.tags`, então entra no gasto total sem prefeitura) e os embeddings da base de conhecimento (cliente próprio com `EMBEDDING_*`, sem `user` nem tags; só aparecem no gateway se `EMBEDDING_BASE_URL` apontar para ele).
 
 As peças do SGDM passam pelo LiteLLM só se `LITELLM_URL` e `LITELLM_ADMIN_KEY` estiverem definidas, usando a chave da própria prefeitura (`api_key` por requisição) ou, sem ela, a da plataforma.
 

@@ -416,6 +416,21 @@ test('a megabyte JPEG fits a 100k-token license by reserving the catalog window 
   assert.equal(records.usage[0].inputTokens, 30); assert.equal(records.usage[0].outputTokens, 10);
 });
 
+test('an image chat on a 1,050,000-window model fits a 1,000,000 license with no usage', async t => {
+  const { IMAGE_TOKEN_ALLOWANCE } = require('../dist/ai/omnirouter.service');
+  const { service, input, records, prisma } = fixture();
+  prisma.license.findFirst = async () => ({ status: 'ACTIVE', startDate: new Date(Date.now() - 86400000), endDate: null, maxTokens: 1000000n });
+  input.model.capabilities = { supportsVision: true, contextWindow: 1_050_000 };
+  input.images = [{ name: 'foto.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,aGVsbG8=' }];
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  const result = await service.generate(input);
+  assert.equal(result.answer, 'O orçamento é 42.');
+  assert.equal(local.requests.length, 1);
+  const budget = records.initialBudgets[0];
+  assert.ok(budget < 1000000n, 'reservation must not scale with the full window');
+  assert.ok(budget >= BigInt(IMAGE_TOKEN_ALLOWANCE + input.agent.maxTokens), 'reservation still covers the image allowance and the answer');
+});
+
 test('tool definitions count against the context window before the first paid request', async t => {
   const fn = localFunction(); fn.definition.parameters.description = 'x'.repeat(5000);
   const { service, input, records } = fixture([fn]); input.model.capabilities = { supportsTools: true, contextWindow: 4096 };
@@ -452,10 +467,15 @@ test('the prefeitura key from SGDM goes only on the wire, for models of its prov
   await service.generate(input);
   assert.deepEqual(asked, [['tenant-a', 'openai/model-from-catalog']]);
   assert.equal(requests[0].body.api_key, 'sk-prefeitura-123');
+  assert.ok(requests[0].body.metadata.tags.includes('chave:propria'));
+  assert.ok(!requests[0].body.metadata.tags.includes('chave:plataforma'));
+  assert.ok(!JSON.stringify(requests[0].body.metadata).includes('sk-prefeitura-123'));
   assert.ok(!JSON.stringify(records, (_key, value) => typeof value === 'bigint' ? String(value) : value).includes('sk-prefeitura-123'));
   const without = new OmniRouterService(runtime, quota, { forModel: async () => undefined });
   await without.generate(input);
   assert.equal('api_key' in requests[1].body, false);
+  assert.ok(requests[1].body.metadata.tags.includes('chave:plataforma'));
+  assert.ok(!requests[1].body.metadata.tags.includes('chave:propria'));
 });
 
 test('LiteLLM stream shape: an empty usage frame after the finish is accepted; text after it is not', async t => {
@@ -481,11 +501,11 @@ test('cada chamada leva user = prefeitura e as tags de usuário, origem e conver
   input.conversationId = 'conv-1';
   await service.generate(input);
   assert.equal(requests[0].body.user, 'tenant-a');
-  assert.deepEqual(requests[0].body.metadata.tags.sort(), ['conversa:conv-1', 'origem:i7ai-chat', 'usuario:user-a']);
+  assert.deepEqual(requests[0].body.metadata.tags.sort(), ['agente:agent-a', 'chave:plataforma', 'conversa:conv-1', 'origem:i7ai-chat', 'usuario:user-a']);
   const auto = fixture(); auto.input.origin = 'i7ai-automacao'; delete auto.input.userId; delete auto.input.conversationId;
   await auto.service.generate(auto.input);
   assert.equal(requests[1].body.user, 'tenant-a');
-  assert.deepEqual(requests[1].body.metadata.tags, ['origem:i7ai-automacao']);
+  assert.deepEqual(requests[1].body.metadata.tags, ['origem:i7ai-automacao', 'agente:agent-a', 'chave:plataforma']);
 });
 
 test('tokens em cache e custo do cabeçalho entram no consumo; stream sem cabeçalho usa o catálogo', async t => {

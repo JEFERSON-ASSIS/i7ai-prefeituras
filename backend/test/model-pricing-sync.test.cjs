@@ -67,3 +67,33 @@ test('sync com erro HTTP lança ServiceUnavailableException e não altera nada',
   await assert.rejects(() => new ModelPricingSyncService(prisma).sync(), ServiceUnavailableException);
   assert.equal(JSON.stringify(prisma.rows), before);
 });
+
+test('sync preenche a janela de contexto só quando vazia; nunca sobrescreve a configurada', async t => {
+  await gateway(t, 200, { data: [
+    { model_name: 'openai/gpt-4o-mini', model_info: { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, max_input_tokens: 1_050_000 } },
+    { model_name: 'google/gemini-x', model_info: { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, max_input_tokens: 1_050_000 } },
+  ] });
+  const prisma = fakePrisma();
+  prisma.rows[0].capabilities = { vision: true, contextWindow: 128000 };
+  await new ModelPricingSyncService(prisma).sync();
+  assert.deepEqual(prisma.rows[0].capabilities, { vision: true, contextWindow: 128000 });
+  assert.equal(prisma.rows[0].inputPrice, '1.000000');
+  assert.deepEqual(prisma.rows[1].capabilities, { contextWindow: 1_050_000 });
+});
+
+test('execução agendada registra o motivo da falha e os modelos sem preço, sem a chave', async t => {
+  const logs = [];
+  const capture = service => { service.logger = { warn: m => logs.push(['warn', m]), error: m => logs.push(['error', m]) }; return service; };
+  await gateway(t, 200, { data: [{ model_name: 'openai/gpt-4o-mini', model_info: { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 } }] });
+  await capture(new ModelPricingSyncService(fakePrisma())).runScheduled();
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][0], 'warn');
+  assert.match(logs[0][1], /google\/gemini-x, anthropic\/x/);
+  logs.length = 0;
+  await gateway(t, 500, { error: { message: 'boom' } });
+  await capture(new ModelPricingSyncService(fakePrisma())).runScheduled();
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][0], 'error');
+  assert.match(logs[0][1], /Não foi possível ler os preços no gateway de IA/);
+  assert.ok(!logs.some(([, message]) => message.includes('sk-master')));
+});
