@@ -38,6 +38,8 @@ Um subdomínio no Cloudflare só é necessário se o LiteLLM ficar em outro serv
 
 Os modelos ficam em [deploy/litellm/config.yaml](../deploy/litellm/config.yaml). Cada `model_name` deve ser igual ao slug cadastrado em **Modelos** no i7Ai e usar um prefixo liberado (`openai/`, `anthropic/`, `gemini/`, `xai/`). Cada modelo aponta para a credencial do provedor (`litellm_credential_name: openai`, `anthropic` ou `gemini`).
 
+Os preços (entrada, saída e entrada em cache, em USD por milhão de tokens) e a janela de contexto vêm do LiteLLM. O i7Ai os lê de `/model/info` 1 minuto depois de iniciar e a cada 6 horas, e grava em **Modelos**. Os campos de preço e de contexto em **Modelos** passam a ser informativos: o que for digitado ali é sobrescrito na próxima sincronização. Modelo sem preço no LiteLLM fica sem alteração. Sem `OMNIROUTER_BASE_URL`, a sincronização fica desligada.
+
 Rotas do OmniRoute como `antigravity/...` e `cx/...` não existem no LiteLLM. Troque o modelo dos agentes que as usam.
 
 | Slug | Uso |

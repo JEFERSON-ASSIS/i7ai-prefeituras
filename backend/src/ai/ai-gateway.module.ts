@@ -16,6 +16,7 @@ import { CatalogModule } from '../catalog/catalog.module';
 import { ProviderCredentialsController } from './provider-credentials.controller';
 import { ProviderCredentialsService } from './provider-credentials.service';
 import { TenantAiKeyService } from './tenant-ai-key.service';
+import { ModelPricingSyncService } from './model-pricing-sync.service';
 
-@Module({ imports: [AuthModule, KnowledgeModule, ToolsModule, McpModule, AgentsModule, CatalogModule], controllers: [AiGatewayController, ConversationsController, ChatAttachmentsController, ChatCatalogController, ProviderCredentialsController], providers: [AiGatewayService, AgentToolsService, AiQuotaService, OmniRouterService, ProviderCredentialsService, TenantAiKeyService], exports: [AiGatewayService] })
+@Module({ imports: [AuthModule, KnowledgeModule, ToolsModule, McpModule, AgentsModule, CatalogModule], controllers: [AiGatewayController, ConversationsController, ChatAttachmentsController, ChatCatalogController, ProviderCredentialsController], providers: [AiGatewayService, AgentToolsService, AiQuotaService, OmniRouterService, ProviderCredentialsService, TenantAiKeyService, ModelPricingSyncService], exports: [AiGatewayService] })
 export class AiGatewayModule {}
