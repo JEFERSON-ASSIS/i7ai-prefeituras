@@ -1,8 +1,10 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpException, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { requireActiveLicense } from '../catalog/license-policy';
+import { SgdmLimitsService, UserLimits } from '../sgdm/sgdm-limits.service';
+import { LIMIT_MESSAGES } from './limit-messages';
 
 export type QuotaUsage = { inputTokens: number; outputTokens: number; measured: boolean; cachedInputTokens?: number; gatewayCost?: number };
 export type QuotaScope = {
@@ -25,10 +27,10 @@ const pendingStatuses = ['RESERVED', 'UNCERTAIN'];
 
 @Injectable()
 export class AiQuotaService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly limits?: SgdmLimitsService) {}
   scope(input: Omit<QuotaScope, 'runId' | 'started'>): QuotaScope { return { ...input, runId: randomUUID(), started: Date.now() }; }
 
-  async reserve(scope: QuotaScope, budget: bigint) {
+  async reserve(scope: QuotaScope, budget: bigint, userLimits: UserLimits | null = null) {
     if (budget < 1n) throw new BadRequestException('Reserva de tokens inválida.');
     return this.prisma.$transaction(async tx => {
       await tx.$queryRaw(Prisma.sql`SELECT id FROM tenants WHERE id = ${scope.tenantId}::uuid FOR UPDATE`);
@@ -44,8 +46,34 @@ export class AiQuotaService {
         const used = BigInt(usage._sum.inputTokens || 0) + BigInt(usage._sum.outputTokens || 0) + (pending._sum.reservedTokens || 0n);
         if (used + budget > license.maxTokens) throw new BadRequestException('Saldo de tokens insuficiente para reservar esta chamada. Reduza o limite de resposta ou aguarde as chamadas em andamento.');
       }
-      return tx.aiTokenReservation.create({ data: { runId: scope.runId, tenantId: scope.tenantId, reservedTokens: budget, createdAt: now } });
+      if (scope.userId && userLimits) await this.checkUserLimits(tx, scope.tenantId, scope.userId, userLimits, now);
+      return tx.aiTokenReservation.create({ data: { runId: scope.runId, tenantId: scope.tenantId, userId: scope.userId, reservedTokens: budget, createdAt: now } });
     });
+  }
+
+  /**
+   * Per-user limits from SGDM, checked under the tenant lock. The new call's own size is left out of the
+   * per-minute token count, so a single large (e.g. image) request is never refused on its own.
+   */
+  private async checkUserLimits(tx: Prisma.TransactionClient, tenantId: string, userId: string, limits: UserLimits, now: Date) {
+    if (limits.block && limits.monthlyBudgetUsd !== null) {
+      const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      const spent = await tx.aiUsage.aggregate({ where: { tenantId, userId, createdAt: { gte: month } }, _sum: { cost: true } });
+      if (Number(spent._sum.cost ?? 0) >= limits.monthlyBudgetUsd) throw new HttpException(LIMIT_MESSAGES.userMonth, 429);
+    }
+    const minuteAgo = new Date(now.getTime() - 60_000);
+    if (limits.callsPerMinute !== null) {
+      const calls = await tx.aiTokenReservation.count({ where: { tenantId, userId, createdAt: { gte: minuteAgo } } });
+      if (calls >= limits.callsPerMinute) throw new HttpException(LIMIT_MESSAGES.userMinute, 429);
+    }
+    if (limits.tokensPerMinute !== null) {
+      const [usage, pending] = await Promise.all([
+        tx.aiUsage.aggregate({ where: { tenantId, userId, createdAt: { gte: minuteAgo } }, _sum: { inputTokens: true, outputTokens: true } }),
+        tx.aiTokenReservation.aggregate({ where: { tenantId, userId, createdAt: { gte: minuteAgo }, status: { in: pendingStatuses } }, _sum: { reservedTokens: true } }),
+      ]);
+      const used = BigInt(usage._sum.inputTokens || 0) + BigInt(usage._sum.outputTokens || 0) + (pending._sum.reservedTokens || 0n);
+      if (used >= BigInt(Math.floor(limits.tokensPerMinute))) throw new HttpException(LIMIT_MESSAGES.userMinute, 429);
+    }
   }
 
   async record(scope: QuotaScope, id: string, usage: QuotaUsage) {
@@ -81,7 +109,8 @@ export class AiQuotaService {
     // For images, the adapter reserves the verified model context window rather
     // than mistaking base64 bytes for input tokens. Actual usage is still measured.
     const budget = BigInt((inputUpperBound ?? Buffer.byteLength(JSON.stringify(request), 'utf8') + 2048) + outputLimit);
-    const reservation = await this.reserve(scope, budget);
+    const userLimits = scope.userId && this.limits ? await this.limits.forUser(scope.tenantId, scope.userId) : null;
+    const reservation = await this.reserve(scope, budget, userLimits);
     let reported = false; let receivedUsage = false;
     try {
       const result = await operation(async usage => { receivedUsage = true; await this.record(scope, reservation.id, usage); reported = true; });

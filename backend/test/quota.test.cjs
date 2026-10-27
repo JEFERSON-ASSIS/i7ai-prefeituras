@@ -116,3 +116,76 @@ test('calculateUsageCost cobra tokens em cache pelo preço de cache', () => {
  assert.equal(calculateUsageCost(100,10,1,2,60,0.5),0.00009);
  assert.equal(calculateUsageCost(100,10,1,2),0.00012);
 });
+
+// Per-user limits from SGDM (Central de IA), enforced inside reserve().
+const USER_MONTH = 'Você atingiu o seu limite de IA deste mês. Fale com o administrador da plataforma.';
+const USER_MINUTE = 'Você atingiu o seu limite de uso de IA por minuto. Aguarde um instante e tente novamente.';
+function userFixture(userLimits, limit = 1_000_000n) {
+ const records = { usage: [] }; const lookups = [];
+ const prisma = { license: { findFirst: async () => ({ status: 'ACTIVE', startDate: new Date(Date.now() - 86400000 * 400), endDate: null, maxTokens: limit }) }, aiUsage: { create: async ({ data }) => { records.usage.push(data); return data; } } };
+ prisma.$transaction = operation => operation(prisma);
+ const limits = { forUser: async (tenantId, userId) => { lookups.push([tenantId, userId]); return userLimits; } };
+ const quota = quotaFixture(prisma, records, limits);
+ const scope = quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2 });
+ return { quota, scope, records, lookups };
+}
+const ago = ms => new Date(Date.now() - ms);
+const limitsOf = values => ({ monthlyBudgetUsd: null, block: false, callsPerMinute: null, tokensPerMinute: null, ...values });
+const refused = message => error => { assert.equal(error.getStatus(), 429); assert.equal(error.message, message); return true; };
+const ok = async record => { await record({ inputTokens: 1, outputTokens: 1, measured: true }); return 'ok'; };
+
+test('orçamento mensal do usuário com bloqueio: custo 10,00 de 10 recusa com 429 sem criar reserva', async () => {
+ const { quota, scope, records, lookups } = userFixture(limitsOf({ monthlyBudgetUsd: 10, block: true }));
+ records.usage.push({ tenantId: 'tenant-a', userId: 'user-a', cost: 6, inputTokens: 0, outputTokens: 0, createdAt: ago(1000) });
+ records.usage.push({ tenantId: 'tenant-a', userId: 'user-a', cost: 4, inputTokens: 0, outputTokens: 0, createdAt: ago(2000) });
+ records.usage.push({ tenantId: 'tenant-a', userId: 'user-b', cost: 50, inputTokens: 0, outputTokens: 0, createdAt: ago(1000) });
+ let calls = 0;
+ await assert.rejects(quota.runRound(scope, {}, 100, async record => { calls++; return ok(record); }), refused(USER_MONTH));
+ assert.equal(calls, 0); assert.equal(records.reservations.length, 0);
+ assert.deepEqual(lookups, [['tenant-a', 'user-a']]);
+});
+
+test('orçamento mensal sem bloqueio não recusa; gasto de outro usuário não conta', async () => {
+ const { quota, scope, records } = userFixture(limitsOf({ monthlyBudgetUsd: 10, block: false }));
+ records.usage.push({ tenantId: 'tenant-a', userId: 'user-a', cost: 12, inputTokens: 0, outputTokens: 0, createdAt: ago(1000) });
+ assert.equal(await quota.runRound(scope, {}, 100, ok), 'ok');
+ assert.equal(records.reservations.length, 1);
+ const other = userFixture(limitsOf({ monthlyBudgetUsd: 10, block: true }));
+ other.records.usage.push({ tenantId: 'tenant-a', userId: 'user-b', cost: 50, inputTokens: 0, outputTokens: 0, createdAt: ago(1000) });
+ assert.equal(await other.quota.runRound(other.scope, {}, 100, ok), 'ok');
+});
+
+test('chamadas por minuto: 3 reservas nos últimos 60 s com limite 3 recusam; reserva de 61 s atrás não conta', async () => {
+ const { quota, scope, records } = userFixture(limitsOf({ callsPerMinute: 3 }));
+ for (const ms of [1000, 20000, 59000]) records.reservations.push({ id: 'r' + ms, runId: 'x', tenantId: 'tenant-a', userId: 'user-a', reservedTokens: 0n, status: 'MEASURED', createdAt: ago(ms) });
+ await assert.rejects(quota.runRound(scope, {}, 100, ok), refused(USER_MINUTE));
+ assert.equal(records.reservations.length, 3);
+ records.reservations[2].createdAt = ago(61000);
+ assert.equal(await quota.runRound(scope, {}, 100, ok), 'ok');
+});
+
+test('tokens por minuto: 900 usados de 1000 passam mesmo com reserva de imagem de 128000; 1000 usados recusam', async () => {
+ const first = userFixture(limitsOf({ tokensPerMinute: 1000 }));
+ first.records.usage.push({ tenantId: 'tenant-a', userId: 'user-a', cost: 0, inputTokens: 600, outputTokens: 300, createdAt: ago(30000) });
+ first.records.usage.push({ tenantId: 'tenant-a', userId: 'user-a', cost: 0, inputTokens: 5000, outputTokens: 5000, createdAt: ago(61000) });
+ assert.equal(await first.quota.runRound(first.scope, { image: true }, 100, ok, 128000), 'ok');
+ const second = userFixture(limitsOf({ tokensPerMinute: 1000 }));
+ second.records.usage.push({ tenantId: 'tenant-a', userId: 'user-a', cost: 0, inputTokens: 700, outputTokens: 300, createdAt: ago(30000) });
+ await assert.rejects(second.quota.runRound(second.scope, {}, 100, ok), refused(USER_MINUTE));
+ // Pending reservations of the user in the window count too.
+ const third = userFixture(limitsOf({ tokensPerMinute: 1000 }));
+ third.records.usage.push({ tenantId: 'tenant-a', userId: 'user-a', cost: 0, inputTokens: 300, outputTokens: 200, createdAt: ago(30000) });
+ third.records.reservations.push({ id: 'pending', runId: 'x', tenantId: 'tenant-a', userId: 'user-a', reservedTokens: 500n, status: 'RESERVED', createdAt: ago(5000) });
+ await assert.rejects(third.quota.runRound(third.scope, {}, 100, ok), refused(USER_MINUTE));
+});
+
+test('automação (sem userId) não consulta limites do usuário; a reserva criada leva o userId', async () => {
+ const { quota, scope, records, lookups } = userFixture(limitsOf({ callsPerMinute: 1 }));
+ const automation = { ...scope, userId: undefined, automationId: 'auto-a' };
+ assert.equal(await quota.runRound(automation, {}, 100, ok), 'ok');
+ assert.equal(await quota.runRound(automation, {}, 100, ok), 'ok');
+ assert.equal(lookups.length, 0);
+ assert.equal(await quota.runRound(scope, {}, 100, ok), 'ok');
+ assert.equal(records.reservations[2].userId, 'user-a');
+ assert.equal(lookups.length, 1);
+});

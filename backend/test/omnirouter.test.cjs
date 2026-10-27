@@ -565,3 +565,33 @@ test('absent or invalid x-litellm-response-cost falls back to the catalog', asyn
     assert.equal(run.records.usage[0].cost, 0.00005);
   }
 });
+
+test('recusas do LiteLLM por limite da prefeitura viram 429 com mensagem clara, com e sem stream', async t => {
+  const TENANT_MONTH = 'A prefeitura atingiu o limite de IA deste mês. Fale com o administrador da plataforma.';
+  const TENANT_MINUTE = 'A prefeitura atingiu o limite de uso de IA por minuto. Aguarde um instante e tente novamente.';
+  let status = 422; let message = 'litellm.BudgetExceededError: ExceededBudget: End User=tenant-a over budget. Spend=1.2, Budget=1.0';
+  await provider(t, (_body, response) => json(response, { error: { message } }, status));
+  const cases = [
+    [422, 'litellm.BudgetExceededError: ExceededBudget: End User=tenant-a over budget. Spend=1.2, Budget=1.0', TENANT_MONTH],
+    [429, 'Rate limit exceeded for end_user: tenant-a. Limit type: tokens.', TENANT_MINUTE],
+    [429, 'Provider rate limit reached', 'O provedor de IA atingiu o limite de uso. Tente novamente mais tarde.'],
+  ];
+  for (const [code, reason, expected] of cases) {
+    for (const streaming of [false, true]) {
+      status = code; message = reason;
+      const { service, input, records } = fixture(); if (streaming) input.onDelta = () => {};
+      await assert.rejects(service.generate(input), error => {
+        assert.equal(error.message, expected); assert.equal(error.providerStatus, code);
+        if (expected !== cases[2][2]) assert.equal(error.getStatus(), 429);
+        return true;
+      });
+      assert.equal(records.reservations[0].status, 'REJECTED'); assert.equal(records.reservations[0].reservedTokens, 0n);
+    }
+  }
+  const { LIMIT_MESSAGES } = require('../dist/ai/limit-messages');
+  assert.deepEqual(LIMIT_MESSAGES, {
+    tenantMonth: TENANT_MONTH, tenantMinute: TENANT_MINUTE,
+    userMonth: 'Você atingiu o seu limite de IA deste mês. Fale com o administrador da plataforma.',
+    userMinute: 'Você atingiu o seu limite de uso de IA por minuto. Aguarde um instante e tente novamente.',
+  });
+});

@@ -3,6 +3,7 @@ import { AgentFunction, AgentToolCall, AgentToolsService } from './agent-tools.s
 import { AiQuotaService, QuotaScope, QuotaUsage, usageCost } from './ai-quota.service';
 import { gatewayBaseAllowed, isAllowedRoute, routePolicyMessage } from '../catalog/model-route-policy';
 import { TenantAiKeyService } from './tenant-ai-key.service';
+import { LIMIT_MESSAGES } from './limit-messages';
 
 export type OmniRouterInput = {
   agent: { id: string; tenantId: string; systemPrompt?: string | null; temperature: unknown; maxTokens: number; advancedReasoning: boolean };
@@ -283,6 +284,9 @@ export class OmniRouterService {
   }
 
   private httpError(status: number, reason = ''): HttpException {
+    // LiteLLM refusing the prefeitura's own limits (customer budget): a clear 429 instead of a gateway error.
+    if (/ExceededBudget|over budget|Budget has been exceeded/i.test(reason)) return Object.assign(new HttpException(LIMIT_MESSAGES.tenantMonth, 429), { providerStatus: status });
+    if (/Rate limit exceeded for end_user/i.test(reason)) return Object.assign(new HttpException(LIMIT_MESSAGES.tenantMinute, 429), { providerStatus: status });
     const missingKey = /api_key client option must be set|api key|x-api-key|authentication/i.test(reason);
     const unknownModel = /invalid model name|model.*not found|does not exist/i.test(reason);
     const message = missingKey ? 'A chave do provedor de IA não está cadastrada ou foi recusada. Cadastre a chave da prefeitura no SGDM (Cadastros › IA) ou a chave da plataforma em Modelos › Chaves dos provedores de IA.'
