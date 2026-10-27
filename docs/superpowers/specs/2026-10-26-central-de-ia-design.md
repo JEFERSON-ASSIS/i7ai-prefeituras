@@ -1,6 +1,6 @@
 # Central de IA no SGDM — documento de design
 
-Data: 2026-10-26. Estado: rascunho para aprovação do dono da plataforma.
+Data: 2026-10-26. Estado: aprovado; entrega 0 em produção desde 2026-10-26 (pilha `i7ai-plataforma`, i7Ai em `sgdm.com.br/i7ai/`); decisões 9–12 acrescentadas em 2026-10-26.
 
 Repositórios envolvidos: `i7ai-IA` (este) e `prefeitura/SGDM` (API NestJS + web Next.js). O gateway de IA é o LiteLLM Proxy, já em uso pelo i7Ai (ver `docs/LITELLM.md`).
 
@@ -19,7 +19,11 @@ O dono da plataforma precisa ver e governar todo o uso de IA das prefeituras a p
 5. Saem do i7Ai: Usuários, Departamentos, Licenciamento, Configurações da prefeitura e o cadastro de Modelos (vira consulta). O que o dono libera no SGDM aparece no i7Ai.
 6. A IA do próprio SGDM (geração de peças) passa a chamar o LiteLLM, para entrar na mesma visão de custo. **Prefeitura sem chave própria passa a gerar peças com a chave da plataforma**, e esse gasto entra no orçamento dela na Central (hoje o SGDM recusa; isso muda).
 7. **Orçamento conta todo o gasto da prefeitura**, com chave própria ou da plataforma (decisão do autor, uma regra só). A Central mostra os dois separados ("na chave da plataforma" e "na chave própria"); para uma prefeitura que paga com a própria chave, o dono define um orçamento maior ou sem limite.
-8. **Tudo roda na mesma VPS do SGDM.** O LiteLLM e o i7Ai são implantados como pilhas ao lado do SGDM; o LiteLLM entra na rede `SGDMNET` sem porta pública, e a API do SGDM e o i7Ai falam com ele pelo nome interno (`http://litellm:4000`, aceito via `OMNIROUTER_INTERNAL_HOSTS`/`SGDM_INTERNAL_HOSTS`). A chave administrativa do LiteLLM fica só no ambiente da API do SGDM e do backend do i7Ai.
+9. **Departamentos do i7Ai = setores do SGDM** (decisão de 2026-10-26). O i7Ai não cadastra departamentos: lê os setores da prefeitura pelo endpoint interno, guarda cada um em `departments` com o id do setor do SGDM (coluna de id externo) e põe o usuário no setor dele no SGDM a cada login. `Department` e `departmentId` continuam existindo (agentes restritos por setor dependem deles).
+10. **Configurações da prefeitura vêm do cadastro da prefeitura no SGDM** (decisão de 2026-10-26): nome, fuso e demais campos de `settings` do i7Ai são lidos do SGDM; campo sem equivalente no SGDM recebe um padrão fixo documentado. A tela sai do i7Ai.
+11. **Acesso ao i7Ai só por liberação do dono** (decisão de 2026-10-26). As permissões `I7AI_*` não fazem parte do pacote do ADMINISTRADOR (em produção foram retiradas do ADMINISTRADOR em 2026-10-26; o arquivo para desfazer está em `/root/backups/` do cloud232). A migration da entrega 2 torna isso permanente e o seed deixa de concedê-las a perfis de prefeitura.
+12. **Um deploy só, com tudo pronto** (decisão de 2026-10-26). As entregas 1 a 6 são feitas e mostradas funcionando no ambiente local, uma a uma, e sobem juntas para produção num único deploy, ensaiado antes na VPS de desenvolvimento (194.163.174.20) com cópia do banco, backup e ensaio das migrations, como na entrega 0. Até lá, a pilha `i7ai-plataforma` em produção fica como está e o i7Ai sem licença.
+13. **Tudo roda na mesma VPS do SGDM.** O LiteLLM e o i7Ai são implantados como pilhas ao lado do SGDM; o LiteLLM entra na rede `SGDMNET` sem porta pública, e a API do SGDM e o i7Ai falam com ele pelo nome interno (`http://litellm:4000`, aceito via `OMNIROUTER_INTERNAL_HOSTS`/`SGDM_INTERNAL_HOSTS`). A chave administrativa do LiteLLM fica só no ambiente da API do SGDM e do backend do i7Ai.
 
 ## 3. Objetivos, não objetivos e anti-objetivos
 
@@ -133,8 +137,8 @@ Fora do escopo por decisão: cache semântico, fallback automático entre modelo
    - VPS: 11 GB de RAM, 6,2 GB disponíveis em 2026-10-26. A pilha soma ~1,5 GB (LiteLLM ~800 MB); cada serviço recebe `deploy.resources.limits.memory` (LiteLLM 1,2 GB, backend 768 MB, postgres 512 MB, demais 256 MB) para um pico nunca afetar o SGDM.
    - Nada da VPS é removido: `omniroute` fica como reserva do dono (não é usado pelo i7Ai), `phpmyadmin` e `i7ai-cloud` atendem outros projetos. A memória disponível (6,2 GB) basta sem remoções.
 1. **Marcação e consumo:** `user` + `metadata.tags` em toda chamada (i7Ai e SGDM via LiteLLM); permissão `IA_CENTRAL`; telas Visão geral (sem fluxo ao vivo ainda) e Consumo e custo agrupando por prefeitura, usuário, modelo, origem e provedor. O agrupamento por agente e a linha por conversa com link para o i7Ai ficam para a entrega 2 (dependem do catálogo sincronizado e das liberações). Plano: `docs/superpowers/plans/2026-10-26-entrega-1-consumo-e-custo.md`.
-2. **Modelos e acesso:** catálogo, ativação, liberações por prefeitura/usuário; i7Ai obedece; cadastro de Modelos do i7Ai vira consulta; chaves da plataforma movidas para a Central.
-3. **Limites, alertas e licenças:** orçamento, limites, e-mail; Licenças i7Ai no SGDM; telas correspondentes saem do i7Ai.
+2. **Modelos, acesso e organização:** catálogo, ativação, liberações por prefeitura/usuário; i7Ai obedece; cadastro de Modelos do i7Ai vira consulta; chaves da plataforma movidas para a Central; setores do SGDM como departamentos (decisão 9); configurações da prefeitura vindas do SGDM (decisão 10); telas Usuários, Departamentos e Configurações saem do i7Ai; `I7AI_*` fora do pacote do ADMINISTRADOR (decisão 11).
+3. **Limites, alertas e licenças:** orçamento, limites, e-mail; Licenças i7Ai no SGDM; a tela Licenciamento sai do i7Ai.
 4. **Otimização:** cache de prompt com preço de cache, histórico resumido, cache exato, limites de saída, imagens em baixa, sugestões com Aplicar.
 5. **Fluxo ao vivo.**
 6. **O que os usuários pedem:** temas mais frequentes e conversas de alto custo.
