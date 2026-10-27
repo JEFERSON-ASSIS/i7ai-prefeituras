@@ -137,7 +137,7 @@ test('arquivos incompatíveis e excessivos são recusados antes do upload', asyn
     { name: 'foto.png', mimeType: 'image/png', buffer: Buffer.from('fixture') },
     { name: 'grande.txt', mimeType: 'text/plain', buffer: Buffer.alloc(20 * 1024 * 1024 + 1, 65) },
   ]);
-  await expect(page.getByRole('alert')).toContainText('XLS e ZIP ainda não são processados no chat.');
+  await expect(page.getByRole('alert')).toContainText('ZIP não é lido no chat; use PDF, Word, Excel, CSV ou texto.');
   await expect(page.getByRole('alert')).toContainText('selecione um modelo que permita analisar imagens');
   await expect(page.getByRole('alert')).toContainText('excede o limite de 20 MB');
   expect(writes).toEqual([]);
