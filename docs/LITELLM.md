@@ -332,7 +332,7 @@ Antes de ligar o cache de prompt em produção, rode o teste ao vivo com Claude 
 
 Os agentes podem pesquisar na internet e em compras públicas durante a resposta. Vale só no caminho OmniRouter/LiteLLM e só para modelos com `supportsTools`.
 
-**Como ligar.** O padrão é **desligado**. O dono da plataforma (permissão `IA_CENTRAL`) liga em **Central de IA › Otimização › Pesquisa na internet**, para todas as prefeituras ou para uma. O SGDM guarda o interruptor, a chave do Serper e o custo por pesquisa; o i7Ai lê tudo em `GET /integracoes/i7ai/pesquisa` do SGDM (mesma chave de integração das outras leituras; cache curto; SGDM antigo sem o campo conta como desligado).
+**Como ligar.** O padrão é **desligado**. O dono da plataforma (permissão `IA_CENTRAL`) liga em **Central de IA › Otimização › Pesquisa na internet**, para todas as prefeituras ou para uma. O SGDM guarda o interruptor, a chave do Serper e o custo por pesquisa; o i7Ai lê tudo em `GET /integracoes/i7ai/pesquisa` do SGDM (mesma chave de integração das outras leituras; cache de 60 s, ajustável por `SGDM_RESEARCH_CACHE_SECONDS`; o interruptor vem junto das otimizações, com `SGDM_OPTIMIZATION_CACHE_SECONDS`; por isso a mudança leva até 1 minuto para valer; SGDM antigo sem o campo conta como desligado).
 
 **Fontes.**
 - **Compras públicas (PNCP)**, sem chave: `pesquisar_compras_publicas` busca em `pncp.gov.br/api/search/` (edital, ata ou contrato; UF opcional), detalha até 5 compras por chamada (itens e resultados) e devolve preços, órgão, data e o link `https://pncp.gov.br/app/editais/...` (atas e contratos têm link próprio). Custo 0.
