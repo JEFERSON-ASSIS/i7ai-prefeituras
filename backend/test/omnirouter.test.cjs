@@ -837,6 +837,21 @@ test('cache exato: automação sem stream pede o cache com TTL e namespace da pr
   assert.equal('cache' in requests[2].body, false);
 });
 
+test('cache exato: nunca com ferramentas (automação ou chat)', async t => {
+  const { requests } = await provider(t, (_b, r) => json(r, completion()));
+  const auto = fixture([localFunction()]); auto.input.origin = 'i7ai-automacao'; auto.input.model.capabilities = { supportsTools: true };
+  await auto.service.generate(auto.input);
+  assert.ok(requests[0].body.tools?.length);
+  assert.equal('cache' in requests[0].body, false);
+  const chat = fixture([localFunction()]); chat.input.model.capabilities = { supportsTools: true }; chat.input.optimization.cacheExato = { ligado: true, ttlSegundos: 3600, chat: true };
+  await chat.service.generate(chat.input);
+  assert.equal('cache' in requests[1].body, false);
+  // Same request without tools: cached as before.
+  const plain = fixture(); plain.input.origin = 'i7ai-automacao';
+  await plain.service.generate(plain.input);
+  assert.deepEqual(requests[2].body.cache, { 'use-cache': true, ttl: 3600, namespace: 'i7ai:tenant-a' });
+});
+
 test('cache exato: chat só com chat:true e nunca em stream', async t => {
   const { requests } = await provider(t, (body, r) => body.stream
     ? sse(r, [frame(chunk({ role: 'assistant', content: 'ok' })), frame(chunk({}, 'stop')), frame({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }), frame('[DONE]')])

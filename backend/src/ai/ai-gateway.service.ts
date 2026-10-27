@@ -199,7 +199,11 @@ export class AiGatewayService {
     if (!conversation) throw new NotFoundException('Conversa não encontrada.');
     const { summary: content, summaryThroughMessageId, summaryModelId: _model, summaryUpdatedAt, summaryDisabled, summaryRejectedThroughMessageId: _rejected, summaryRejections: _rejections, ...rest } = conversation;
     const summary = content && summaryThroughMessageId ? { content, throughMessageId: summaryThroughMessageId, updatedAt: summaryUpdatedAt } : null;
-    return { ...rest, summary, summaryDisabled, messages: [...conversation.messages].reverse().map(item => ({ ...item, attachments: (item.attachments || []).filter(link => link.document.ownerUserId === userId && link.document.tenantId === tenantId).map(link => ({ document: { id: link.document.id, name: link.document.name, mimeType: link.document.mimeType, sizeBytes: link.document.sizeBytes.toString(), status: link.document.status } })) })) };
+    // Same condition as chat(): only then does the summary replace the older messages in the prompt (the screen says
+    // "foram resumidas" only when it is true; a stored summary with the Central's switch off is not in use).
+    const summaryActive = Boolean(summary) && !summaryDisabled && this.omniConfigured()
+      && (this.optimization ? await this.optimization.effective(tenantId, conversation.agentId) : OPTIMIZATION_DEFAULTS).resumoHistorico.ligado === true;
+    return { ...rest, summary, summaryDisabled, summaryActive, messages: [...conversation.messages].reverse().map(item => ({ ...item, attachments: (item.attachments || []).filter(link => link.document.ownerUserId === userId && link.document.tenantId === tenantId).map(link => ({ document: { id: link.document.id, name: link.document.name, mimeType: link.document.mimeType, sizeBytes: link.document.sizeBytes.toString(), status: link.document.status } })) })) };
   }
 
   /** The owner turns the summary off (back to the full messages; the summary is discarded) or on again. */

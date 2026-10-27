@@ -37,6 +37,8 @@ export function usageCost(scope: Pick<QuotaScope, 'inputPrice' | 'outputPrice' |
   return { cost: calculateUsageCost(usage.inputTokens, usage.outputTokens, scope.inputPrice, scope.outputPrice, usage.cachedInputTokens ?? 0, scope.cachedInputPrice, usage.cacheWriteInputTokens ?? 0, scope.cacheWriteInputPrice), costSource: 'catalog' };
 }
 const pendingStatuses = ['RESERVED', 'UNCERTAIN'];
+/** Refusal when the license has no token balance left for the reservation (the history summary only skips on it). */
+export const LICENSE_BALANCE_MESSAGE = 'Saldo de tokens insuficiente para reservar esta chamada. Reduza o limite de resposta ou aguarde as chamadas em andamento.';
 
 @Injectable()
 export class AiQuotaService {
@@ -58,7 +60,7 @@ export class AiQuotaService {
           tx.aiTokenReservation.aggregate({ where: { tenantId: scope.tenantId, createdAt: { gte: from }, status: { in: pendingStatuses } }, _sum: { reservedTokens: true } }),
         ]);
         const used = BigInt(usage._sum.inputTokens || 0) + BigInt(usage._sum.outputTokens || 0) + (pending._sum.reservedTokens || 0n);
-        if (used + budget > license.maxTokens) throw new BadRequestException('Saldo de tokens insuficiente para reservar esta chamada. Reduza o limite de resposta ou aguarde as chamadas em andamento.');
+        if (used + budget > license.maxTokens) throw new BadRequestException(LICENSE_BALANCE_MESSAGE);
       }
       if (scope.userId && userLimits) await this.checkUserLimits(tx, scope.tenantId, scope.userId, userLimits, now);
       return tx.aiTokenReservation.create({ data: { runId: scope.runId, tenantId: scope.tenantId, userId: scope.userId, reservedTokens: budget, createdAt: now } });

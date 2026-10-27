@@ -43,6 +43,13 @@ const UNITS: Record<string, string> = { dia: 'dia', dias: 'dia', 'mês': 'mes', 
 // The qualifier changes the deadline: "30 dias úteis" is not "30 dias corridos" nor plain "30 dias".
 const QUALIFIERS: Record<string, string> = { 'úteis': 'uteis', uteis: 'uteis', 'útil': 'uteis', util: 'uteis', corrido: 'corridos', corridos: 'corridos', consecutivo: 'consecutivos', consecutivos: 'consecutivos', ininterrupto: 'consecutivos', ininterruptos: 'consecutivos', seguido: 'consecutivos', seguidos: 'consecutivos' };
 const listNumbers = (text: string) => text.match(/\d+/g) ?? [];
+// "R$ 1,5 milhão" is not "R$ 1,50" nor "R$ 1,5 mil": the multiplier is part of the key (singular = plural).
+const MULTIPLIER = '(mil|milh[õo]es|milh[ãa]o|bilh[õo]es|bilh[ãa]o)(?![a-zà-ÿ])';
+const multiplier = (word: string | undefined) => {
+  if (!word) return '';
+  const lower = word.toLowerCase();
+  return lower === 'mil' ? ' mil' : lower.startsWith('milh') ? ' mi' : ' bi';
+};
 
 function date(day: string, month: string, year: string): Item[] | null {
   if (Number(day) < 1 || Number(day) > 31 || Number(month) < 1 || Number(month) > 12) return null;
@@ -60,11 +67,11 @@ const EXTRACTORS: Extractor[] = [
     pattern: /(?<![\d./-])(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})(?![./-]?\d)/g,
     build: m => { const items = date(m[1], m[3], m[4]); return items && { items }; },
   },
-  { // values: R$ 59.906,02 (",00" is the same value)
-    pattern: /R\$\s*(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{1,2}))?(?![\d])/gi,
+  { // values: R$ 59.906,02 (",00" is the same value), R$ 1,5 milhão, R$ 300 mil
+    pattern: new RegExp('R\\$\\s*(\\d{1,3}(?:\\.\\d{3})+|\\d+)(?:,(\\d{1,2}))?(?![\\d])(?:\\s*' + MULTIPLIER + ')?', 'gi'),
     build: m => {
       const cents = m[2] ? m[2].padEnd(2, '0') : '00';
-      return { items: [{ key: 'valor:' + digits(m[1]) + (cents === '00' ? '' : ',' + cents), text: normalize(m[0]) }] };
+      return { items: [{ key: 'valor:' + digits(m[1]) + (cents === '00' ? '' : ',' + cents) + multiplier(m[3]), text: normalize(m[0]) }] };
     },
   },
   { // laws and decrees: Lei nº 14.133/2021, Lei 8.666/93, Lei Complementar 101/2000, Decreto nº 10.024/2019
@@ -106,9 +113,9 @@ const EXTRACTORS: Extractor[] = [
     pattern: /(?<![\d.,])(\d+(?:[.,]\d+)?)\s*(?:%|por\s*cento)/gi,
     build: m => ({ items: [{ key: 'pct:' + m[1].replace('.', ','), text: normalize(m[0]) }] }),
   },
-  { // quantities: 30 dias, 30 dias úteis (≠ corridos), 12 meses, 5 anos, 48 horas, 500 reais
-    pattern: /(?<![\d.,])(\d+(?:[.,]\d+)*)\s*(dias?|meses|m[eê]s|anos?|horas?|minutos?|semanas?|reais)(?![a-zà-ÿ])(?:\s+(úteis|uteis|útil|util|corridos?|consecutivos?|ininterruptos?|seguidos?)(?![a-zà-ÿ]))?/gi,
-    build: m => ({ items: [{ key: 'qtd:' + m[1] + ' ' + UNITS[m[2].toLowerCase()] + (m[3] ? ' ' + QUALIFIERS[m[3].toLowerCase()] : ''), text: normalize(m[0]) }] }),
+  { // quantities: 30 dias, 30 dias úteis (≠ corridos), 12 meses, 5 anos, 48 horas, 500 reais, 2 milhões de reais
+    pattern: new RegExp('(?<![\\d.,])(\\d+(?:[.,]\\d+)*)\\s*(?:' + MULTIPLIER + '\\s+(?:de\\s+)?)?(dias?|meses|m[eê]s|anos?|horas?|minutos?|semanas?|reais)(?![a-zà-ÿ])(?:\\s+(úteis|uteis|útil|util|corridos?|consecutivos?|ininterruptos?|seguidos?)(?![a-zà-ÿ]))?', 'gi'),
+    build: m => ({ items: [{ key: 'qtd:' + m[1] + multiplier(m[2]) + ' ' + UNITS[m[3].toLowerCase()] + (m[4] ? ' ' + QUALIFIERS[m[4].toLowerCase()] : ''), text: normalize(m[0]) }] }),
   },
   { // ordinals: 1º, 2ª
     pattern: /(?<![\d.,])(\d+)\s*([º°ª])/g,
@@ -183,9 +190,38 @@ export function missingItems(source: string, summary: string): string[] {
 
 export type SummaryMessage = { id: string; role: string; content: string; createdAt: Date };
 
-/** N (messages that trigger a summary): 10–80, so the N/2 kept messages always fit the 40-message window. */
+/**
+ * N (messages that trigger a summary): 10–40. A summary keeps the N/2 newest messages literal and the next one only
+ * starts at N unsummarized messages, so up to N − 1 messages travel after the summary; with N ≤ 40 they always fit the
+ * 40-message history window (above it the window would silently drop messages the summary does not cover).
+ */
+export const SUMMARY_MAX_THRESHOLD = 40;
 export function summaryThreshold(value: number): number {
-  return Math.min(80, Math.max(10, Math.floor(value) || 20));
+  return Math.min(SUMMARY_MAX_THRESHOLD, Math.max(10, Math.floor(value) || 20));
+}
+
+/**
+ * The summary must save tokens. Short messages (the smoke of E4: ~60 tokens each) produce a summary longer than what
+ * it replaces, which raised the cost. So a batch is only summarized when its messages hold at least this many
+ * characters (~1,500 tokens); below it the job waits for more messages (no call, nothing written).
+ */
+export const SUMMARY_MIN_SOURCE_CHARS = 6000;
+/** Output cap: 40% of the estimated tokens of the text it replaces, never below the floor nor above SUMMARY_MAX_TOKENS. */
+export const SUMMARY_OUTPUT_RATIO = 0.4;
+export const SUMMARY_MIN_OUTPUT_TOKENS = 256;
+/** A summary at least this fraction of the replaced text (in characters) is discarded as "skipped" (not a rejection). */
+export const SUMMARY_MAX_KEPT_RATIO = 0.7;
+
+/** `max_tokens` of a summary call; `replaced` = previous summary + the batch (what the new summary stands for). */
+export function summaryMaxTokens(replaced: string, modelCap?: number): number {
+  const proportional = Math.max(SUMMARY_MIN_OUTPUT_TOKENS, Math.floor(estimateTokens(replaced) * SUMMARY_OUTPUT_RATIO));
+  const cap = typeof modelCap === 'number' && modelCap >= 1 ? Math.floor(modelCap) : SUMMARY_MAX_TOKENS;
+  return Math.min(SUMMARY_MAX_TOKENS, cap, proportional);
+}
+
+/** True when the summary would not save enough: it is ≥ SUMMARY_MAX_KEPT_RATIO of the text it replaces. */
+export function summaryTooLong(summary: string, replaced: string): boolean {
+  return summary.length >= SUMMARY_MAX_KEPT_RATIO * replaced.length;
 }
 
 /** One job never reads more than this: a long conversation (or a first enable) is summarized in batches, oldest first. */

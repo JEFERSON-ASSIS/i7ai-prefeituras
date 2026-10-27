@@ -1,15 +1,16 @@
-import { HttpException, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { ForbiddenException, HttpException, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { Job, Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
-import { AiQuotaService } from './ai-quota.service';
+import { AiQuotaService, LICENSE_BALANCE_MESSAGE } from './ai-quota.service';
+import { LIMIT_MESSAGES } from './limit-messages';
 import { OmniRouterService } from './omnirouter.service';
 import { SgdmOptimizationService } from '../sgdm/sgdm-optimization.service';
 import { SgdmAccessService } from '../sgdm/sgdm-access.service';
 import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
 import {
-  SUMMARY_MAX_CALLS, SUMMARY_MAX_REJECTIONS, SUMMARY_MAX_TOKENS, SUMMARY_PROMPT, SUMMARY_RETRY_HINT,
-  chooseSummaryModel, missingItems, planSummary, summaryBatchLimits, summaryThreshold,
+  SUMMARY_MAX_CALLS, SUMMARY_MAX_REJECTIONS, SUMMARY_MIN_SOURCE_CHARS, SUMMARY_PROMPT, SUMMARY_RETRY_HINT,
+  chooseSummaryModel, missingItems, planSummary, summaryBatchLimits, summaryMaxTokens, summaryThreshold, summaryTooLong,
 } from './history-summary';
 
 type SummaryJob = { tenantId: string; conversationId: string; calls?: number };
@@ -21,6 +22,20 @@ const QUEUE = 'conversation.summary';
 const ROLE_LABEL: Record<string, string> = { user: 'Usuário', assistant: 'Assistente' };
 /** A model call that would fail the same way again: counted as a rejection, never retried. */
 class RejectedCall extends Error { constructor(readonly truncated: boolean) { super(); } }
+/** A call refused by a budget, limit or the license balance: nothing wrong with the summary, so it is only skipped. */
+class LimitedCall extends Error {}
+
+const LIMIT_TEXTS: readonly string[] = [...Object.values(LIMIT_MESSAGES), LICENSE_BALANCE_MESSAGE];
+
+/**
+ * Refusals of the prefeitura's or user's budget and limits (SGDM limits, LiteLLM End User budget/rate, license balance
+ * or an inactive license). They say nothing about the summary: the job skips without counting a rejection, so a
+ * month at its limit never ends up with the summary stopped after three "rejections".
+ */
+export function limitRefusal(error: unknown): boolean {
+  if (error instanceof ForbiddenException) return true;
+  return error instanceof HttpException && LIMIT_TEXTS.includes(error.message);
+}
 
 /**
  * Repeatable failures: an answer cut by the token cap, a refused or malformed answer (content filter, invalid finish
@@ -108,6 +123,8 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
     if (rejectedAt >= 0 && messages.length - rejectedAt - 1 < keep) return 'ignorado';
     const plan = planSummary(messages, conversation.summaryThroughMessageId, keep, summaryBatchLimits(threshold));
     if (!plan) return 'ignorado';
+    // Too little text to save anything: wait for more messages (the next batch grows), no call and nothing written.
+    if (plan.toSummarize.reduce((sum, item) => sum + item.content.length, 0) < SUMMARY_MIN_SOURCE_CHARS) return 'ignorado';
 
     // Model: the cheap one of the conversation's provider (active and released to the prefeitura) or the
     // conversation's own (active and released to its owner); never another provider.
@@ -126,10 +143,13 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
     if (!model) return 'ignorado';
 
     // Only role and text: document snippets and attachments are resent on every call and never enter the summary.
-    const source = (conversation.summary ? 'Resumo anterior:\n' + conversation.summary + '\n\n' : '')
-      + 'Mensagens a resumir:\n' + plan.toSummarize.map(item => (ROLE_LABEL[item.role] ?? item.role) + ': ' + item.content).join('\n\n');
+    const batch = plan.toSummarize.map(item => (ROLE_LABEL[item.role] ?? item.role) + ': ' + item.content).join('\n\n');
+    const source = (conversation.summary ? 'Resumo anterior:\n' + conversation.summary + '\n\n' : '') + 'Mensagens a resumir:\n' + batch;
+    // What the new summary stands for in the prompt: the previous summary plus the batch.
+    const replaced = (conversation.summary ?? '') + batch;
     const capabilities = model.capabilities && typeof model.capabilities === 'object' && !Array.isArray(model.capabilities) ? model.capabilities as Record<string, unknown> : {};
-    const maxTokens = typeof capabilities.maxOutputTokens === 'number' && capabilities.maxOutputTokens >= 1 ? Math.min(SUMMARY_MAX_TOKENS, Math.floor(capabilities.maxOutputTokens)) : SUMMARY_MAX_TOKENS;
+    // Proportional to what it replaces, so the summary cannot cost more than the messages it stands for.
+    const maxTokens = summaryMaxTokens(replaced, typeof capabilities.maxOutputTokens === 'number' ? capabilities.maxOutputTokens : undefined);
     // The summary call never uses the prompt cache, the exact cache or the agent's output cap.
     const optimization: OtimizacaoEfetiva = { ...cfg, cachePrompt: { ligado: false }, cacheExato: { ...cfg.cacheExato, ligado: false }, limiteSaida: { ligado: false, tokens: null } };
     const omni = this.omni;
@@ -151,6 +171,7 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
         return answer.answer;
       } catch (error) {
         await this.quota.finish(quotaScope, 'FAILED');
+        if (limitRefusal(error)) throw new LimitedCall();
         // A summary cut by the token cap is a rejection (retrying would cost the same), not a job failure.
         if (repeatableFailure(error)) throw new RejectedCall(Boolean((error as { truncated?: boolean }).truncated));
         throw error;
@@ -166,11 +187,21 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
         missing = missingItems(source, summary);
       }
     } catch (error) {
+      if (error instanceof LimitedCall) return 'ignorado';
       if (!(error instanceof RejectedCall)) throw error;
       truncated = error.truncated; failed = !error.truncated;
     }
     const audit = (event: string, metadata: Record<string, string | number | boolean>) => ({ tenantId, userId: conversation.userId, event, resource: 'conversation', resourceId: conversationId, metadata });
     const unchanged = { id: conversationId, tenantId, summaryDisabled: false, summaryThroughMessageId: conversation.summaryThroughMessageId };
+    if (!truncated && !failed && !missing.length && summaryTooLong(summary, replaced)) {
+      // Complete but not worth it: discarded. Not a rejection (no strike), but it waits N/2 more messages like one,
+      // so a conversation of short messages does not pay a discarded summary on every answer. Counts only.
+      await this.prisma.$transaction(async tx => {
+        await tx.conversation.updateMany({ where: unchanged, data: { summaryRejectedThroughMessageId: plan.throughId } });
+        await tx.auditLog.create({ data: audit('conversation.summary_skipped', { messages: plan.toSummarize.length, summaryChars: summary.length, replacedChars: replaced.length }) });
+      });
+      return 'ignorado';
+    }
     if (truncated || failed || missing.length) {
       // The previous summary stays; the conversation keeps every message after it. Counts only, never text.
       await this.prisma.$transaction(async tx => {

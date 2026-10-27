@@ -5,6 +5,8 @@ const { ConversationSummaryService } = require('../dist/ai/conversation-summary.
 const { OmniRouterService } = require('../dist/ai/omnirouter.service');
 const { OPTIMIZATION_DEFAULTS } = require('../dist/sgdm/optimization-defaults');
 const { quotaFixture } = require('./helpers/quota-fixture.cjs');
+const { LIMIT_MESSAGES } = require('../dist/ai/limit-messages');
+const { summaryMaxTokens } = require('../dist/ai/history-summary');
 
 const envKeys = ['OMNIROUTER_BASE_URL', 'OMNIROUTER_API_KEY', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
@@ -16,20 +18,24 @@ const SOURCE_TEXT = 'Conforme art. 75 da Lei nº 14.133/2021, dispensa até R$ 5
 const FULL = 'O usuário perguntou sobre dispensa. Art. 75 da Lei nº 14.133/2021, até R$ 59.906,02, em 15/03/2026, processo 2026.0001234-5.';
 const NO_DATE = 'O usuário perguntou sobre dispensa. Art. 75 da Lei nº 14.133/2021, até R$ 59.906,02, processo 2026.0001234-5.';
 
-function messages(count) {
-  return Array.from({ length: count }, (_, index) => ({ id: 'm' + (index + 1), role: index % 2 ? 'assistant' : 'user', content: index === 0 ? SOURCE_TEXT : 'Mensagem ' + (index + 1), createdAt: new Date(1_000 + index) }));
+// ~600 characters without legal items: a batch of 12 messages passes the 6,000-character floor.
+const FILLER = ' ' + 'texto de apoio da conversa sem itens '.repeat(16).trim();
+function messages(count, short = false) {
+  return Array.from({ length: count }, (_, index) => ({ id: 'm' + (index + 1), role: index % 2 ? 'assistant' : 'user', content: index === 0 ? SOURCE_TEXT : 'Mensagem ' + (index + 1) + (short ? '' : FILLER), createdAt: new Date(1_000 + index) }));
 }
+/** The batch text as the service builds it (role label + text), i.e. what the summary replaces without a previous one. */
+const batchText = (from, to) => messages(to).slice(from).map(item => (item.role === 'user' ? 'Usuário' : 'Assistente') + ': ' + item.content).join('\n\n');
 const catalog = [
   { id: 'sonnet', slug: 'anthropic/claude-sonnet-5-5', active: true, inputPrice: 3, outputPrice: 15, capabilities: {}, provider: { slug: 'anthropic', config: null } },
   { id: 'haiku', slug: 'anthropic/claude-haiku-5-5', active: true, inputPrice: 1, outputPrice: 5, capabilities: {}, provider: { slug: 'anthropic', config: null } },
   { id: 'mini', slug: 'openai/gpt-4o-mini', active: true, inputPrice: 0.15, outputPrice: 0.6, capabilities: {}, provider: { slug: 'openai', config: null } },
 ];
 
-function fixture({ count = 22, summary = null, through = null, disabled = false, ligado = true, modelos, allowed = null, ownerAllowed, answers = [FULL], rejectedThrough = null, rejections = 0, contents } = {}) {
+function fixture({ count = 22, summary = null, through = null, disabled = false, ligado = true, modelos, allowed = null, ownerAllowed, answers = [FULL], rejectedThrough = null, rejections = 0, contents, short = false, license = null } = {}) {
   const records = { usage: [], audit: [], updates: [], requests: [], allowedCalls: [] };
   const conversation = { id: 'conv-a', tenantId: 'tenant-a', userId: 'user-a', agentId: 'agent-a', summary, summaryThroughMessageId: through, summaryDisabled: disabled, summaryModelId: null, summaryUpdatedAt: null, summaryRejectedThroughMessageId: rejectedThrough, summaryRejections: rejections, model: { slug: 'anthropic/claude-sonnet-5-5' } };
   const prisma = {
-    license: { findFirst: async () => null },
+    license: { findFirst: async () => license },
     conversation: {
       findFirst: async ({ where }) => (where.id === conversation.id && where.tenantId === conversation.tenantId ? { ...conversation } : null),
       updateMany: async ({ where, data }) => {
@@ -40,7 +46,7 @@ function fixture({ count = 22, summary = null, through = null, disabled = false,
       },
     },
     agent: { findFirst: async () => ({ id: 'agent-a', status: 'ACTIVE' }) },
-    message: { findMany: async () => messages(count).map((item, index) => (contents?.[index] !== undefined ? { ...item, content: contents[index] } : item)) },
+    message: { findMany: async () => messages(count, short).map((item, index) => (contents?.[index] !== undefined ? { ...item, content: contents[index] } : item)) },
     aiModel: { findMany: async ({ where }) => catalog.filter(row => where.slug.in.includes(row.slug)) },
     aiUsage: { create: async ({ data }) => { records.usage.push(data); return data; } },
     auditLog: { create: async ({ data }) => { records.audit.push(data); return data; } },
@@ -63,7 +69,7 @@ function fixture({ count = 22, summary = null, through = null, disabled = false,
     const body = JSON.parse(options.body); records.requests.push(body);
     const answer = queue.length > 1 ? queue.shift() : queue[0];
     // An answer is the summary text, { length: true } for a cut answer, or { status } for a gateway error.
-    if (answer && typeof answer === 'object' && answer.status) return new Response('{"error":{"message":"falha"}}', { status: answer.status, headers: { 'Content-Type': 'application/json' } });
+    if (answer && typeof answer === 'object' && answer.status) return new Response(JSON.stringify({ error: { message: answer.message ?? 'falha' } }), { status: answer.status, headers: { 'Content-Type': 'application/json' } });
     const finish = answer && typeof answer === 'object' ? (answer.finish ?? (answer.length ? 'length' : 'stop')) : 'stop';
     const content = typeof answer === 'string' ? answer : 'Resumo cortado';
     return new Response(JSON.stringify({ choices: [{ index: 0, finish_reason: finish, message: { role: 'assistant', content } }], usage: { prompt_tokens: 400, completion_tokens: 60 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -82,7 +88,9 @@ test('resumo com todos os itens jurídicos: criado, campos gravados, auditoria s
   assert.ok(conversation.summaryUpdatedAt instanceof Date);
   const body = records.requests[0];
   assert.equal(body.model, 'anthropic/claude-haiku-5-5');
-  assert.equal(body.max_tokens, 1500);
+  // Proportional to what the summary replaces (40% of its estimated tokens), well under the 1,500 ceiling.
+  assert.equal(body.max_tokens, summaryMaxTokens(batchText(0, 12)));
+  assert.ok(body.max_tokens > 256 && body.max_tokens < 1500, String(body.max_tokens));
   assert.equal(body.messages[0].role, 'system'); assert.equal(typeof body.messages[0].content, 'string');
   assert.ok(!JSON.stringify(body).includes('cache_control'));
   // Only the 12 oldest messages (role + text) are summarized; the 10 most recent stay literal.
@@ -250,4 +258,68 @@ test('a chamada leva a tag origem:i7ai-resumo e ai_usage.kind resumo, com custo 
 test('enqueue sem fila nunca lança', async () => {
   const { service } = fixture();
   await service.enqueue('tenant-a', 'conv-a');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// E4 final wave: the summary must save tokens; limits only skip.
+
+test('lote com menos de 6.000 caracteres → espera mais mensagens: sem chamada, nada gravado', async () => {
+  const { service, records, conversation } = fixture({ short: true });
+  assert.equal(await service.summarize('tenant-a', 'conv-a'), 'ignorado');
+  assert.equal(records.requests.length, 0); assert.equal(records.usage.length, 0); assert.equal(records.audit.length, 0);
+  assert.equal(conversation.summaryRejectedThroughMessageId, null); assert.equal(conversation.summaryRejections, 0);
+  // Many short messages eventually reach the floor (batch of up to 4 x N messages).
+  const many = fixture({ short: true, count: 200, contents: Object.fromEntries(Array.from({ length: 80 }, (_, index) => [index + 1, 'Mensagem curta ' + (index + 2) + ' ' + 'p'.repeat(70)])) });
+  assert.equal(await many.service.summarize('tenant-a', 'conv-a'), 'criado');
+});
+
+test('resumo seguinte: o teto de saída conta o resumo anterior + o lote', async () => {
+  const previous = FULL + ' ' + 'anterior '.repeat(300);
+  const { service, records } = fixture({ count: 34, through: 'm12', summary: previous });
+  assert.equal(await service.summarize('tenant-a', 'conv-a'), 'criado');
+  assert.equal(records.requests[0].max_tokens, summaryMaxTokens(previous + batchText(12, 24)));
+});
+
+test('resumo com 70% ou mais do texto substituído → descartado (summary_skipped), sem recusa, espera N/2 mensagens', async () => {
+  const replaced = batchText(0, 12);
+  const long = FULL + ' ' + 'r'.repeat(Math.ceil(replaced.length * 0.7));
+  const { service, records, conversation } = fixture({ answers: [long] });
+  assert.equal(await service.summarize('tenant-a', 'conv-a'), 'ignorado');
+  assert.equal(records.requests.length, 1);
+  assert.equal(conversation.summary, null); assert.equal(conversation.summaryThroughMessageId, null);
+  // Not a strike: the counter stays; only the wait marker is set so the next answer does not pay again.
+  assert.equal(conversation.summaryRejections, 0); assert.equal(conversation.summaryRejectedThroughMessageId, 'm12');
+  assert.deepEqual(records.updates, [{ summaryRejectedThroughMessageId: 'm12' }]);
+  assert.deepEqual(records.audit.map(row => row.event), ['conversation.summary_skipped']);
+  assert.deepEqual(records.audit[0].metadata, { messages: 12, summaryChars: long.length, replacedChars: replaced.length });
+  assert.ok(Object.values(records.audit[0].metadata).every(value => typeof value === 'number'));
+  // Just under 70%: created.
+  const shortEnough = FULL + ' ' + 'r'.repeat(Math.floor(replaced.length * 0.7) - FULL.length - 2);
+  assert.equal(await fixture({ answers: [shortEnough] }).service.summarize('tenant-a', 'conv-a'), 'criado');
+});
+
+test('orçamento, limite e saldo da licença recusados → ignorado, sem contar recusa e sem relançar', async () => {
+  for (const answer of [
+    { status: 400, message: 'ExceededBudget: End User=tenant-a over budget. Spend=10, Budget=5' },
+    { status: 429, message: 'Rate limit exceeded for end_user: tenant-a' },
+  ]) {
+    const { service, records, conversation } = fixture({ answers: [answer] });
+    assert.equal(await service.summarize('tenant-a', 'conv-a'), 'ignorado', JSON.stringify(answer));
+    assert.equal(records.requests.length, 1);
+    assert.equal(conversation.summaryRejections, 0); assert.equal(conversation.summaryRejectedThroughMessageId, null);
+    assert.equal(records.audit.length, 0);
+  }
+  // License balance exhausted (reservation refused) and inactive license: no call at all.
+  const now = Date.now();
+  for (const license of [
+    { id: 'lic', tenantId: 'tenant-a', status: 'ACTIVE', startDate: new Date(now - 86_400_000), endDate: null, maxTokens: 10n, createdAt: new Date(now - 86_400_000) },
+    { id: 'lic', tenantId: 'tenant-a', status: 'SUSPENDED', startDate: new Date(now - 86_400_000), endDate: null, maxTokens: 10_000_000n, createdAt: new Date(now - 86_400_000) },
+  ]) {
+    const { service, records, conversation } = fixture({ license });
+    records.usage.length = 0;
+    assert.equal(await service.summarize('tenant-a', 'conv-a'), 'ignorado', license.status);
+    assert.equal(records.requests.length, 0);
+    assert.equal(conversation.summaryRejections, 0); assert.equal(records.audit.length, 0);
+  }
+  assert.ok(Object.values(LIMIT_MESSAGES).length >= 4);
 });

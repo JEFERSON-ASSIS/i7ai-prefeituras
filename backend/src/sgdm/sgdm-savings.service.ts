@@ -8,7 +8,7 @@ import { SgdmOptimizationService } from './sgdm-optimization.service';
 import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from './optimization-defaults';
 import {
   ExactCacheEstimate, ExactCacheSavings, ImageSavings, ModelSwapSavings, PREFIX_MIN_TOKENS, PromptCacheEstimate, PromptCacheSavings,
-  SummaryConversation, SummarySavings, UsageRow, median, percentile, price, summaryEstimate,
+  SWAP_KIND, SummaryConversation, SummarySavings, UNDO_KIND, UsageRow, median, percentile, price, summaryEstimate,
 } from './savings';
 
 export interface EconomiaItem { realUsd: number | null; estimativaUsd: number | null }
@@ -26,6 +26,13 @@ export interface EconomiaAgente {
   raciocinioAvancado: boolean;
   chamadas: number; saidaMediana: number | null; saidaP95: number | null; entradaMediana: number | null;
   tokensEntrada: number; tokensCache: number; tokensSaida: number; custoUsd: number; prefixoTokens: number;
+  /** Some answer of the period carried images: a swap to a model without `supportsVision` is refused. */
+  recebeImagens: boolean;
+  /**
+   * The agent's latest swap made from the Central, while it can still be undone: the agent still has the model it
+   * was swapped to and the swap was not itself an undo. Slugs (null `de` when that model is gone). Null otherwise.
+   */
+  ultimaTroca: { de: string | null; para: string; em: string } | null;
 }
 export interface EconomiaUsuario { id: string; tenantId: string; porModelo: { modeloSlug: string; chamadas: number; curtas: number; custoUsd: number }[] }
 export interface EconomiaI7ai {
@@ -41,6 +48,13 @@ export const MODEL_NOT_RELEASED = 'Este modelo não está liberado para esta pre
 export const MODEL_WITHOUT_TOOLS = 'O modelo escolhido não aceita as ferramentas deste agente.';
 export const MODEL_WITHOUT_REASONING = 'O modelo escolhido não aceita o raciocínio avançado deste agente.';
 export const MODEL_CHANGED_SINCE = 'O modelo do agente foi alterado depois da troca; desfaça manualmente.';
+export const MODEL_WITHOUT_VISION = 'O modelo escolhido não aceita as imagens que este agente recebe.';
+/** Undo refused because the model it would go back to is no longer active or released (the refusal stays). */
+export const PREVIOUS_MODEL_NOT_RELEASED = 'O modelo anterior não está mais liberado para esta prefeitura; escolha outro modelo no agente.';
+export const NOTHING_TO_UNDO = 'Não há troca de modelo para desfazer neste agente.';
+export { SWAP_KIND, UNDO_KIND };
+/** How far back a swap looks for images sent to the agent (vision check). */
+const VISION_LOOKBACK_MS = 30 * 86_400_000;
 /** Rows read per query; the endpoint never holds more than one batch of `ai_usage`. */
 export const USAGE_BATCH_SIZE = 5000;
 const MAX_SUMMARY_CONVERSATIONS = 2000;
@@ -49,8 +63,8 @@ const SUMMARY_EVENTS = ['conversation.summary_created', 'conversation.summary_re
 const modelSelect = { id: true, slug: true, inputPrice: true, outputPrice: true, cachedInputPrice: true, cacheWriteInputPrice: true, active: true, capabilities: true } satisfies Prisma.AiModelSelect;
 type ModelRow = Prisma.AiModelGetPayload<{ select: typeof modelSelect }>;
 const round = (value: number) => Number(value.toFixed(6));
-/** Same rule as the gateway: anything but an explicit `supportsTools: true` cannot run the agent's tools. */
-const supports = (capabilities: unknown, name: 'supportsTools') => Boolean(capabilities) && typeof capabilities === 'object' && !Array.isArray(capabilities) && (capabilities as Record<string, unknown>)[name] === true;
+/** Same rule as the gateway: anything but an explicit `supportsTools: true` / `supportsVision: true` is "no". */
+const supports = (capabilities: unknown, name: 'supportsTools' | 'supportsVision') => Boolean(capabilities) && typeof capabilities === 'object' && !Array.isArray(capabilities) && (capabilities as Record<string, unknown>)[name] === true;
 /** Same rule as the gateway's direct path: an explicit `supportsReasoning`, else the o1+/gpt-5+ slug heuristic. */
 function supportsReasoning(model: ModelRow) {
   const capabilities = model.capabilities && typeof model.capabilities === 'object' && !Array.isArray(model.capabilities) ? model.capabilities as Record<string, unknown> : {};
@@ -63,7 +77,7 @@ type TenantAcc = {
   summary: SummarySavings; images: ImageSavings; swaps: ModelSwapSavings;
   tokensLidos: number; tokensEscritos: number; acertos: number; baixa: number; alta: number; truncadas: number;
 };
-type AgentAcc = { chamadas: number; input: number[]; output: number[]; tokensEntrada: number; tokensCache: number; tokensSaida: number; custo: number };
+type AgentAcc = { chamadas: number; input: number[]; output: number[]; tokensEntrada: number; tokensCache: number; tokensSaida: number; custo: number; imagens: boolean };
 
 function group<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
   const map = new Map<string, T[]>();
@@ -91,7 +105,7 @@ export class SgdmSavingsService {
     const period = { gte: query.from, lt: query.to };
     const [events, audits] = await Promise.all([
       // Swaps before the period still count: their window covers the period's rows.
-      this.prisma.optimizationEvent.findMany({ where: { ...tenantFilter, kind: 'TROCA_MODELO', createdAt: { lt: query.to } }, select: { tenantId: true, agentId: true, kind: true, fromModelId: true, toModelId: true, createdAt: true } }),
+      this.prisma.optimizationEvent.findMany({ where: { ...tenantFilter, kind: { in: [SWAP_KIND, UNDO_KIND] }, createdAt: { lt: query.to } }, select: { tenantId: true, agentId: true, kind: true, fromModelId: true, toModelId: true, createdAt: true } }),
       this.prisma.auditLog.groupBy({ by: ['tenantId', 'event'], where: { ...tenantFilter, event: { in: [...SUMMARY_EVENTS] }, createdAt: period }, _count: { _all: true } }),
     ]);
     const models = new Map<string, ModelRow | null>();
@@ -149,8 +163,9 @@ export class SgdmSavingsService {
         if (row.truncated) acc.truncadas++;
         if (row.agentId) {
           let stats = agentStats.get(row.agentId);
-          if (!stats) { stats = { chamadas: 0, input: [], output: [], tokensEntrada: 0, tokensCache: 0, tokensSaida: 0, custo: 0 }; agentStats.set(row.agentId, stats); }
+          if (!stats) { stats = { chamadas: 0, input: [], output: [], tokensEntrada: 0, tokensCache: 0, tokensSaida: 0, custo: 0, imagens: false }; agentStats.set(row.agentId, stats); }
           stats.chamadas++; stats.custo += price(row.cost);
+          if (row.lowDetailImages + row.highDetailImages > 0) stats.imagens = true;
           if (!row.cacheHit) {
             stats.input.push(row.inputTokens); stats.output.push(row.outputTokens);
             stats.tokensEntrada += row.inputTokens; stats.tokensCache += row.cachedInputTokens; stats.tokensSaida += row.outputTokens;
@@ -174,8 +189,15 @@ export class SgdmSavingsService {
     const agentIds = [...agentStats.keys()];
     const agents = agentIds.length ? await this.prisma.agent.findMany({
       where: { id: { in: agentIds } },
-      select: { id: true, tenantId: true, name: true, systemPrompt: true, maxTokens: true, advancedReasoning: true, models: { select: { isPrimary: true, model: { select: { slug: true } } } } },
+      select: { id: true, tenantId: true, name: true, systemPrompt: true, maxTokens: true, advancedReasoning: true, models: { select: { isPrimary: true, model: { select: { id: true, slug: true } } } } },
     }) : [];
+    // Latest Central swap (or undo) per agent; the query does not order the events.
+    const latestSwap = new Map<string, (typeof events)[number]>();
+    for (const event of events) {
+      if (!event.agentId) continue;
+      const current = latestSwap.get(event.agentId);
+      if (!current || event.createdAt.getTime() >= current.createdAt.getTime()) latestSwap.set(event.agentId, event);
+    }
     const withTools = new Set(agentIds.length ? (await this.prisma.agentTool.findMany({ where: { agentId: { in: agentIds }, enabled: true, tool: { status: 'ACTIVE' } }, select: { agentId: true, tool: { select: { tenantId: true } } } }))
       .filter(binding => agents.some(agent => agent.id === binding.agentId && agent.tenantId === binding.tool.tenantId)).map(binding => binding.agentId) : []);
     const prefix = new Map(agents.map(agent => [agent.id, estimateTokens(fixedInstructions(agent, false, true))]));
@@ -209,11 +231,17 @@ export class SgdmSavingsService {
     const agentes: EconomiaAgente[] = agents.map(agent => {
       const stats = agentStats.get(agent.id) as AgentAcc;
       const primary = agent.models.find(binding => binding.isPrimary) ?? agent.models[0];
+      // Offered for undo only when undoSwap() would get past its checks: not an undo itself, with a previous model,
+      // and the agent still on the model it was swapped to (else MODEL_CHANGED_SINCE).
+      const swap = latestSwap.get(agent.id);
+      const toSlug = swap?.toModelId ? models.get(swap.toModelId)?.slug : undefined;
+      const ultimaTroca = swap && swap.kind === SWAP_KIND && swap.fromModelId && toSlug && swap.toModelId === primary?.model.id
+        ? { de: models.get(swap.fromModelId)?.slug ?? null, para: toSlug, em: swap.createdAt.toISOString() } : null;
       return {
         id: agent.id, tenantId: agent.tenantId, nome: agent.name, modeloSlug: primary?.model.slug ?? null, maxTokens: agent.maxTokens, temFerramentas: withTools.has(agent.id), raciocinioAvancado: agent.advancedReasoning,
         chamadas: stats.chamadas, saidaMediana: median(stats.output), saidaP95: percentile(stats.output, 95), entradaMediana: median(stats.input),
         tokensEntrada: stats.tokensEntrada, tokensCache: stats.tokensCache, tokensSaida: stats.tokensSaida,
-        custoUsd: round(stats.custo), prefixoTokens: prefix.get(agent.id) ?? 0,
+        custoUsd: round(stats.custo), prefixoTokens: prefix.get(agent.id) ?? 0, recebeImagens: stats.imagens, ultimaTroca,
       };
     });
     const usuarios: EconomiaUsuario[] = [...users.values()].map(user => ({
@@ -268,8 +296,9 @@ export class SgdmSavingsService {
   /** Back to the `from` of the agent's last swap, with the same checks, recorded as a new swap. */
   async undoSwap(tenantId: string, agentId: string): Promise<ModelSwap> {
     const agent = await this.agentOf(tenantId, agentId);
-    const last = await this.prisma.optimizationEvent.findFirst({ where: { tenantId, agentId, kind: 'TROCA_MODELO' }, orderBy: { createdAt: 'desc' } });
-    if (!last || !last.fromModelId) throw new BadRequestException('Não há troca de modelo para desfazer neste agente.');
+    const last = await this.prisma.optimizationEvent.findFirst({ where: { tenantId, agentId, kind: { in: [SWAP_KIND, UNDO_KIND] } }, orderBy: { createdAt: 'desc' } });
+    // An undo is never undone in turn (the Central offers no "redo").
+    if (!last || last.kind !== SWAP_KIND || !last.fromModelId) throw new BadRequestException(NOTHING_TO_UNDO);
     const current = await this.primaryModel(this.prisma, agentId);
     if ((current?.id ?? null) !== last.toModelId) throw new BadRequestException(MODEL_CHANGED_SINCE);
     const target = await this.prisma.aiModel.findUnique({ where: { id: last.fromModelId }, select: modelSelect });
@@ -289,12 +318,19 @@ export class SgdmSavingsService {
 
   /** `expectedFromId`: for an undo, the model the agent must still have once locked (else it changed since). */
   private async apply(tenantId: string, agentId: string, target: ModelRow | null, expectedFromId: string | undefined, advancedReasoning: boolean): Promise<ModelSwap> {
-    if (!target || target.active === false) throw new BadRequestException(MODEL_NOT_RELEASED);
+    const undo = expectedFromId !== undefined;
+    const notReleased = undo ? PREVIOUS_MODEL_NOT_RELEASED : MODEL_NOT_RELEASED;
+    if (!target || target.active === false) throw new BadRequestException(notReleased);
     // null = standalone (no SGDM): nothing to filter. An unconfirmed list fails closed (503 from the access service).
     const allowed = this.access ? await this.access.allowed(tenantId) : null;
-    if (allowed && !allowed.slugs.includes(target.slug)) throw new BadRequestException(MODEL_NOT_RELEASED);
+    if (allowed && !allowed.slugs.includes(target.slug)) throw new BadRequestException(notReleased);
     if (advancedReasoning && !supportsReasoning(target)) throw new BadRequestException(MODEL_WITHOUT_REASONING);
     if (!supports(target.capabilities, 'supportsTools') && await this.prisma.agentTool.count({ where: { agentId, ...toolsWhere(tenantId) } })) throw new BadRequestException(MODEL_WITHOUT_TOOLS);
+    // Agents have no "accepts images" setting; the reliable signal is images sent to this agent recently. Then the
+    // target must take them, with the gateway's strictness (only an explicit `supportsVision: true`).
+    if (!supports(target.capabilities, 'supportsVision') && await this.prisma.aiUsage.count({
+      where: { tenantId, agentId, createdAt: { gte: new Date(Date.now() - VISION_LOOKBACK_MS) }, OR: [{ lowDetailImages: { gt: 0 } }, { highDetailImages: { gt: 0 } }] },
+    })) throw new BadRequestException(MODEL_WITHOUT_VISION);
     return this.prisma.$transaction(async tx => {
       await tx.$queryRaw(Prisma.sql`SELECT id FROM agents WHERE id = ${agentId}::uuid AND "tenantId" = ${tenantId}::uuid FOR UPDATE`);
       const from = await this.primaryModel(tx, agentId);
@@ -302,7 +338,7 @@ export class SgdmSavingsService {
       if (from?.id === target.id) throw new BadRequestException('O agente já usa este modelo.');
       await tx.agentModel.deleteMany({ where: { agentId } });
       await tx.agentModel.create({ data: { agentId, modelId: target.id, isPrimary: true } });
-      await tx.optimizationEvent.create({ data: { tenantId, agentId, kind: 'TROCA_MODELO', fromModelId: from?.id ?? null, toModelId: target.id } });
+      await tx.optimizationEvent.create({ data: { tenantId, agentId, kind: undo ? UNDO_KIND : SWAP_KIND, fromModelId: from?.id ?? null, toModelId: target.id } });
       await tx.auditLog.create({ data: { tenantId, userId: null, event: 'agent.model_changed_by_platform', resource: 'agents', resourceId: agentId, metadata: { from: from?.slug ?? null, to: target.slug } } });
       return { agentId, from: from?.slug ?? null, to: target.slug };
     });

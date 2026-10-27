@@ -29,6 +29,9 @@ export type UsageRow = {
 };
 
 export type ModelSwapEvent = { agentId: string | null; kind: string; createdAt: Date; fromModelId: string | null; toModelId: string | null; from: ModelPrices | null };
+/** `optimization_events.kind` of a swap made from the Central, and of its undo (which also closes the swap's window). */
+export const SWAP_KIND = 'TROCA_MODELO';
+export const UNDO_KIND = 'TROCA_MODELO_DESFEITA';
 
 function costAt(row: UsageRow, model: ModelPrices) {
   const p = prices(model);
@@ -64,20 +67,21 @@ export const PREFIX_MIN_TOKENS = 1024;
 /**
  * Prompt cache, estimated for agents with the cache off (`prefixTokensByAgent` only lists those, prefix ≥ 1024):
  * a call less than 5 minutes after the previous one of the same agent would read the prefix, the others would
- * write it (the write surcharge only exists for `anthropic/`). Null when no agent qualifies. The prefix is constant
- * per agent, so each agent only keeps its last call time and two price sums: Σ hits (input − cached) and
- * Σ anthropic misses (write − input); the result is prefix × (hits − misses).
+ * write it. Only `anthropic/` calls count: the Central's switch only adds Claude's `cache_control`; OpenAI and Gemini
+ * cache the prefix by themselves whatever the switch says, and that saving is already in the measured figure.
+ * Null when no agent qualifies. The prefix is constant per agent, so each agent only keeps its last call time and
+ * two price sums: Σ hits (input − cached) and Σ misses (write − input); the result is prefix × (hits − misses).
  */
 export class PromptCacheEstimate {
   private readonly agents = new Map<string, { last: number; hit: number; miss: number }>();
   add(row: UsageRow) {
-    if (!row.agentId || !row.model || row.kind !== 'resposta' || row.cacheHit) return;
+    if (!row.agentId || !row.model || row.kind !== 'resposta' || row.cacheHit || !row.model.slug.startsWith('anthropic/')) return;
     const at = row.createdAt.getTime();
     const p = prices(row.model);
     let state = this.agents.get(row.agentId);
     if (!state) { state = { last: at, hit: 0, miss: 0 }; this.agents.set(row.agentId, state); }
     else if (at - state.last < FIVE_MINUTES) { state.hit += p.input - p.cached; state.last = at; return; }
-    if (row.model.slug.startsWith('anthropic/')) state.miss += p.write - p.input;
+    state.miss += p.write - p.input;
     state.last = at;
   }
   value(prefixTokensByAgent: Record<string, number>): number | null {
@@ -211,7 +215,7 @@ export function imageSavings(rows: UsageRow[]): { real: number; estimate: number
 }
 
 /**
- * Model swaps made from the Central: each agent row after a TROCA_MODELO (and before that agent's next swap) that
+ * Model swaps made from the Central: each agent row after a TROCA_MODELO (and before that agent's next swap or undo) that
  * used the new model, priced at the old model minus the new one; input, cache and output count, never below 0 per
  * row. A row belongs to the window of its agent's latest swap strictly before it (a row at the very instant of a
  * swap belongs to none). State: the events only.
@@ -221,7 +225,7 @@ export class ModelSwapSavings {
   private total = 0;
   constructor(events: ModelSwapEvent[]) {
     for (const event of events) {
-      if (event.kind !== 'TROCA_MODELO' || !event.agentId) continue;
+      if ((event.kind !== SWAP_KIND && event.kind !== UNDO_KIND) || !event.agentId) continue;
       const list = this.byAgent.get(event.agentId);
       if (list) list.push(event); else this.byAgent.set(event.agentId, [event]);
     }

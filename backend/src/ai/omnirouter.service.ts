@@ -288,8 +288,9 @@ export class OmniRouterService {
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
     // Exact response cache (LiteLLM, mode default_off): only without stream, for automations or when the chat is
     // allowed, and always under the prefeitura's namespace so one prefeitura never gets another's cached answer.
+    // Never with tools: a cached tool call (or an answer built on a tool's result) would skip fresh data.
     const exact = input.optimization.cacheExato;
-    const useCache = exact.ligado && !input.onDelta && (input.origin === 'i7ai-automacao' || exact.chat);
+    const useCache = exact.ligado && !input.onDelta && !input.functions.length && (input.origin === 'i7ai-automacao' || exact.chat);
     const cache = useCache ? { cache: { 'use-cache': true, ttl: exact.ttlSegundos, namespace: 'i7ai:' + input.agent.tenantId } } : {};
     try {
       const response = await fetch(endpoint, {

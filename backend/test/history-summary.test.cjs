@@ -134,3 +134,45 @@ test('SUMMARY_PROMPT e SUMMARY_MAX_TOKENS', () => {
   assert.equal(SUMMARY_MAX_TOKENS, 1500);
   for (const word of [/em ordem/i, /literalmente/i, /n[aã]o opine/i, /resumo anterior/i, /somente com o resumo|apenas com o resumo|só com o resumo/i]) assert.match(SUMMARY_PROMPT, word);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// E4 final wave
+
+const hs = require('../dist/ai/history-summary');
+
+test('summaryThreshold: 10 a 40 (acima de 40 o resto não resumido não caberia na janela de 40 mensagens)', () => {
+  assert.equal(hs.SUMMARY_MAX_THRESHOLD, 40);
+  assert.equal(hs.summaryThreshold(80), 40);
+  assert.equal(hs.summaryThreshold(41), 40);
+  assert.equal(hs.summaryThreshold(40), 40);
+  assert.equal(hs.summaryThreshold(5), 10);
+  assert.equal(hs.summaryThreshold(Number.NaN), 20);
+});
+
+test('valores e quantidades com multiplicador: o multiplicador faz parte do item', () => {
+  assert.deepEqual(missingItems('Estimado em R$ 1,5 milhão.', 'Estimado em R$ 1,5.'), ['r$ 1,5 milhão']);
+  assert.deepEqual(missingItems('Estimado em R$ 1,5 milhão.', 'Estimado em R$ 1,5 mil.'), ['r$ 1,5 milhão']);
+  assert.deepEqual(missingItems('Estimado em R$ 1,5 milhão.', 'Valor: R$ 1,5 milhões.'), []);
+  assert.deepEqual(missingItems('Teto de R$ 300 mil.', 'Teto de R$ 300.'), ['r$ 300 mil']);
+  assert.deepEqual(missingItems('Orçamento de 2 bilhões de reais.', 'Orçamento de 2 reais.'), ['2 bilhões de reais']);
+  assert.deepEqual(missingItems('Orçamento de 2 bilhões de reais.', 'Orçamento de 2 bilhões de reais.'), []);
+  // A plain value is still a plain value.
+  assert.deepEqual(missingItems('R$ 59.906,02', 'R$ 59.906,02'), []);
+  assert.deepEqual(missingItems('R$ 59.906,02 milionário', 'R$ 59.906,02'), []);
+});
+
+test('summaryMaxTokens: 40% dos tokens do texto substituído, com piso de 256 e teto de 1.500 / do modelo', () => {
+  const replaced = 'a'.repeat(8000); // 2,000 tokens
+  assert.equal(hs.summaryMaxTokens(replaced), 800);
+  assert.equal(hs.summaryMaxTokens('a'.repeat(400)), hs.SUMMARY_MIN_OUTPUT_TOKENS);
+  assert.equal(hs.summaryMaxTokens('a'.repeat(60_000)), SUMMARY_MAX_TOKENS);
+  assert.equal(hs.summaryMaxTokens(replaced, 500), 500);
+  assert.equal(hs.summaryMaxTokens(replaced, 0), 800);
+});
+
+test('summaryTooLong: resumo com 70% ou mais do texto substituído não economiza', () => {
+  assert.equal(hs.SUMMARY_MAX_KEPT_RATIO, 0.7);
+  assert.equal(hs.SUMMARY_MIN_SOURCE_CHARS, 6000);
+  assert.equal(hs.summaryTooLong('x'.repeat(700), 'y'.repeat(1000)), true);
+  assert.equal(hs.summaryTooLong('x'.repeat(699), 'y'.repeat(1000)), false);
+});

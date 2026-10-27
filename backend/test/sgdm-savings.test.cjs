@@ -4,7 +4,7 @@ require('reflect-metadata');
 const { NotFoundException, UnauthorizedException, BadRequestException } = require('@nestjs/common');
 const savings = require('../dist/sgdm/savings');
 const { SgdmOptimizationController } = require('../dist/sgdm/sgdm-optimization.controller');
-const { SgdmSavingsService, MODEL_NOT_RELEASED, MODEL_WITHOUT_TOOLS, MODEL_WITHOUT_REASONING, MODEL_CHANGED_SINCE } = require('../dist/sgdm/sgdm-savings.service');
+const { SgdmSavingsService, MODEL_NOT_RELEASED, MODEL_WITHOUT_TOOLS, MODEL_WITHOUT_REASONING, MODEL_CHANGED_SINCE, MODEL_WITHOUT_VISION, PREVIOUS_MODEL_NOT_RELEASED, NOTHING_TO_UNDO, UNDO_KIND } = require('../dist/sgdm/sgdm-savings.service');
 
 const T1 = '11111111-1111-4111-8111-111111111111';
 const T2 = '11111111-1111-4111-8111-222222222222';
@@ -79,7 +79,27 @@ test('promptCacheEstimate: hits within 5 minutes; the write term only for anthro
   // 1 hit × 2000 × 2.7 − 2 misses × 2000 × 0.75 = 5400 − 3000 = 2400 → 0.0024
   assert.equal(savings.promptCacheEstimate(rows, { [AG]: 2000 }), 0.0024);
   assert.equal(savings.promptCacheEstimate(rows, { [AG]: 500 }), null);
-  assert.equal(savings.promptCacheEstimate(rows.map(item => ({ ...item, model: row().model })), { [AG]: 2000 }), 0.0018);
+  // OpenAI (and Gemini) cache the prefix by themselves, already in the measured figure: no Claude call, no estimate.
+  assert.equal(savings.promptCacheEstimate(rows.map(item => ({ ...item, model: row().model })), { [AG]: 2000 }), null);
+});
+
+test('promptCacheEstimate: only anthropic/ rows count, mixed providers of one agent', () => {
+  const anthropic = { slug: 'anthropic/claude', inputPrice: 3, outputPrice: 15, cachedInputPrice: 0.3, cacheWriteInputPrice: 3.75 };
+  const openai = { slug: 'openai/gpt-4o', inputPrice: 2.5, outputPrice: 10, cachedInputPrice: 1.25, cacheWriteInputPrice: null };
+  const gemini = { slug: 'gemini/gemini-2.5-pro', inputPrice: 1.25, outputPrice: 10, cachedInputPrice: 0.31, cacheWriteInputPrice: null };
+  const rows = [
+    row({ model: anthropic, createdAt: at(0) }),  // miss: 2000 x 0.75 = 1500
+    row({ model: openai, createdAt: at(1) }),     // ignored (would be a hit of 2000 x 1.25)
+    row({ model: gemini, createdAt: at(2) }),     // ignored
+    row({ model: anthropic, createdAt: at(3) }),  // hit: 2000 x 2.7 = 5400
+    row({ model: anthropic, createdAt: at(7) }),  // hit (4 min after at(3)): 5400
+    row({ model: openai, createdAt: at(8) }),     // ignored: does not move the last-call time
+    row({ model: anthropic, createdAt: at(11) }), // hit (4 min after at(7)): 5400
+  ];
+  // (3 x 5400 - 1500) / 1e6
+  assert.equal(savings.promptCacheEstimate(rows, { [AG]: 2000 }), 0.0147);
+  // Only OpenAI calls: the agent qualifies by prefix size but has no Claude call to estimate.
+  assert.equal(savings.promptCacheEstimate([row({ model: openai, createdAt: at(0) }), row({ model: openai, createdAt: at(1) })], { [AG]: 2000 }), null);
 });
 
 test('summaryEstimate: answers past n, history older than the n/2 most recent, × 0.75 × input', () => {
@@ -106,6 +126,7 @@ function fakePrisma(state) {
   const bindings = () => state.agentModels;
   const prisma = {
     aiUsage: {
+      count: async ({ where }) => state.usage.filter(item => item.tenantId === where.tenantId && item.agentId === where.agentId && item.createdAt >= where.createdAt.gte && (item.lowDetailImages > 0 || item.highDetailImages > 0)).length,
       findMany: async ({ where, orderBy, take, cursor, skip }) => {
         state.usageQueries = (state.usageQueries ?? 0) + 1;
         assert.deepEqual(orderBy, [{ createdAt: 'asc' }, { id: 'asc' }]);
@@ -126,7 +147,7 @@ function fakePrisma(state) {
       findUnique: async ({ where }) => state.models.find(item => item.id === where.id) ?? null,
     },
     agent: {
-      findMany: async () => state.agents.map(agent => ({ ...agent, models: bindings().filter(b => b.agentId === agent.id).map(b => ({ isPrimary: b.isPrimary, model: { slug: state.models.find(m => m.id === b.modelId).slug } })) })),
+      findMany: async () => state.agents.map(agent => ({ ...agent, models: bindings().filter(b => b.agentId === agent.id).map(b => ({ isPrimary: b.isPrimary, model: { id: b.modelId, slug: state.models.find(m => m.id === b.modelId).slug } })) })),
       findFirst: async ({ where }) => state.agents.find(agent => agent.id === where.id && agent.tenantId === where.tenantId) ?? null,
     },
     agentTool: { findMany: async () => [], count: async () => state.tools },
@@ -210,7 +231,11 @@ test('PATCH modelo: success creates the event and the audit; desfazer returns to
   assert.deepEqual(await controller.undo(auth('secret'), AG, { tenantId: T1 }), { agentId: AG, from: 'openai/gpt-4o-mini', to: 'openai/gpt-4o' });
   assert.deepEqual(state.agentModels, [{ agentId: AG, modelId: M_OLD, isPrimary: true }]);
   assert.equal(state.events.length, 2);
+  assert.equal(state.events[1].kind, UNDO_KIND);
   assert.equal(state.audits.length, 2);
+  // An undo is not undone in turn.
+  await assert.rejects(controller.undo(auth('secret'), AG, { tenantId: T1 }), { message: NOTHING_TO_UNDO });
+  assert.equal(state.events.length, 2);
 });
 
 test('desfazer: no swap is 400; previous model no longer active is 400', async () => {
@@ -219,8 +244,48 @@ test('desfazer: no swap is 400; previous model no longer active is 400', async (
   const { controller, state } = build();
   await controller.swap(auth('secret'), AG, { tenantId: T1, slug: 'openai/gpt-4o-mini' });
   state.models[0].active = false;
-  await assert.rejects(controller.undo(auth('secret'), AG, { tenantId: T1 }), { message: MODEL_NOT_RELEASED });
+  await assert.rejects(controller.undo(auth('secret'), AG, { tenantId: T1 }), { message: PREVIOUS_MODEL_NOT_RELEASED });
   assert.equal(state.events.length, 1);
+  // Active but no longer released to the prefeitura: the same clear refusal.
+  state.models[0].active = true; state.allowed = { slugs: ['openai/gpt-4o-mini'], defaultSlug: null };
+  await assert.rejects(controller.undo(auth('secret'), AG, { tenantId: T1 }), { message: PREVIOUS_MODEL_NOT_RELEASED });
+  assert.equal(state.events.length, 1);
+});
+
+test('agentes[].ultimaTroca: offered after a swap, gone after the undo or a later manual change', async () => {
+  process.env.SGDM_INTEGRATION_KEY = 'secret';
+  const { controller, state } = build();
+  assert.equal((await controller.savings(auth('secret'), period)).agentes[0].ultimaTroca, null);
+  await controller.swap(auth('secret'), AG, { tenantId: T1, slug: 'openai/gpt-4o-mini' });
+  // Events are read up to the period's end: place the swap inside it (independent of the clock).
+  state.events[0].createdAt = at(10);
+  const offered = (await controller.savings(auth('secret'), period)).agentes[0];
+  assert.deepEqual(offered.ultimaTroca, { de: 'openai/gpt-4o', para: 'openai/gpt-4o-mini', em: at(10).toISOString() });
+  // Changed by hand since: the undo would be refused, so it is not offered.
+  state.agentModels = [{ agentId: AG, modelId: M_OFF, isPrimary: true }];
+  assert.equal((await controller.savings(auth('secret'), period)).agentes[0].ultimaTroca, null);
+  // Undone: the latest event is the undo, never offered again.
+  state.agentModels = [{ agentId: AG, modelId: M_NEW, isPrimary: true }];
+  await controller.undo(auth('secret'), AG, { tenantId: T1 });
+  state.events[1].createdAt = at(20);
+  assert.equal((await controller.savings(auth('secret'), period)).agentes[0].ultimaTroca, null);
+});
+
+test('PATCH modelo: an agent that received images needs a model with supportsVision', async () => {
+  process.env.SGDM_INTEGRATION_KEY = 'secret';
+  const recent = new Date(Date.now() - 86_400_000);
+  const usage = [{ ...row({ inputTokens: 10, lowDetailImages: 1, createdAt: recent }), id: 'img', status: 'COMPLETED' }];
+  const vision = build({ usage });
+  await assert.rejects(vision.controller.swap(auth('secret'), AG, { tenantId: T1, slug: 'openai/gpt-4o-mini' }), { message: MODEL_WITHOUT_VISION });
+  assert.equal(vision.state.events.length, 0);
+  vision.state.models[1].capabilities = { supportsVision: true };
+  assert.equal((await vision.controller.swap(auth('secret'), AG, { tenantId: T1, slug: 'openai/gpt-4o-mini' })).to, 'openai/gpt-4o-mini');
+  // Images older than 30 days do not count.
+  const old = build({ usage: [{ ...usage[0], createdAt: new Date(Date.now() - 31 * 86_400_000) }] });
+  assert.equal((await old.controller.swap(auth('secret'), AG, { tenantId: T1, slug: 'openai/gpt-4o-mini' })).to, 'openai/gpt-4o-mini');
+  // The savings body says the agent receives images.
+  vision.state.usage[0].createdAt = at(5);
+  assert.equal((await vision.controller.savings(auth('secret'), period)).agentes[0].recebeImagens, true);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -278,3 +278,50 @@ test('conversa com resumo desligado mostra a linha e permite religar', async ({ 
   await page.getByRole('button', { name: 'Permitir resumo' }).click();
   await expect.poll(() => writes.some(item => item.path === '/conversations/conversation-4/summary/enable')).toBe(true);
 });
+
+test('resumo guardado mas fora de uso (summaryActive falso) não mostra o aviso', async ({ page }) => {
+  await mockSession(page, { overrides: { '/conversations': [...fixtures['/conversations'], ...summaryConversations] } });
+  await page.route('http://localhost:3000/api/conversations/conversation-3', route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({ status: 200, json: { ...fixtures['/conversations/conversation-3'], summaryActive: false }, headers: { 'Access-Control-Allow-Origin': '*' } });
+  });
+  await page.goto('/?module=chat');
+  await page.getByRole('button', { name: 'Conversa longa' }).click();
+  await expect(page.getByText('Pergunta antiga.')).toBeVisible();
+  await expect(page.getByText(/foram resumidas para reduzir o custo/)).toHaveCount(0);
+});
+
+test('desligar o resumo com a releitura falhando não deixa aviso antigo; trocar de conversa fecha o resumo aberto', async ({ page }) => {
+  let reads = 0;
+  await mockSession(page, {
+    overrides: { '/conversations': [...fixtures['/conversations'], ...summaryConversations] },
+    writeHandler: async (route, { path, headers }) => {
+      if (!path.endsWith('/summary/disable')) return false;
+      await route.fulfill({ status: 200, json: { id: 'conversation-3', summaryDisabled: true }, headers });
+      return true;
+    }
+  });
+  let failReads = false;
+  await page.route('http://localhost:3000/api/conversations/conversation-3', route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    reads++;
+    if (failReads) return route.fulfill({ status: 500, json: { message: 'Erro' }, headers: { 'Access-Control-Allow-Origin': '*' } });
+    return route.fulfill({ status: 200, json: fixtures['/conversations/conversation-3'], headers: { 'Access-Control-Allow-Origin': '*' } });
+  });
+  await page.goto('/?module=chat');
+  await page.getByRole('button', { name: 'Conversa longa' }).click();
+  await page.getByRole('button', { name: 'Ver resumo' }).click();
+  await expect(page.locator('pre.chat-summary-text')).toBeVisible();
+  // Another conversation and back: the summary text starts closed again.
+  await page.getByRole('button', { name: 'Orientação municipal' }).click();
+  await expect(page.getByText('Como consultar as orientações?')).toBeVisible();
+  await page.getByRole('button', { name: 'Conversa longa' }).click();
+  await expect(page.getByRole('button', { name: 'Ver resumo' })).toBeVisible();
+  await expect(page.locator('pre.chat-summary-text')).toHaveCount(0);
+  failReads = true;
+  const before = reads;
+  await page.getByRole('button', { name: 'Usar mensagens completas' }).click();
+  await expect(page.getByText('Esta conversa usa as mensagens completas.')).toBeVisible();
+  await expect(page.getByText(/foram resumidas para reduzir o custo/)).toHaveCount(0);
+  expect(reads).toBeGreaterThan(before);
+});
