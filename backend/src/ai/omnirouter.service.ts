@@ -4,6 +4,7 @@ import { AiQuotaService, QuotaScope, QuotaUsage, usageCost } from './ai-quota.se
 import { gatewayBaseAllowed, isAllowedRoute, routePolicyMessage } from '../catalog/model-route-policy';
 import { TenantAiKeyService } from './tenant-ai-key.service';
 import { LIMIT_MESSAGES } from './limit-messages';
+import type { OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
 
 export type OmniRouterInput = {
   agent: { id: string; tenantId: string; systemPrompt?: string | null; temperature: unknown; maxTokens: number; advancedReasoning: boolean };
@@ -19,6 +20,8 @@ export type OmniRouterInput = {
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
   quotaScope: QuotaScope;
+  /** Optimization settings from SGDM (or the defaults), read once per call by the gateway. */
+  optimization: OtimizacaoEfetiva;
 };
 
 export type OmniRouterAnswer = {
@@ -35,6 +38,7 @@ type ChatRound = { content: string; calls: ChatToolCall[]; finishReason: string;
 type UsageReporter = (usage: QuotaUsage) => Promise<void>;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_FRAME_BYTES = 256 * 1024;
+export const OUTPUT_LIMIT_MESSAGE = 'A resposta passou do limite de tamanho definido pela plataforma para este agente. Peça uma resposta mais curta ou fale com o administrador.';
 /** Bounded input estimate per attached image, above what current vision models bill for one image. */
 export const IMAGE_TOKEN_ALLOWANCE = 16_384;
 
@@ -155,7 +159,7 @@ export class OmniRouterService {
       inputTokens += generated.usage.inputTokens; outputTokens += generated.usage.outputTokens; measured = measured && generated.usage.measured;
       cost = Number((cost + usageCost(input.quotaScope, generated.usage).cost).toFixed(6));
       if (inputTokens > 2_147_483_647 || outputTokens > 2_147_483_647) throw protocolError('O consumo acumulado do OmniRouter excedeu o limite permitido.');
-      this.validateFinish(generated);
+      this.validateFinish(generated, input);
       if (!generated.calls.length) {
         const answer = generated.content.trim();
         if (!answer) throw protocolError('O OmniRouter retornou uma resposta sem texto.');
@@ -216,7 +220,8 @@ export class OmniRouterService {
           !/^[A-Za-z0-9+/]+={0,2}$/.test(image.dataUrl.slice(image.dataUrl.indexOf(',') + 1))) {
         throw new BadRequestException('O anexo de imagem deve possuir conteúdo PNG, JPEG ou WEBP válido.');
       }
-      return { type: 'image_url', image_url: { url: image.dataUrl, detail: 'auto' } };
+      // "Baixa" = detail low; "alta" = auto (the provider decides, as before this setting existed).
+      return { type: 'image_url', image_url: { url: image.dataUrl, detail: input.optimization.imagensBaixa.ligado ? 'low' : 'auto' } };
     });
     return [{ type: 'text', text: input.message }, ...images];
   }
@@ -233,7 +238,10 @@ export class OmniRouterService {
     ];
   }
 
-  private async round(endpoint: string, apiKey: string, request: unknown, input: OmniRouterInput, record: UsageReporter, providerKey?: string): Promise<ChatRound> {
+  private async round(endpoint: string, apiKey: string, request: unknown, input: OmniRouterInput, report: UsageReporter, providerKey?: string): Promise<ChatRound> {
+    // Every round resends the user's images, so each ai_usage row carries the request's image count and detail.
+    const images = input.images?.length ?? 0; const low = input.optimization.imagensBaixa.ligado;
+    const record: UsageReporter = usage => report({ ...usage, lowDetailImages: low ? images : 0, highDetailImages: low ? 0 : images });
     const timeout = AbortSignal.timeout(60000);
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
     try {
@@ -260,6 +268,10 @@ export class OmniRouterService {
       const rawCost = response.headers.get('x-litellm-response-cost')?.trim();
       const gatewayCost = rawCost && /^\d+(\.\d+)?(e[+-]?\d+)?$/i.test(rawCost) ? Number(rawCost) : undefined;
       if (gatewayCost !== undefined && Number.isFinite(gatewayCost) && usage.measured) usage.gatewayCost = gatewayCost;
+      // Peek at the finish reason before recording, so a response cut by the token cap is marked truncated;
+      // the full choice validation still happens below, after the paid usage is safely recorded.
+      const peeked = Array.isArray(payload.choices) ? object(payload.choices[0])?.finish_reason : undefined;
+      usage.truncated = peeked === 'length';
       await record(usage);
       const choices = payload.choices;
       if (!Array.isArray(choices) || choices.length !== 1) throw protocolError();
@@ -306,8 +318,11 @@ export class OmniRouterService {
     return Object.assign(error, { providerStatus: status });
   }
 
-  private validateFinish(round: ChatRound): void {
-    if (round.finishReason === 'length') throw protocolError('O OmniRouter encerrou uma resposta incompleta por limite de tokens. Aumente o limite de resposta do agente.');
+  private validateFinish(round: ChatRound, input: OmniRouterInput): void {
+    if (round.finishReason === 'length') {
+      // With the platform's output cap on, the user is told the cap (not the agent setting) cut the answer.
+      throw protocolError(input.optimization.limiteSaida.ligado ? OUTPUT_LIMIT_MESSAGE : 'O OmniRouter encerrou uma resposta incompleta por limite de tokens. Aumente o limite de resposta do agente.');
+    }
     if (round.finishReason === 'content_filter') throw protocolError('O OmniRouter interrompeu a resposta por restrições do modelo.');
     if (!['stop', 'tool_calls'].includes(round.finishReason) || (round.finishReason === 'tool_calls') !== Boolean(round.calls.length)) {
       throw protocolError('O OmniRouter encerrou a resposta sem uma confirmação de conclusão válida.');
@@ -426,6 +441,7 @@ export class OmniRouterService {
       }
       signal.throwIfAborted();
       if (!done || !finishReason || buffer.trim()) throw protocolError('O stream do OmniRouter terminou sem confirmação de conclusão. Nenhuma resposta parcial foi salva.');
+      usage.truncated = finishReason === 'length';
       await record(usage);
       const parsedCalls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => functionCall({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }));
       return { content, calls: parsedCalls, finishReason, usage };

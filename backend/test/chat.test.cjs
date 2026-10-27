@@ -3,6 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 require('reflect-metadata');
 const { AiGatewayService, calculateUsageCost } = require('../dist/ai/ai-gateway.service');
+const { OmniRouterService } = require('../dist/ai/omnirouter.service');
+const { OPTIMIZATION_DEFAULTS } = require('../dist/sgdm/optimization-defaults');
 
 const selectedModel = { id: 'model-primary', slug: 'gpt-4o-mini', inputPrice: 0.15, outputPrice: 0.60, provider: { name: 'OpenAI', slug: 'openai', config: null } };
 function fixture() {
@@ -190,4 +192,31 @@ test('OmniRouter path: cached tokens fall back to the input price and the respon
     assert.equal(scope.kind, 'resposta');
     assert.equal(result.usage.cost, calculateUsageCost(100, 10, 0.15, 0.60, 60, 0.15));
   } finally { delete process.env.OMNIROUTER_BASE_URL; }
+});
+
+test('limite de saída do agente vira teto do max_tokens; sem limite vale o maxTokens do agente', async () => {
+  for (const [limiteSaida, expected] of [[{ ligado: true, tokens: 1024 }, 1024], [{ ligado: false, tokens: 1024 }, 4000], [{ ligado: true, tokens: null }, 4000]]) {
+    const { prisma, records, agent } = fixture(); agent.maxTokens = 4000; agent.models[1].model.slug = 'openai/gpt-4o-mini';
+    const quota = quotaFixture(prisma, records);
+    const optimization = { calls: [], effective: async (...args) => { optimization.calls.push(args); return { ...JSON.parse(JSON.stringify(OPTIMIZATION_DEFAULTS)), limiteSaida }; } };
+    const omni = new OmniRouterService({ execute: async () => { throw new Error('sem ferramentas'); } }, quota);
+    const service = new AiGatewayService(prisma, { searchForAgent: async () => [] }, { load: async () => [] }, quota, undefined, omni, undefined, optimization);
+    process.env.NODE_ENV = 'test'; process.env.OMNIROUTER_BASE_URL = 'https://omni.invalid/v1'; process.env.OMNIROUTER_API_KEY = 'synthetic-fixture';
+    let request;
+    global.fetch = async (_url, options) => {
+      request = JSON.parse(options.body);
+      return new Response(JSON.stringify({ choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Resposta.' } }], usage: { prompt_tokens: 10, completion_tokens: 2 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    await service.chat('agent-a', 'tenant-a', { message: 'Resuma' }, 'user-a');
+    assert.equal(request.max_tokens, expected);
+    assert.deepEqual(optimization.calls, [['tenant-a', 'agent-a']]);
+  }
+});
+
+test('sem o serviço de otimizações o chat segue com os padrões (sem teto de saída)', async () => {
+  const { service, agent } = fixture(); agent.maxTokens = 4000; let request;
+  process.env.OPENAI_API_KEY = 'test-key-never-sent';
+  global.fetch = async (_url, options) => { request = JSON.parse(options.body); return providerResponse(); };
+  await service.chat('agent-a', 'tenant-a', { message: 'Qual o orçamento?' }, 'user-a');
+  assert.equal(request.max_output_tokens, 4000);
 });

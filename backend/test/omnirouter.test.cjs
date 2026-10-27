@@ -4,6 +4,7 @@ const http = require('node:http');
 require('reflect-metadata');
 const { OmniRouterService } = require('../dist/ai/omnirouter.service');
 const { quotaFixture } = require('./helpers/quota-fixture.cjs');
+const { OPTIMIZATION_DEFAULTS } = require('../dist/sgdm/optimization-defaults');
 
 const envKeys = ['OMNIROUTER_BASE_URL', 'OMNIROUTER_API_KEY', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
@@ -40,7 +41,7 @@ function fixture(functions = []) {
     model: { slug: 'openai/model-from-catalog', capabilities: null, provider: { config: null } },
     instructions: 'Responda em português. O agente é um analista administrativo.',
     message: 'Analise o orçamento.', history: [{ role: 'user', content: 'Contexto anterior' }, { role: 'assistant', content: 'Resposta anterior' }],
-    functions, userId: 'user-a', origin: 'i7ai-chat',
+    functions, userId: 'user-a', origin: 'i7ai-chat', optimization: JSON.parse(JSON.stringify(OPTIMIZATION_DEFAULTS)),
     quotaScope: quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cacheWriteInputPrice: 0, kind: 'resposta' }),
   };
   return { service: new OmniRouterService(runtime, quota), input, records, quota, runtime, prisma };
@@ -131,7 +132,7 @@ test('model capabilities explicitly gate images, tools and sampling; unsupported
   input.model.capabilities = { supportsVision: true, supportsTemperature: true, contextWindow: 8192 };
   await service.generate(input);
   assert.equal(local.requests[0].body.temperature, 0.2);
-  assert.deepEqual(local.requests[0].body.messages.at(-1).content, [{ type: 'text', text: input.message }, { type: 'image_url', image_url: { url: input.images[0].dataUrl, detail: 'auto' } }]);
+  assert.deepEqual(local.requests[0].body.messages.at(-1).content, [{ type: 'text', text: input.message }, { type: 'image_url', image_url: { url: input.images[0].dataUrl, detail: 'low' } }]);
   input.agent.advancedReasoning = true; input.model.capabilities.supportsReasoning = true;
   await assert.rejects(service.generate(input), /contrato validado/);
   input.agent.advancedReasoning = false; input.model.capabilities.supportsVision = false;
@@ -644,3 +645,46 @@ test('recusas do LiteLLM por limite da prefeitura viram 429 com mensagem clara, 
     userMinute: 'Você atingiu o seu limite de uso de IA por minuto. Aguarde um instante e tente novamente.',
   });
 });
+
+test('imagens em baixa: detail low e lowDetailImages; desligado: detail auto e highDetailImages', async t => {
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  for (const [ligado, detail, low, high] of [[true, 'low', 1, 0], [false, 'auto', 0, 1]]) {
+    const { service, input, records } = fixture();
+    input.model.capabilities = { supportsVision: true, contextWindow: 8192 };
+    input.images = [{ name: 'foto.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,aGVsbG8=' }];
+    input.optimization.imagensBaixa.ligado = ligado;
+    await service.generate(input);
+    assert.equal(local.requests.at(-1).body.messages.at(-1).content[1].image_url.detail, detail);
+    assert.equal(records.usage[0].lowDetailImages, low); assert.equal(records.usage[0].highDetailImages, high);
+  }
+});
+
+test('rounds without images record zero image counts and truncated false', async t => {
+  const { service, input, records } = fixture();
+  await provider(t, (_body, response) => json(response, completion()));
+  await service.generate(input);
+  assert.equal(records.usage[0].lowDetailImages, 0); assert.equal(records.usage[0].highDetailImages, 0); assert.equal(records.usage[0].truncated, false);
+});
+
+const LIMIT_MESSAGE = 'A resposta passou do limite de tamanho definido pela plataforma para este agente. Peça uma resposta mais curta ou fale com o administrador.';
+for (const streaming of [false, true]) {
+  test(`${streaming ? 'stream' : 'JSON'}: finish_reason length com limite de saída ligado dá a mensagem nova e grava truncated`, async t => {
+    const { service, input, records } = fixture();
+    input.optimization.limiteSaida = { ligado: true, tokens: 500 };
+    if (streaming) input.onDelta = () => {};
+    await provider(t, (_body, response) => streaming
+      ? sse(response, [frame(chunk({ content: 'Parcial' })), frame(chunk({}, 'length')), frame({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 500 } }), frame('[DONE]')])
+      : json(response, completion('Parcial', { finishReason: 'length', usage: { prompt_tokens: 20, completion_tokens: 500 } })));
+    await assert.rejects(service.generate(input), error => { assert.equal(error.message, LIMIT_MESSAGE); return true; });
+    assert.equal(records.usage[0].truncated, true); assert.equal(records.usage[0].usageMeasured, true);
+  });
+  test(`${streaming ? 'stream' : 'JSON'}: finish_reason length sem limite de saída mantém a mensagem de hoje e também grava truncated`, async t => {
+    const { service, input, records } = fixture();
+    if (streaming) input.onDelta = () => {};
+    await provider(t, (_body, response) => streaming
+      ? sse(response, [frame(chunk({ content: 'Parcial' })), frame(chunk({}, 'length')), frame({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 500 } }), frame('[DONE]')])
+      : json(response, completion('Parcial', { finishReason: 'length' })));
+    await assert.rejects(service.generate(input), /Aumente o limite de resposta do agente/);
+    assert.equal(records.usage[0].truncated, true);
+  });
+}
