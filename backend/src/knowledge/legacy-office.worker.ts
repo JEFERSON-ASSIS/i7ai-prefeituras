@@ -8,14 +8,17 @@ const MAX_ROWS = 200_000;
 const TOO_BIG = 'A planilha é grande demais para ser lida no chat. Divida em arquivos menores ou salve como .xlsx.';
 
 function readXls(buffer: Buffer): string {
-  const workbook = XLSX.read(buffer, { type: 'buffer', cellFormula: false, cellHTML: false, dense: true, sheetRows: MAX_ROWS });
-  if (workbook.SheetNames.length > MAX_SHEETS) throw new Error(TOO_BIG);
-  for (const name of workbook.SheetNames) {
-    const ref = workbook.Sheets[name]?.['!ref'];
+  // Cheap first pass: sheetRows 1 keeps the declared full range in !fullref without materializing cells.
+  const probe = XLSX.read(buffer, { type: 'buffer', cellFormula: false, cellHTML: false, dense: true, sheetRows: 1 });
+  if (probe.SheetNames.length > MAX_SHEETS) throw new Error(TOO_BIG);
+  for (const name of probe.SheetNames) {
+    const sheet = probe.Sheets[name] as XLSX.WorkSheet & { '!fullref'?: string };
+    const ref = sheet?.['!fullref'] ?? sheet?.['!ref'];
     if (!ref) continue;
     const range = XLSX.utils.decode_range(ref);
     if ((range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1) > MAX_CELLS) throw new Error(TOO_BIG);
   }
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellFormula: false, cellHTML: false, dense: true, sheetRows: MAX_ROWS });
   const lines: string[] = [];
   let chars = 0;
   for (const name of workbook.SheetNames) {
