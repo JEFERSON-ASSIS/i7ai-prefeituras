@@ -187,7 +187,7 @@ async function migrateIsolatedSchema() {
 }
 
 async function seedFixtureCatalogue() {
-  const resources = ['dashboard', 'agents', 'models', 'departments', 'knowledge-bases', 'documents', 'tools', 'conversations', 'automations', 'schedules', 'executions', 'reports', 'users', 'settings', 'licensing'];
+  const resources = ['dashboard', 'agents', 'models', 'departments', 'knowledge-bases', 'documents', 'tools', 'conversations', 'automations', 'schedules', 'executions', 'reports', 'users', 'settings'];
   for (const name of ['ADMIN', 'VISUALIZADOR']) {
     const role = await prisma.role.create({ data: { name } });
     for (const resource of resources) for (const action of name === 'ADMIN' ? ['read', 'write', 'execute'] : ['read']) {
@@ -335,7 +335,6 @@ async function verifyFlows() {
   assert.equal(gatewayCalls.length, 5, 'Somente cinco chamadas ao provedor local simulado'); assert.ok(gatewayCalls.every(call => !call.authorization && ['integration-fixture-model', 'integration-claude-fixture'].includes(call.input.model)));
   const dashboard = await request('/dashboard', a.token); expectStatus(dashboard, 200, 'Dashboard'); assert.equal(dashboard.data.agents, 1); assert.equal(dashboard.data.requests, gatewayCalls.length);
   const audit = await request('/audit', a.token); expectStatus(audit, 200, 'Auditoria'); assert.ok(audit.data.some(item => item.event === 'agent.chat_completed'));
-  const license = await request('/licensing', a.token); expectStatus(license, 200, 'Licenciamento'); assert.equal(license.data.usage.agents, 1);
   const users = await request('/users', a.token); assert.ok(users.data.every(user => !('passwordHash' in user)));
   const viewer = await prisma.role.findUnique({ where: { name: 'VISUALIZADOR' } });
   await prisma.userRole.deleteMany({ where: { userId: a.user.id } }); await prisma.userRole.create({ data: { userId: a.user.id, roleId: viewer.id } });

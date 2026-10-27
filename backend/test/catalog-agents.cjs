@@ -161,11 +161,6 @@ test('agent create denies a foreign department without creating an agent', async
   assert.equal(writes, 0);
 });
 
-test('license limits cannot be increased by a tenant admin', async () => {
-  const service = new CatalogService({ userRole: { findFirst: async () => null } });
-  await assert.rejects(service.updateLicense('tenant-a', { maxUsers: 100000 }, 'ordinary-admin'), /Somente SUPER_ADMIN/);
-});
-
 test('user listing selects no password hash', async () => {
   const service = new CatalogService({ user: { findMany: async (query) => { assert.equal(query.where.tenantId, 'tenant-a'); assert.equal(query.select.passwordHash, undefined); return []; } } });
   assert.deepEqual(await service.users('tenant-a'), []);

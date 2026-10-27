@@ -1,7 +1,6 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { LicenseDto } from './catalog.dto';
 import { publicModelCapabilities } from './model-capabilities';
 import { SgdmAccessService } from '../sgdm/sgdm-access.service';
 import { DEFAULT_TIMEZONE } from './tenant-settings';
@@ -11,12 +10,6 @@ const userSelect = {
   lastAccessAt: true, createdAt: true, updatedAt: true, department: true,
   roles: { include: { role: { include: { permissions: { include: { permission: true } } } } } },
 } satisfies Prisma.UserSelect;
-
-function largeInteger(value: string | undefined, field: string): bigint | undefined {
-  if (value === undefined) return undefined;
-  if (!/^\d{1,19}$/.test(value) || BigInt(value) > 9223372036854775807n) throw new BadRequestException(`${field} deve ser um inteiro positivo`);
-  return BigInt(value);
-}
 
 function providerMetadata(provider: { id: string; name: string; slug: string; config?: Prisma.JsonValue }) {
   const config = provider.config && typeof provider.config === 'object' && !Array.isArray(provider.config) ? provider.config as Record<string, unknown> : {};
@@ -84,36 +77,4 @@ export class CatalogService {
   }
   users(tenantId: string) { return this.prisma.user.findMany({ where: { tenantId }, select: userSelect, orderBy: { name: 'asc' } }); }
   roles() { return this.prisma.role.findMany({ include: { permissions: { include: { permission: true } } }, orderBy: { name: 'asc' } }); }
-
-  async licensing(tenantId: string) {
-    const [license, users, agents, automations, knowledgeBases, storage, usage] = await Promise.all([
-      this.prisma.license.findFirst({ where: { tenantId }, orderBy: { createdAt: 'desc' } }),
-      this.prisma.user.count({ where: { tenantId, status: { not: 'SUSPENDED' } } }), this.prisma.agent.count({ where: { tenantId, status: { not: 'ARCHIVED' } } }),
-      this.prisma.automation.count({ where: { tenantId, status: { not: 'ARCHIVED' } } }), this.prisma.knowledgeBase.count({ where: { tenantId } }),
-      this.prisma.document.aggregate({ where: { tenantId }, _sum: { sizeBytes: true } }),
-      this.prisma.aiUsage.aggregate({ where: { tenantId, createdAt: { gte: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)) } }, _sum: { inputTokens: true, outputTokens: true } }),
-    ]);
-    const month = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
-    const from = license && license.startDate > month ? license.startDate : month;
-    const reservations = await this.prisma.aiTokenReservation.aggregate({ where: { tenantId, createdAt: { gte: from }, status: { in: ['RESERVED', 'UNCERTAIN'] } }, _sum: { reservedTokens: true } });
-    return { license: license ? { ...license, maxStorageBytes: license.maxStorageBytes.toString(), maxTokens: license.maxTokens.toString() } : null,
-      usage: { users, agents, automations, knowledgeBases, reservedTokens: (reservations._sum.reservedTokens || 0n).toString(), storageBytes: (storage._sum.sizeBytes ?? 0n).toString(), tokensThisMonth: (BigInt(usage._sum.inputTokens ?? 0) + BigInt(usage._sum.outputTokens ?? 0)).toString() } };
-  }
-
-  async updateLicense(tenantId: string, input: LicenseDto, actorId: string) {
-    if (!await this.prisma.userRole.findFirst({ where: { userId: actorId, user: { tenantId, status: 'ACTIVE' }, role: { name: 'SUPER_ADMIN' } } })) throw new ForbiddenException('Somente SUPER_ADMIN pode alterar limites de licença');
-    if (input.features && Object.values(input.features).some((value) => typeof value !== 'boolean')) throw new BadRequestException('Recursos devem ser booleanos');
-    await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(Prisma.sql`SELECT id FROM tenants WHERE id = ${tenantId}::uuid FOR UPDATE`);
-      const existing = await tx.license.findFirst({ where: { tenantId }, orderBy: { createdAt: 'desc' } });
-      const startDate = input.startDate ? new Date(input.startDate) : existing?.startDate;
-      const endDate = input.endDate === null ? null : input.endDate ? new Date(input.endDate) : existing?.endDate;
-      if (startDate && endDate && endDate <= startDate) throw new BadRequestException('Fim da licença deve ser posterior ao início');
-      const data = { status: input.status, startDate, endDate, maxUsers: input.maxUsers, maxAgents: input.maxAgents, maxAutomations: input.maxAutomations, maxKnowledgeBases: input.maxKnowledgeBases,
-        maxStorageBytes: largeInteger(input.maxStorageBytes, 'maxStorageBytes'), maxTokens: largeInteger(input.maxTokens, 'maxTokens'), features: input.features as Prisma.InputJsonObject | undefined };
-      const license = existing ? await tx.license.update({ where: { id: existing.id }, data }) : await tx.license.create({ data: { tenantId, ...data } });
-      await tx.auditLog.create({ data: { tenantId, userId: actorId, event: existing ? 'license.updated' : 'license.created', resource: 'licensing', resourceId: license.id, metadata: { status: license.status } } });
-    });
-    return this.licensing(tenantId);
-  }
 }

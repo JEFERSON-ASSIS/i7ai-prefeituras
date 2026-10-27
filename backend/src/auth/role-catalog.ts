@@ -1,12 +1,12 @@
 // Same rules as scripts/permissions.cjs (provisioning and seed); a test keeps both in sync.
 export const ROLE_NAMES = ['ADMIN', 'CONSTRUTOR', 'GESTOR', 'USUARIO', 'VISUALIZADOR'] as const;
-export const RESOURCES = ['dashboard', 'agents', 'models', 'departments', 'knowledge-bases', 'documents', 'tools', 'conversations', 'automations', 'schedules', 'executions', 'reports', 'users', 'settings', 'licensing'] as const;
+export const RESOURCES = ['dashboard', 'agents', 'models', 'departments', 'knowledge-bases', 'documents', 'tools', 'conversations', 'automations', 'schedules', 'executions', 'reports', 'users', 'settings'] as const;
 
 export function permissionEntries(roleName: string): { resource: string; action: string }[] {
   if (![...ROLE_NAMES, 'SUPER_ADMIN'].includes(roleName as never)) throw new Error('Perfil de provisionamento inválido.');
   return RESOURCES.flatMap((resource) => {
     const actions = ['ADMIN', 'SUPER_ADMIN'].includes(roleName) ? ['read', 'write', 'execute']
-      : roleName === 'CONSTRUTOR' ? (['users', 'settings', 'licensing'].includes(resource) ? ['read'] : ['read', 'write', 'execute'])
+      : roleName === 'CONSTRUTOR' ? (['users', 'settings'].includes(resource) ? ['read'] : ['read', 'write', 'execute'])
       : roleName === 'GESTOR' ? ['read', 'execute']
       : roleName === 'USUARIO' ? (['dashboard', 'agents', 'models', 'conversations'].includes(resource) ? ['read', 'execute', ...(resource === 'conversations' ? ['write'] : [])] : [])
       : ['read'];

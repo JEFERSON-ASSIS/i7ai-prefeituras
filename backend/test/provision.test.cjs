@@ -91,7 +91,7 @@ test('existing role policy and model prices remain untouched', async () => {
   assert.deepEqual(state.rolePermissions.filter((binding) => binding.roleId === 'custom-admin-role'), [{ roleId: 'custom-admin-role', permissionId: 'custom-permission' }]);
   assert.deepEqual(state.model, existingModel);
   assert.equal(state.permissions.some((permission) => permission.resource === 'users' && permission.action === 'write'), false);
-  assert.equal(state.permissions.some((permission) => permission.resource === 'licensing' && permission.action === 'write'), false);
+  assert.equal(state.permissions.some((permission) => permission.resource === 'licensing'), false);
 });
 
 test('empty production database receives limited profiles with locked creation and only ADMIN assigned', async () => {
@@ -121,7 +121,8 @@ test('an existing admin cannot be moved from another tenant; transaction rolls b
 test('shared permission mapping keeps limited profiles from editing users or licenses', () => {
   const builder = permissionEntries('CONSTRUTOR');
   assert.equal(builder.some((permission) => permission.resource === 'users' && permission.action === 'write'), false);
-  assert.equal(builder.some((permission) => permission.resource === 'licensing' && permission.action === 'write'), false);
+  assert.equal(builder.some((permission) => permission.resource === 'licensing'), false);
+  for (const role of ['ADMIN', 'SUPER_ADMIN']) assert.equal(permissionEntries(role).some((permission) => permission.resource === 'licensing'), false, role);
   const user = permissionEntries('USUARIO');
   assert.equal(user.some((permission) => permission.resource === 'conversations' && permission.action === 'write'), true);
   assert.equal(user.some((permission) => permission.resource === 'automations'), false);

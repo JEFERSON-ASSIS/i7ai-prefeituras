@@ -5,6 +5,7 @@ import { gatewayBaseAllowed } from '../catalog/model-route-policy';
 import { assertLicenseCapacity } from '../catalog/license-policy';
 import { SGDM_MANAGED_ROLES, permissionEntries, rolesFromSgdm } from './role-catalog';
 import { SgdmOrganizationService, departmentExternalIdFor } from '../sgdm/sgdm-organization.service';
+import { SgdmLicenseService } from '../sgdm/sgdm-license.service';
 
 export type SgdmIdentity = { id: string; tenantId: string; email: string; name: string; tenantName: string; roles: string[] };
 
@@ -22,7 +23,11 @@ export class SgdmIdentityService {
   private readonly logger = new Logger(SgdmIdentityService.name);
   private readonly cache = new Map<string, { expires: number; identity: SgdmIdentity }>();
 
-  constructor(private readonly prisma: PrismaService, @Optional() private readonly organization?: SgdmOrganizationService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly organization?: SgdmOrganizationService,
+    @Optional() private readonly licenses?: SgdmLicenseService,
+  ) {}
 
   enabled(env: NodeJS.ProcessEnv = process.env) {
     return Boolean(env.SGDM_API_URL?.trim());
@@ -103,6 +108,9 @@ export class SgdmIdentityService {
   }
 
   private async sync(identity: SgdmIdentity) {
+    // Read outside the transaction: a slow SGDM must not hold a database transaction open.
+    // undefined (integration off or SGDM down) keeps the current license; the login never fails on it.
+    const license = this.licenses ? await this.licenses.fetch(identity.tenantId) : undefined;
     await this.prisma.$transaction(async (tx) => {
       // i7Ai may suspend a prefeitura or user locally (license); SGDM never reactivates them.
       await tx.tenant.upsert({
@@ -110,6 +118,8 @@ export class SgdmIdentityService {
         create: { id: identity.tenantId, name: identity.tenantName, slug: 'sgdm-' + identity.tenantId, status: 'ACTIVE' },
         update: { name: identity.tenantName },
       });
+      // Same transaction (no self-lock): a new user below is already counted against the SGDM license.
+      if (license !== undefined) await this.licenses!.apply(tx, identity.tenantId, license);
       const emailOwner = await tx.user.findUnique({ where: { email: identity.email }, select: { id: true } });
       if (emailOwner && emailOwner.id !== identity.id) throw new UnauthorizedException('O e-mail deste usuário do SGDM já pertence a outro cadastro no i7Ai. Ajuste o cadastro antigo.');
       const existing = await tx.user.findUnique({ where: { id: identity.id }, select: { tenantId: true, status: true, name: true, email: true } });

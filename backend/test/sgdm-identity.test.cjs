@@ -4,6 +4,7 @@ const http = require('node:http');
 require('reflect-metadata');
 const { SgdmIdentityService } = require('../dist/auth/sgdm-identity.service');
 const { SgdmOrganizationService } = require('../dist/sgdm/sgdm-organization.service');
+const { SgdmLicenseService } = require('../dist/sgdm/sgdm-license.service');
 const { JwtAuthGuard } = require('../dist/auth/jwt-auth.guard');
 const roleCatalog = require('../dist/auth/role-catalog');
 const scriptCatalog = require('../scripts/permissions.cjs');
@@ -34,7 +35,7 @@ async function sgdm(t, respond) {
 
 // In-memory stand-in for the Prisma calls used by the sync.
 function database({ users = [], licenses = [], departments = [] } = {}) {
-  const db = { tenants: [], users: users.map(item => ({ ...item })), departments: departments.map(item => ({ ...item })), roles: [], permissions: [], rolePermissions: [], userRoles: [], audits: [] };
+  const db = { tenants: [], users: users.map(item => ({ ...item })), departments: departments.map(item => ({ ...item })), roles: [], permissions: [], rolePermissions: [], userRoles: [], audits: [], licenses: licenses.map(item => ({ ...item })) };
   let id = 0;
   const next = () => 'id-' + (++id);
   const tx = {
@@ -60,7 +61,11 @@ function database({ users = [], licenses = [], departments = [] } = {}) {
       },
       findUnique: async ({ where }) => db.departments.find(item => item.tenantId === where.tenantId_externalId.tenantId && item.externalId === where.tenantId_externalId.externalId) || null,
     },
-    license: { findFirst: async () => licenses[0] || null },
+    license: {
+      findFirst: async ({ where }) => [...db.licenses].filter(item => item.tenantId === undefined || item.tenantId === where.tenantId).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0] || null,
+      create: async ({ data }) => { const row = { id: next(), createdAt: new Date(), ...data }; db.licenses.push(row); return row; },
+      update: async ({ where, data }) => Object.assign(db.licenses.find(item => item.id === where.id), data),
+    },
     user: {
       findUnique: async ({ where }) => db.users.find(item => (where.id && item.id === where.id) || (where.email && item.email === where.email)) || null,
       create: async ({ data }) => { db.users.push({ ...data }); return data; },
@@ -246,4 +251,34 @@ test('the department is written only when it changes', async t => {
   prisma.user.update = async query => { if ('departmentId' in query.data) departmentWrites++; return update(query); };
   await new SgdmIdentityService(prisma, new SgdmOrganizationService(prisma)).resolve(token());
   assert.equal(departmentWrites, 0);
+});
+
+const licenca = (extra = {}) => ({ status: 'ACTIVE', startDate: '2026-01-01T03:00:00.000Z', endDate: null, maxUsers: 10, maxAgents: 10, maxAutomations: 10, maxKnowledgeBases: 10, maxStorageBytes: '10737418240', maxTokens: '1000000', ...extra });
+// Fake SGDM answering /auth/me and the license contract of `GET /integracoes/i7ai/licenca/:tenantId`.
+async function sgdmWithLicense(t, license) {
+  const calls = await sgdm(t, (_, url) => url.includes('/integracoes/i7ai/licenca/') ? license() : [200, me(['I7AI_USAR'])]);
+  process.env.SGDM_INTEGRATION_KEY = 'integration-secret';
+  process.env.SGDM_SESSION_CACHE_SECONDS = '0';
+  return calls;
+}
+
+test('a new prefeitura gets the SGDM license at login and its user limit applies to JIT users', async t => {
+  const calls = await sgdmWithLicense(t, () => [200, { licenca: licenca({ maxUsers: 1 }) }]);
+  const other = { id: '44444444-4444-4444-8444-444444444444', tenantId: TENANT, email: 'outro@prefeitura.gov.br', name: 'Outro', status: 'ACTIVE' };
+  const { db, prisma } = database({ users: [other] });
+  await assert.rejects(new SgdmIdentityService(prisma, undefined, new SgdmLicenseService(prisma)).resolve(token()), /Limite de usuários da licença atingido/);
+  assert.ok(calls.some(call => call.url === `/api/v1/integracoes/i7ai/licenca/${TENANT}` && call.auth === 'Bearer integration-secret'));
+  assert.equal(db.users.length, 1);
+});
+
+test('SGDM license endpoint down: the login completes with the local license', async t => {
+  await sgdmWithLicense(t, () => [500, { message: 'boom' }]);
+  const local = { id: 'local', tenantId: TENANT, status: 'ACTIVE', startDate: new Date(0), endDate: null, maxUsers: 10, createdAt: new Date('2026-01-01') };
+  const { db, prisma } = database({ licenses: [local] });
+  const licenses = new SgdmLicenseService(prisma);
+  licenses.logger = { warn: () => {} };
+  const identity = await new SgdmIdentityService(prisma, undefined, licenses).resolve(token());
+  assert.equal(identity.id, USER);
+  assert.equal(db.users.length, 1);
+  assert.deepEqual(db.licenses, [local]);
 });

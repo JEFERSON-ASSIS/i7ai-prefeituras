@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { CatalogService } = require('../dist/catalog/catalog.service');
 const { CatalogController } = require('../dist/catalog/catalog.controller');
-const dto = require('../dist/catalog/catalog.dto');
+const { existsSync } = require('node:fs');
 
 const providerId = '00000000-0000-4000-8000-000000000010';
 const modelId = '00000000-0000-4000-8000-000000000011';
@@ -13,7 +13,8 @@ test('Modelos é só leitura: não há rotas nem métodos de escrita de modelos'
   assert.equal(typeof CatalogController.prototype.updateModel, 'undefined');
   assert.equal(typeof CatalogService.prototype.createModel, 'undefined');
   assert.equal(typeof CatalogService.prototype.updateModel, 'undefined');
-  for (const name of ['CreateModelDto', 'UpdateModelDto', 'ModelCapabilitiesDto']) assert.equal(dto[name], undefined);
+  // The catalog no longer has any write DTO (models, users, departments, settings, license): the file is gone.
+  assert.equal(existsSync(require('node:path').join(__dirname, '../src/catalog/catalog.dto.ts')), false);
   const routes = Object.getOwnPropertyNames(CatalogController.prototype)
     .map(name => [Reflect.getMetadata('path', CatalogController.prototype[name]), Reflect.getMetadata('method', CatalogController.prototype[name])])
     .filter(([path]) => typeof path === 'string' && path.startsWith('models'));

@@ -85,20 +85,10 @@ test('tool creation and update audits omit configuration, body and credential re
   assert.ok(!/private|secret|Authorization/i.test(JSON.stringify(f.state().audits)));
 });
 
-test('license creation and update audit the platform administrator and affected license', async () => {
-  const f = fixture();
-  await f.catalog.updateLicense(tenantId, { status: 'ACTIVE', startDate: '2020-01-01T00:00:00.000Z' }, actorId);
-  const id = f.state().licenses[0].id;
-  await f.catalog.updateLicense(tenantId, { maxUsers: 10 }, actorId);
-  assertAudit(f.state().audits[0], 'license.created', 'licensing', id);
-  assertAudit(f.state().audits[1], 'license.updated', 'licensing', id);
-});
-
 test('audit write failure rejects each mutation and rolls back its transaction', async () => {
   const mutations = [
     f => f.agents.create(tenantId, { name: 'Agent', status: 'ARCHIVED', systemPrompt: 'Help' }, actorId),
     f => f.tools.create(tenantId, { name: 'Tool', type: 'HTTP_REQUEST', allowedDomains: ['example.test'], config: { endpoint: 'https://example.test' } }, actorId),
-    f => f.catalog.updateLicense(tenantId, { status: 'ACTIVE' }, actorId),
   ];
   for (const mutate of mutations) {
     const f = fixture({ auditFailure: true, seededRoles: ['old-role'] }); const before = structuredClone(f.state());
@@ -110,12 +100,18 @@ test('audit write failure rejects each mutation and rolls back its transaction',
 test('controllers pass authenticated actor IDs to every audited CRUD mutation', () => {
   const req = { user: { tenantId, sub: actorId } }, calls = [];
   const spy = new Proxy({}, { get: (_, operation) => (...args) => calls.push({ operation, args }) });
-  const agents = new AgentsController(spy), tools = new ToolsController(spy), catalog = new CatalogController(spy);
+  const agents = new AgentsController(spy), tools = new ToolsController(spy);
   agents.create(req, {}); agents.update(req, 'agent', {});
   tools.create(req, {}); tools.update(req, 'tool', {});
-  catalog.updateLicense(req, {});
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 4);
   for (const { args } of calls) { assert.equal(args[0], tenantId); assert.equal(args.at(-1), actorId); }
+});
+
+test('the license comes from SGDM: i7Ai no longer reads or writes it through /licensing', () => {
+  for (const name of ['licensing', 'updateLicense']) {
+    assert.equal(CatalogController.prototype[name], undefined, 'controller ' + name);
+    assert.equal(CatalogService.prototype[name], undefined, 'service ' + name);
+  }
 });
 
 test('users, departments and settings come from SGDM: their write handlers no longer exist', () => {
@@ -126,12 +122,13 @@ test('users, departments and settings come from SGDM: their write handlers no lo
     assert.equal(CatalogService.prototype[name], undefined, 'service ' + name);
   }
   assert.equal(CatalogService.prototype.validateUserRelations, undefined);
-  const routes = Object.getOwnPropertyNames(CatalogController.prototype)
+  const routes = Object.getOwnPropertyNames(CatalogController.prototype).filter(name => name !== 'constructor')
     .map(name => CatalogController.prototype[name])
     .filter(handler => typeof handler === 'function' && Reflect.getMetadata(PATH_METADATA, handler) !== undefined)
     .map(handler => RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)] + ' ' + Reflect.getMetadata(PATH_METADATA, handler));
   for (const path of ['settings', 'departments', 'users', 'roles']) assert.ok(routes.includes('GET ' + path), path);
-  for (const route of routes.filter(route => !route.startsWith('GET '))) assert.ok(!/settings|departments|users/.test(route), route);
-  const dto = require('../dist/catalog/catalog.dto');
-  for (const name of ['SettingsDto', 'DepartmentDto', 'UpdateDepartmentDto', 'CreateUserDto', 'UpdateUserDto']) assert.equal(dto[name], undefined, name);
+  assert.deepEqual(routes.filter(route => !route.startsWith('GET ')), []);
+  assert.ok(!routes.some(route => /licensing/.test(route)));
+  // Every write DTO of the catalog is gone, so the file itself is gone.
+  assert.equal(require('node:fs').existsSync(require('node:path').join(__dirname, '../src/catalog/catalog.dto.ts')), false);
 });

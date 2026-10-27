@@ -4,10 +4,16 @@ import { SgdmOrganizationService } from './sgdm-organization.service';
 import { SgdmLimitsService } from './sgdm-limits.service';
 import { SgdmNamesController } from './sgdm-names.controller';
 import { SgdmNamesService } from './sgdm-names.service';
+import { SgdmLicenseService } from './sgdm-license.service';
+import { SgdmLicensesController } from './sgdm-licenses.controller';
 
 /**
  * Single home of the SGDM server-to-server integration. It must not import AuthModule,
  * CatalogModule or AiGatewayModule (they import this one).
  */
-@Module({ controllers: [SgdmNamesController], providers: [SgdmAccessService, SgdmOrganizationService, SgdmNamesService, SgdmLimitsService], exports: [SgdmAccessService, SgdmOrganizationService, SgdmLimitsService] })
+@Module({
+  controllers: [SgdmNamesController, SgdmLicensesController],
+  providers: [SgdmAccessService, SgdmOrganizationService, SgdmNamesService, SgdmLimitsService, SgdmLicenseService],
+  exports: [SgdmAccessService, SgdmOrganizationService, SgdmLimitsService, SgdmLicenseService],
+})
 export class SgdmModule {}
