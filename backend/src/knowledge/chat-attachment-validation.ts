@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { fork, ForkOptions } from 'node:child_process';
 import { extname, join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
-import { DocumentUpload, MIME_BY_EXTENSION, validateDocument } from './document-extractor';
+import { DocumentUpload, MIME_BY_EXTENSION, UNSUPPORTED_ZIP_MESSAGE, validateDocument } from './document-extractor';
 
 export const CHAT_ATTACHMENT_MAX_BYTES = Math.min(20 * 1024 * 1024, Math.max(1024, Number(process.env.CHAT_ATTACHMENT_MAX_BYTES) || 20 * 1024 * 1024));
 export const CHAT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
@@ -165,13 +165,13 @@ export async function validateChatAttachment(file?: DocumentUpload): Promise<{ n
   if (!file.size || !file.buffer.length || file.size !== file.buffer.length) throw new BadRequestException('O arquivo está vazio ou seu tamanho é inválido.');
   if (file.size > CHAT_ATTACHMENT_MAX_BYTES) throw new BadRequestException('O anexo excede o limite de 20 MB.');
   const extension = extname(name).toLowerCase();
-  if (['.xls', '.zip'].includes(extension)) throw new BadRequestException('XLS e ZIP ainda não possuem processamento seguro. Converta a planilha para XLSX ou anexe os arquivos extraídos em um formato suportado.');
+  if (extension === '.zip') throw new BadRequestException(UNSUPPORTED_ZIP_MESSAGE);
   const mimeType = IMAGE_MIME[extension];
   if (!mimeType) {
     if (!file.mimetype) throw new BadRequestException('O tipo MIME do arquivo é obrigatório.');
     const canonical = validateDocument({ ...file, originalname: name });
     if (['.docx', '.xlsx'].includes(extension)) validateOfficeArchive(file.buffer, extension);
-    if (!['.pdf', '.docx', '.xlsx'].includes(extension)) {
+    if (!['.pdf', '.docx', '.xlsx', '.doc', '.xls'].includes(extension)) {
       try {
         const content = new TextDecoder('utf-8', { fatal: true }).decode(file.buffer);
         if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(content)) throw new Error('binary');
@@ -196,5 +196,5 @@ export async function validateChatAttachment(file?: DocumentUpload): Promise<{ n
 }
 
 export function chatAttachmentCapabilities() {
-  return { extensions: [...Object.keys(MIME_BY_EXTENSION), ...Object.keys(IMAGE_MIME)].map(extension => extension.slice(1)), maxFiles: CHAT_ATTACHMENT_MAX_COUNT, maxBytes: CHAT_ATTACHMENT_MAX_BYTES, imageMaxBytes: CHAT_IMAGE_MAX_BYTES, maxPixels: IMAGE_MAX_PIXELS, unsupported: ['xls', 'zip', 'audio', 'video'] };
+  return { extensions: [...Object.keys(MIME_BY_EXTENSION), ...Object.keys(IMAGE_MIME)].map(extension => extension.slice(1)), maxFiles: CHAT_ATTACHMENT_MAX_COUNT, maxBytes: CHAT_ATTACHMENT_MAX_BYTES, imageMaxBytes: CHAT_IMAGE_MAX_BYTES, maxPixels: IMAGE_MAX_PIXELS, unsupported: ['zip', 'audio', 'video'] };
 }

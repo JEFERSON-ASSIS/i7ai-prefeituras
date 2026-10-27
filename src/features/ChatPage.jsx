@@ -22,7 +22,7 @@ const suggestions = [
 function fileIcon(file) {
   const name = file.name?.toLowerCase() || '';
   if (file.mimeType?.startsWith('image/')) return Image;
-  if (/\.(xlsx|csv)$/.test(name)) return FileSpreadsheet;
+  if (/\.(xlsx|xls|csv)$/.test(name)) return FileSpreadsheet;
   return FileText;
 }
 // Model output is untrusted: no raw HTML (react-markdown default) and no remote images.
@@ -224,7 +224,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     for (const file of files) {
       const extension = file.name.split('.').pop().toLowerCase();
       const image = imageExtensions.includes(extension);
-      if (!documentExtensions.includes(extension) && !supportedImages.includes(extension)) { errors.push(file.name + ': formato não suportado. XLS e ZIP ainda não são processados no chat.'); continue; }
+      if (!documentExtensions.includes(extension) && !supportedImages.includes(extension)) { errors.push(file.name + ': formato não suportado. ZIP não é lido no chat; use PDF, Word, Excel, CSV ou texto.'); continue; }
       if (image && !supportsImages) { errors.push(file.name + ': selecione um modelo que permita analisar imagens e tenha a janela de contexto configurada.'); continue; }
       if (!file.size) { errors.push(file.name + ': o arquivo está vazio.'); continue; }
       const limit = image ? Math.min(imageMaxBytes, maxBytes) : maxBytes;

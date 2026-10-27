@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { extname } from 'node:path';
 import * as mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
 import { ocrPdfPages } from './pdf-ocr';
 
 export const DOCUMENT_MAX_BYTES = Math.min(100 * 1024 * 1024, Math.max(1024, Number(process.env.DOCUMENT_MAX_BYTES) || 50 * 1024 * 1024));
@@ -10,7 +11,15 @@ export const MIME_BY_EXTENSION: Record<string, string> = {
   '.json': 'application/json', '.xml': 'application/xml', '.html': 'text/html', '.htm': 'text/html',
   '.pdf': 'application/pdf', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.doc': 'application/msword', '.xls': 'application/vnd.ms-excel',
 };
+const OLE2_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+const LEGACY_XLS_MAX_ROWS = 200_000;
+const LEGACY_PARSE_TIMEOUT_MS = 60_000;
+export const UNSUPPORTED_ZIP_MESSAGE = 'Arquivos .zip não são lidos no chat. Extraia e anexe os arquivos de dentro (PDF, Word, Excel ou texto).';
+export function unsupportedFormatMessage(extension: string) {
+  return `Formato ${extension || '(sem extensão)'} não suportado. Use PDF, Word (.doc/.docx), Excel (.xls/.xlsx), CSV ou texto.`;
+}
 
 export type DocumentUpload = { originalname: string; mimetype: string; size: number; buffer: Buffer };
 
@@ -20,7 +29,7 @@ export function validateDocument(file?: DocumentUpload): string {
   if (file.size > DOCUMENT_MAX_BYTES || file.buffer.length > DOCUMENT_MAX_BYTES) throw new BadRequestException(`O arquivo excede o limite de ${Math.floor(DOCUMENT_MAX_BYTES / 1024 / 1024)} MB.`);
   const extension = extname(file.originalname).toLowerCase();
   const mimeType = MIME_BY_EXTENSION[extension];
-  if (!mimeType) throw new BadRequestException('Formato não suportado. Envie PDF, DOCX, XLSX, TXT, MD, CSV, JSON, XML ou HTML.');
+  if (!mimeType) throw new BadRequestException(extension === '.zip' ? UNSUPPORTED_ZIP_MESSAGE : unsupportedFormatMessage(extension));
   const receivedMime = file.mimetype?.split(';')[0].trim().toLowerCase();
   const aliases: Record<string, string[]> = {
     '.md': ['text/plain'], '.log': ['text/plain'], '.csv': ['text/plain', 'application/vnd.ms-excel'],
@@ -30,7 +39,15 @@ export function validateDocument(file?: DocumentUpload): string {
   if (receivedMime && receivedMime !== 'application/octet-stream' && receivedMime !== mimeType && !aliases[extension]?.includes(receivedMime)) throw new BadRequestException('O tipo MIME não corresponde à extensão do arquivo.');
   if (extension === '.pdf' && !file.buffer.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new BadRequestException('O conteúdo não é um PDF válido.');
   if (['.docx', '.xlsx'].includes(extension) && (file.buffer.length < 4 || file.buffer.readUInt16LE(0) !== 0x4b50)) throw new BadRequestException('O conteúdo não é um documento Office válido.');
+  if (extension === '.doc' && !file.buffer.subarray(0, 8).equals(OLE2_SIGNATURE)) throw new BadRequestException('Este .doc não é um documento do Word válido. Salve como .docx e anexe de novo.');
+  if (extension === '.xls' && !file.buffer.subarray(0, 8).equals(OLE2_SIGNATURE)) throw new BadRequestException('Este .xls não é uma planilha do Excel válida. Salve como .xlsx e anexe de novo.');
   return mimeType;
+}
+
+function withTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('O processamento do arquivo excedeu o tempo limite.')), LEGACY_PARSE_TIMEOUT_MS); });
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
 }
 
 function stripMarkup(text: string) {
@@ -54,6 +71,19 @@ export async function extractDocumentText(name: string, buffer: Buffer): Promise
     } finally { await parser.destroy(); }
   } else if (extension === '.docx') {
     text = (await mammoth.extractRawText({ buffer })).value;
+  } else if (extension === '.doc') {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const WordExtractor = require('word-extractor') as new () => { extract(input: Buffer): Promise<{ getBody(): string }> };
+    text = (await withTimeout(new WordExtractor().extract(buffer))).getBody();
+  } else if (extension === '.xls') {
+    const workbook = XLSX.read(buffer, { type: 'buffer', cellFormula: false, cellHTML: false, sheetRows: LEGACY_XLS_MAX_ROWS });
+    const lines: string[] = [];
+    for (const sheetName of workbook.SheetNames) {
+      lines.push(`[Planilha: ${sheetName}]`);
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '', blankrows: false });
+      for (const row of rows) lines.push(row.map(cell => String(cell ?? '')).join('\t'));
+    }
+    text = lines.join('\n');
   } else if (extension === '.xlsx') {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer as never);

@@ -58,8 +58,8 @@ function fixture(initial = []) {
 
 test('chat uploads validate MIME, extension, binary text, size, filenames, and unsupported formats before storage', async () => {
   await assert.rejects(validateChatAttachment(), /Selecione/);
-  await assert.rejects(validateChatAttachment(upload('a.zip', 'application/zip', Buffer.from('PK'))), /XLS e ZIP/);
-  await assert.rejects(validateChatAttachment(upload('a.xls', 'application/vnd.ms-excel', Buffer.from('sheet'))), /XLS e ZIP/);
+  await assert.rejects(validateChatAttachment(upload('a.zip', 'application/zip', Buffer.from('PK'))), /Arquivos \.zip não são lidos/);
+  await assert.rejects(validateChatAttachment(upload('a.xls', 'application/vnd.ms-excel', Buffer.from('sheet'))), /não é uma planilha do Excel válida/);
   await assert.rejects(validateChatAttachment(upload('a.exe', 'application/octet-stream', Buffer.from('MZ'))), /suportado/);
   await assert.rejects(validateChatAttachment(upload('a.txt', 'image/png', Buffer.from('texto'))), /MIME/);
   await assert.rejects(validateChatAttachment(upload('a.txt', 'text/plain', Buffer.from([0, 1]))), /binários/);
@@ -259,5 +259,5 @@ test('controller delegates authenticated tenant and owner and capabilities list 
   const calls = [], controller = new ChatAttachmentsController({ getChatAttachment: (...args) => calls.push(args) });
   controller.get({ user: { tenantId: 'tenant-a', sub: 'user-a' } }, 'document-a');
   assert.deepEqual(calls[0], ['tenant-a', 'user-a', 'document-a']);
-  const caps = chatAttachmentCapabilities(); assert.equal(caps.maxFiles, 5); assert.equal(caps.extensions.includes('zip'), false); assert.equal(caps.extensions.includes('xls'), false); assert.equal(caps.extensions.includes('png'), true);
+  const caps = chatAttachmentCapabilities(); assert.equal(caps.maxFiles, 5); assert.equal(caps.extensions.includes('zip'), false); assert.equal(caps.extensions.includes('xls'), true); assert.equal(caps.extensions.includes('doc'), true); assert.equal(caps.extensions.includes('png'), true);
 });
