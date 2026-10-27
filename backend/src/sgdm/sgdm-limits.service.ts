@@ -35,6 +35,8 @@ function parseLimits(body: unknown): UserLimits | null {
 @Injectable()
 export class SgdmLimitsService {
   private readonly logger = new Logger(SgdmLimitsService.name);
+  /** tenant:user pairs whose 404 was already logged; cleared on a good answer, so the cache refresh does not re-warn. */
+  private readonly quietUsers = new Set<string>();
   private readonly cache = new CachedFetch<UserLimits | null>({ ttlSeconds: cacheSeconds, staleSeconds: STALE_SECONDS, failureSeconds: sgdmFailureSeconds });
 
   async forUser(tenantId: string, userId: string): Promise<UserLimits | null> {
@@ -53,13 +55,20 @@ export class SgdmLimitsService {
   }
 
   private async load(tenantId: string, userId: string): Promise<UserLimits | null> {
+    const key = tenantId + ':' + userId;
     try {
-      return parseLimits(await sgdmIntegrationGet<unknown>('/integracoes/i7ai/limites/' + encodeURIComponent(tenantId) + '?usuarioId=' + encodeURIComponent(userId)));
+      const limits = parseLimits(await sgdmIntegrationGet<unknown>('/integracoes/i7ai/limites/' + encodeURIComponent(tenantId) + '?usuarioId=' + encodeURIComponent(userId)));
+      this.quietUsers.delete(key);
+      return limits;
     } catch (error) {
       if (!(error instanceof SgdmNotFound)) throw error;
       // A definitive answer (unknown tenant/user): cached as "no user limit" like SgdmAccessService,
       // logged once per new cache entry instead of on every paid round.
-      this.logger.warn('SGDM respondeu 404 ao consultar os limites de IA (prefeitura ' + tenantId + ', usuário ' + userId + '); seguindo sem limite do usuário.');
+      // Logged once per user while the 404 lasts: every cache refresh (60 s) would otherwise repeat it.
+      if (!this.quietUsers.has(key)) {
+        this.quietUsers.add(key);
+        this.logger.warn('SGDM respondeu 404 ao consultar os limites de IA (prefeitura ' + tenantId + ', usuário ' + userId + '); seguindo sem limite do usuário.');
+      }
       return null;
     }
   }

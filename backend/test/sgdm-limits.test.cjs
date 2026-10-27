@@ -107,6 +107,23 @@ test('SGDM 404 is a definitive answer: cached as no user limit and logged once',
   assert.match(warnings[0], /404/);
 });
 
+test('SGDM 404 repeated after the cache expires is not logged again; a good answer re-arms the warning', async t => {
+  process.env.SGDM_LIMITS_CACHE_SECONDS = '0';
+  let answer = [404, { message: 'não encontrado' }];
+  const calls = await sgdm(t, () => answer);
+  const service = new SgdmLimitsService();
+  const { warnings, logger } = quietLogger();
+  service.logger = logger;
+  for (let i = 0; i < 3; i++) assert.equal(await service.forUser(TENANT, USER), null);
+  assert.equal(calls.length, 3);
+  assert.equal(warnings.length, 1);
+  answer = [200, { usuario: LIMITE }];
+  assert.deepEqual(await service.forUser(TENANT, USER), EXPECTED);
+  answer = [404, { message: 'não encontrado' }];
+  assert.equal(await service.forUser(TENANT, USER), null);
+  assert.equal(warnings.length, 2);
+});
+
 test('concurrent calls share one SGDM fetch', async t => {
   const calls = await sgdm(t, () => [200, { usuario: LIMITE }]);
   const service = new SgdmLimitsService(); service.logger = quietLogger().logger;
