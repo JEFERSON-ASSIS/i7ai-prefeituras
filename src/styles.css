@@ -76,8 +76,11 @@ html.sgdm-app-shell, html.sgdm-app-shell body, html.sgdm-app-shell #root { heigh
 .message-markdown code { padding: 1px 5px; border-radius: var(--sd-radius-xs); background: rgb(var(--sd-color-surface-muted)); font-size: 13px; font-family: ui-monospace, monospace; }
 .message-markdown pre { padding: 12px 14px; overflow: auto; border-radius: var(--sd-radius-control); background: rgb(var(--sd-color-surface-muted)); }
 .message-markdown pre code { padding: 0; background: none; }
-.message-markdown table { display: block; max-width: 100%; overflow: auto; margin: 0 0 12px; border-collapse: collapse; font-size: 14px; }
-.message-markdown th, .message-markdown td { padding: 6px 12px; border: 1px solid rgb(var(--sd-color-border)); text-align: left; vertical-align: top; }
+.message-markdown table { display: block; width: max-content; max-width: 100%; overflow-x: auto; margin: 0 0 12px; border-collapse: collapse; font-size: 14px; }
+/* Cells never break words mid-letter (the answer text does); wide tables scroll sideways instead of squeezing. */
+.message-markdown th, .message-markdown td { padding: 6px 12px; border: 1px solid rgb(var(--sd-color-border)); text-align: left; vertical-align: top; overflow-wrap: normal; word-break: normal; min-width: 6ch; max-width: 34ch; }
+.message-markdown th { white-space: nowrap; }
+.message-markdown td a { white-space: nowrap; }
 .message-markdown th { background: rgb(var(--sd-color-surface-muted)); font-weight: 600; }
 .message-markdown hr { border: 0; border-top: 1px solid rgb(var(--sd-color-border)); margin: 16px 0; }
 .source-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
