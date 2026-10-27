@@ -1,5 +1,6 @@
 import { BadGatewayException, BadRequestException, HttpException, Injectable, NotFoundException, Optional, ServiceUnavailableException, StreamableFile } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import OpenAI from 'openai';
 import type { Response as ModelResponse, ResponseCreateParamsNonStreaming, ResponseInputItem } from 'openai/resources/responses/responses';
 import { PrismaService } from '../prisma/prisma.service';
@@ -67,7 +68,9 @@ export class AiGatewayService {
       attachmentContext = await this.knowledge.prepareChatAttachments(tenantId, userId, relevantIds);
     }
     options.signal?.throwIfAborted();
-    const prepared = await this.generate(agentId, tenantId, { message: input.message, userId, conversationId: input.conversationId, modelId, attachmentContext, signal: options.signal }, history, options.onDelta);
+    // A new conversation gets its id up front so even its first (usually costliest) call carries the conversa tag.
+    const newConversationId = input.conversationId ? undefined : randomUUID();
+    const prepared = await this.generate(agentId, tenantId, { message: input.message, userId, conversationId: input.conversationId ?? newConversationId, modelId, attachmentContext, signal: options.signal }, history, options.onDelta);
     try {
     options.signal?.throwIfAborted();
     const { conversationId, messages } = await this.prisma.$transaction(async (tx) => {
@@ -78,7 +81,7 @@ export class AiGatewayService {
         if (!owned) throw new NotFoundException('Conversa não encontrada.');
         await tx.conversation.update({ where: { id }, data: { updatedAt: new Date(), modelId: prepared.modelId } });
       } else {
-        const conversation = await tx.conversation.create({ data: { tenantId, userId, agentId, modelId: prepared.modelId, title: input.message.trim().slice(0, 120) } });
+        const conversation = await tx.conversation.create({ data: { id: newConversationId, tenantId, userId, agentId, modelId: prepared.modelId, title: input.message.trim().slice(0, 120) } });
         id = conversation.id;
       }
       const attachments = (attachmentContext?.documents || []).filter(document => attachmentIds.includes(document.id));

@@ -110,3 +110,20 @@ test('reopening long conversations retains the latest turn and attachment in chr
   assert.equal(response.messages.at(-1).id, 'message-1001');
   assert.equal(response.messages.at(-2).attachments[0].document.name, 'recente.txt');
 });
+
+test('the first call of a brand-new conversation already carries its id, which is the persisted one', async () => {
+  const { service, records } = fixture();
+  await service.chat('agent', 'tenant', { message: 'Olá' }, 'user');
+  const id = records.requests[0].conversationId;
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.equal(records.conversations[0].id, id);
+});
+
+test('a failed first generation creates no conversation row', async () => {
+  const { service, records } = fixture();
+  const generate = service.omni.generate;
+  service.omni.generate = async () => { throw new Error('gateway down'); };
+  await assert.rejects(service.chat('agent', 'tenant', { message: 'Olá' }, 'user'), /gateway down/);
+  assert.equal(records.conversations.length, 0);
+  service.omni.generate = generate;
+});

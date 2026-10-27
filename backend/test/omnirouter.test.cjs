@@ -478,11 +478,12 @@ test('LiteLLM stream shape: an empty usage frame after the finish is accepted; t
 test('cada chamada leva user = prefeitura e as tags de usuário, origem e conversa', async t => {
   const { requests } = await provider(t, (_b, r) => json(r, completion()));
   const { service, input } = fixture();
-  input.origin = 'i7ai-chat'; input.conversationId = 'conv-1';
+  input.conversationId = 'conv-1';
   await service.generate(input);
   assert.equal(requests[0].body.user, 'tenant-a');
   assert.deepEqual(requests[0].body.metadata.tags.sort(), ['conversa:conv-1', 'origem:i7ai-chat', 'usuario:user-a']);
   const auto = fixture(); auto.input.origin = 'i7ai-automacao'; delete auto.input.userId; delete auto.input.conversationId;
   await auto.service.generate(auto.input);
+  assert.equal(requests[1].body.user, 'tenant-a');
   assert.deepEqual(requests[1].body.metadata.tags, ['origem:i7ai-automacao']);
 });
