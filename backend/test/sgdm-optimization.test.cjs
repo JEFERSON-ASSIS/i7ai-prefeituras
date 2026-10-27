@@ -8,7 +8,7 @@ const { OPTIMIZATION_DEFAULTS } = require('../dist/sgdm/optimization-defaults');
 const TENANT = '00000000-0000-0000-0000-000000000001';
 const AGENT = '00000000-0000-0000-0000-0000000000a1';
 const OTHER_AGENT = '00000000-0000-0000-0000-0000000000a2';
-const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_OPTIMIZATION_CACHE_SECONDS', 'NODE_ENV'];
+const envKeys = ['SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_OPTIMIZATION_CACHE_SECONDS', 'SGDM_OPTIMIZATION_FAILURE_CACHE_SECONDS', 'NODE_ENV'];
 const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 test.afterEach(() => envKeys.forEach(key => savedEnv[key] === undefined ? delete process.env[key] : process.env[key] = savedEnv[key]));
 
@@ -135,4 +135,95 @@ test('o valor devolvido é uma cópia: alterar não contamina o cache nem os pad
   delete process.env.SGDM_API_URL;
   const defaults = await new SgdmOptimizationService().effective(TENANT, AGENT); defaults.cachePrompt.ligado = false;
   assert.equal(OPTIMIZATION_DEFAULTS.cachePrompt.ligado, true);
+});
+
+function mockClock(t) {
+  const realNow = Date.now; t.after(() => { Date.now = realNow; });
+  let now = realNow(); Date.now = () => now;
+  return { advance: ms => { now += ms; } };
+}
+
+test('single-flight: N chamadas simultâneas da mesma prefeitura fazem uma só consulta', async t => {
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  const server = http.createServer(async (request, response) => {
+    calls.push(request.url); await gate;
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(body()));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  process.env.NODE_ENV = 'test';
+  process.env.SGDM_API_URL = `http://127.0.0.1:${server.address().port}/api/v1`;
+  process.env.SGDM_INTEGRATION_KEY = 'integration-secret';
+  const service = new SgdmOptimizationService();
+  const results = Array.from({ length: 10 }, (_, index) => service.effective(TENANT, index % 2 ? AGENT : OTHER_AGENT));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  release();
+  const values = await Promise.all(results);
+  assert.equal(calls.length, 1);
+  values.forEach((value, index) => assert.deepEqual(value, index % 2 ? body().agentes[AGENT] : body().padrao));
+});
+
+test('single-flight também na falha: chamadas simultâneas com o SGDM fora fazem uma consulta e recebem os padrões', async t => {
+  const calls = await sgdm(t, () => [500, {}]);
+  const service = new SgdmOptimizationService(); service.logger = quietLogger().logger;
+  const values = await Promise.all(Array.from({ length: 5 }, () => service.effective(TENANT, AGENT)));
+  assert.equal(calls.length, 1);
+  values.forEach(value => assert.deepEqual(value, OPTIMIZATION_DEFAULTS));
+});
+
+test('cache negativo: depois de uma falha sem cache, padrões sem nova consulta até o fim da janela; depois, uma nova tentativa', async t => {
+  let reply = [500, {}];
+  const calls = await sgdm(t, () => reply);
+  const clock = mockClock(t);
+  const service = new SgdmOptimizationService(); const { warnings, logger } = quietLogger(); service.logger = logger;
+  assert.deepEqual(await service.effective(TENANT, AGENT), OPTIMIZATION_DEFAULTS);
+  clock.advance(14_999);
+  assert.deepEqual(await service.effective(TENANT, AGENT), OPTIMIZATION_DEFAULTS);
+  assert.deepEqual(await service.effective(TENANT, OTHER_AGENT), OPTIMIZATION_DEFAULTS);
+  assert.equal(calls.length, 1); assert.equal(warnings.length, 1);
+  reply = [200, body()];
+  clock.advance(2);
+  assert.deepEqual(await service.effective(TENANT, AGENT), body().agentes[AGENT]);
+  assert.equal(calls.length, 2);
+});
+
+test('janela de falha configurável; valor inválido volta aos 15 s', async t => {
+  const calls = await sgdm(t, () => [500, {}]);
+  const clock = mockClock(t);
+  process.env.SGDM_OPTIMIZATION_FAILURE_CACHE_SECONDS = '30';
+  const service = new SgdmOptimizationService(); service.logger = quietLogger().logger;
+  await service.effective(TENANT, AGENT);
+  clock.advance(20_000); await service.effective(TENANT, AGENT);
+  assert.equal(calls.length, 1);
+  clock.advance(10_001); await service.effective(TENANT, AGENT);
+  assert.equal(calls.length, 2);
+  process.env.SGDM_OPTIMIZATION_FAILURE_CACHE_SECONDS = 'abc';
+  const other = new SgdmOptimizationService(); other.logger = quietLogger().logger;
+  await other.effective(TENANT, AGENT);
+  clock.advance(15_001); await other.effective(TENANT, AGENT);
+  assert.equal(calls.length, 4);
+});
+
+test('valor vencido servido na falha não reconsulta o SGDM a cada chamada: no máximo uma vez por janela', async t => {
+  let reply = [200, body()];
+  const calls = await sgdm(t, () => reply);
+  const clock = mockClock(t);
+  const service = new SgdmOptimizationService(); const { warnings, logger } = quietLogger(); service.logger = logger;
+  await service.effective(TENANT, AGENT);
+  reply = [500, {}];
+  clock.advance(61_000);
+  assert.deepEqual(await service.effective(TENANT, AGENT), body().agentes[AGENT]);
+  assert.equal(calls.length, 2);
+  clock.advance(10_000);
+  assert.deepEqual(await service.effective(TENANT, AGENT), body().agentes[AGENT]);
+  assert.deepEqual(await service.effective(TENANT, OTHER_AGENT), body().padrao);
+  assert.equal(calls.length, 2); assert.equal(warnings.length, 1);
+  clock.advance(5_001);
+  assert.deepEqual(await service.effective(TENANT, AGENT), body().agentes[AGENT]);
+  assert.equal(calls.length, 3);
+  reply = [200, { ...body(), padrao: { ...body().padrao, cachePrompt: { ligado: true } } }];
+  clock.advance(15_001);
+  assert.equal((await service.effective(TENANT, OTHER_AGENT)).cachePrompt.ligado, true);
+  assert.equal(calls.length, 4);
 });
