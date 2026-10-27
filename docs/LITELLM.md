@@ -171,6 +171,32 @@ As peças do SGDM passam pelo LiteLLM só se `LITELLM_URL` e `LITELLM_ADMIN_KEY`
 
 **Retenção.** Usuário, origem e conversas por prefeitura dependem dos logs do LiteLLM; se ele apagar logs antigos (retenção configurada), esses números somem do período. Os totais de gasto não dependem disso.
 
+### Fluxo ao vivo
+
+Na **Visão geral** da Central, o cartão **Fluxo ao vivo** desenha as chamadas dos últimos 5 minutos: prefeituras → origem (`i7Ai · chat e resumos`, `i7Ai · automações`, `SGDM · peças`, outras) → LiteLLM → provedores. A web nunca fala com o LiteLLM: ela consulta `GET /central-ia/fluxo` na API do SGDM (só `IA_CENTRAL`; sem a permissão, 403), e a API é quem lê o gateway.
+
+**Fonte.** Cada atualização faz no máximo uma leitura da janela em `/spend/logs/v2` (`start_date` = agora − 300 s, `page_size` 1000, `page` 1, `exclude_internal_health_checks`, mais `end_user` quando há uma prefeitura selecionada). Nunca pagina: com mais de 1.000 chamadas na janela, os números vêm das 1.000 mais recentes e a tela avisa "Volume alto: números das 1.000 chamadas mais recentes." A resposta fica em cache de 5 s por prefeitura (uma só consulta em voo por chave; falha não fica em cache), então várias abas e vários usuários custam ao LiteLLM no máximo uma leitura a cada 5 s **por instância da API**. A tela atualiza a cada 10 s e passa a 30 s depois de duas falhas seguidas; com a aba oculta não consulta. O gasto de hoje por provedor sai de `/customer/daily/activity/aggregated` do dia UTC, com cache de 60 s. O fluxo não usa tags e não lê `/tag/daily/activity*`.
+
+**O que cada número quer dizer** (sobre as linhas da janela; sem chamadas, "—"):
+
+| Número | Cálculo |
+| --- | --- |
+| erro % | chamadas com `status = failure` ÷ todas as chamadas × 100 |
+| cache % | tokens de entrada lidos do cache de prompt do provedor ÷ tokens de entrada (`prompt_tokens`), só nas chamadas com sucesso, × 100. Tokens lidos do cache = `prompt_tokens_details.cached_tokens` (ou `cache_read_input_tokens`, ou 0), limitado ao `prompt_tokens` da linha |
+| latência (p50, p95) | percentil por posição (*nearest rank*) de `request_duration_ms` nas chamadas com sucesso que **não** vieram do cache exato; uma resposta do cache exato levaria a mediana para perto de zero |
+| respostas repetidas | chamadas com `cache_hit = True` (cache exato do LiteLLM); aparece no detalhe da caixa LiteLLM |
+| gasto na janela (provedor) | soma de `spend` das linhas da janela |
+
+O resumo do histórico (`origem:i7ai-resumo`) conta na caixa de chat, porque é custo causado por uma conversa; na aba **Consumo e custo** ele continua em linha própria.
+
+**Atraso do LiteLLM.** O LiteLLM grava o log de gasto alguns segundos depois da resposta. Local, uma chamada de 220 ms apareceu em `/spend/logs/v2` depois de cerca de 3,7 s, e em lotes maiores em até 16 s. Com cache de 5 s e atualização de 10 s, uma chamada aparece no fluxo em até uns 20 s; não é falha.
+
+**LiteLLM fora do ar.** A API devolve 503 ("O gateway de IA não respondeu.") ou 502; a tela mantém o último retrato esmaecido, **pausa as partículas** e marca a caixa LiteLLM em vermelho com "Sem resposta desde HH:MM:SS" (hora do navegador). Ao voltar, a marca some na próxima atualização bem-sucedida. Com movimento reduzido no sistema (`prefers-reduced-motion`), não há partículas; a espessura das ligações e os números continuam.
+
+**Leituras por tag limitadas.** O resto da Visão geral (e o agrupamento por origem do Consumo) lê `/tag/daily/activity` em páginas de 1.000 linhas, no máximo `MAX_PAGINAS_TAGS` (100) páginas, e filtra cada página antes de descartá-la (a memória não cresce com o período). A origem global usa `/tag/daily/activity/aggregated` só com as tags conhecidas, nunca sem `tags`. Passou do limite: o consumo responde 400 com "Período com conversas demais para contar; escolha um período menor ou filtre uma prefeitura.", a Visão geral mostra "—" nos usuários ativos, conversas e custo por conversa com essa mesma dica, e a avaliação de alertas pula só os alertas por usuário (os da prefeitura continuam).
+
+Variáveis: nenhuma nova.
+
 ## Otimização
 
 As otimizações da Entrega 4 reduzem o custo por conversa do i7Ai. São configuradas no SGDM, em **Central de IA › Otimização** (tabela `ia_otimizacoes`, escopo agente > prefeitura > todos > padrão), e o i7Ai só lê (`GET /integracoes/i7ai/otimizacoes/:tenantId`, cache `SGDM_OPTIMIZATION_CACHE_SECONDS`). Sem resposta do SGDM e sem cache, o i7Ai usa os padrões abaixo e nunca bloqueia o chat. As peças do SGDM (`origem:sgdm-pecas`) não recebem nenhuma delas.
