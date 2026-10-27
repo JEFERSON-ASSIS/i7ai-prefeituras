@@ -72,6 +72,26 @@ O passo a passo está em [docs/DEPLOY_VPS.md](./DEPLOY_VPS.md): stack Swarm `i7a
 - Modelos e agente iniciais: `scripts/configure-omniroute.cjs` dentro do contêiner do backend (passo 10 do roteiro). Depois ajuste em **Modelos** visão, ferramentas e preços (USD por milhão de tokens); sem preço, o custo aparece como não configurado.
 - Faça uma conversa real com cada modelo, com e sem streaming, e um envio de imagem com GPT-4o Mini.
 
+## Central de IA no SGDM
+
+A Central de IA é a visão do consumo e do custo de IA de todas as prefeituras, dentro do SGDM (`/central-ia` e `/central-ia/consumo`). Só quem tem a permissão `IA_CENTRAL` vê: ela existe apenas no perfil `DONO_PLATAFORMA`. Qualquer outro usuário recebe 403 na API.
+
+**De onde vêm os números.** O SGDM consulta o LiteLLM com `LITELLM_URL` e `LITELLM_ADMIN_KEY` (as duas precisam estar preenchidas; uma só desliga). O consumo e o custo saem do gasto que o próprio LiteLLM registra (`/spend/...`); a divisão por usuário, origem e conversa de uma prefeitura sai de `/spend/logs/v2`. O i7Ai grava o mesmo em `ai_usage` (tokens, tokens em cache e `costSource`: `gateway` quando vem do `x-litellm-response-cost`, `catalog` quando é calculado com os preços sincronizados do `/model/info`, de 6 em 6 horas).
+
+**Tags em cada chamada.** Toda chamada ao gateway leva `user` = uuid da prefeitura e `metadata.tags`:
+
+| Tag | Valor |
+| --- | --- |
+| `usuario:` | usuário que originou a chamada |
+| `origem:` | `i7ai-chat`, `i7ai-automacao` ou `sgdm-pecas` (geração de peças no SGDM) |
+| `conversa:` | conversa do chat (a primeira mensagem de uma conversa nova já leva a tag) |
+
+As peças do SGDM passam pelo LiteLLM só se `LITELLM_URL` e `LITELLM_ADMIN_KEY` estiverem definidas, usando a chave da própria prefeitura (`api_key` por requisição) ou, sem ela, a da plataforma.
+
+**Custo por conversa** = gasto das chamadas com tag `conversa:` ÷ número de conversas. Nas linhas do detalhamento, conversas e custo por conversa aparecem como "—" (nulo) quando não dá para calcular: quando não há uma prefeitura filtrada ao agrupar por prefeitura, usuário ou origem, e sempre ao agrupar por modelo ou provedor.
+
+**Retenção.** Usuário, origem e conversas por prefeitura dependem dos logs do LiteLLM; se ele apagar logs antigos (retenção configurada), esses números somem do período. Os totais de gasto não dependem disso.
+
 ## Próximas etapas de redução de custo
 
 1. Ler tokens em cache no consumo e cadastrar preço de entrada em cache.
