@@ -70,6 +70,9 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [exporting, setExporting] = useState('');
   const [error, setError] = useState('');
+  const [showSummary, setShowSummary] = useState(false);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const conversationIdRef = useRef('');
   const end = useRef(null);
   const request = useRef(null);
   const uploadRequests = useRef(new Map());
@@ -188,6 +191,24 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
       if (request.current === controller && !controller.signal.aborted) setLoadingHistory(false);
     }
   }
+  // The summary is only a cost optimization: messages stay on screen; this toggles it per conversation.
+  async function changeSummary(action) {
+    if (!conversationId || summaryBusy) return;
+    const id = conversationId;
+    setSummaryBusy(true);
+    setShowSummary(false);
+    setError('');
+    try {
+      await apiRequest('/conversations/' + id + '/summary/' + action, { token, method: 'POST' });
+      const fresh = await apiRequest('/conversations/' + id, { token });
+      if (id !== conversationIdRef.current) return;
+      setConversation(current => current ? { ...current, summary: fresh.summary ?? null, summaryDisabled: fresh.summaryDisabled === true } : current);
+    } catch (caught) {
+      setError(caught.message);
+    } finally {
+      setSummaryBusy(false);
+    }
+  }
   async function upload(files) {
     if (composerDisabled || uploadCapabilities.loading || uploadCapabilities.error) return;
     setError('');
@@ -298,6 +319,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     setPending(null);
     setError('Resposta interrompida. Sua pergunta e seus anexos continuam disponíveis para tentar novamente.');
   }
+  conversationIdRef.current = conversationId;
   const activeAgentName = agent?.name || conversation?.agent?.name;
   const visibleAgents = agents.filter(item => item.status !== 'ARCHIVED');
   const title = conversation?.title || (messages.length ? 'Conversa' : 'Nova conversa');
@@ -335,6 +357,18 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
           {empty && <div className="chat-empty">
             <EmptyState icon={Bot} title={activeAgentName ? 'Pergunte ao ' + activeAgentName : 'Escolha um agente para começar'} description={activeAgentName ? 'Anexe editais, planilhas ou documentos e pergunte em linguagem simples. As respostas seguem as instruções e as bases deste agente.' : 'Use o seletor acima. Cada agente tem instruções e bases de conhecimento próprias.'} />
             {canUseAgent && <div className="chat-suggestions">{suggestions.map(text => <Button key={text} type="button" variant="secondary" size="sm" onClick={() => setQuery(text)}>{text}</Button>)}</div>}
+          </div>}
+          {!loadingHistory && conversationId && conversation?.summary?.content && !conversation.summaryDisabled && <div className="chat-summary-notice" role="note">
+            <p>As mensagens anteriores a {shortDate(conversation.summary.updatedAt)} foram resumidas para reduzir o custo. As mensagens continuam salvas.</p>
+            <div className="chat-summary-actions">
+              <Button type="button" variant="secondary" size="sm" onClick={() => setShowSummary(value => !value)} aria-expanded={showSummary}>{showSummary ? 'Ocultar resumo' : 'Ver resumo'}</Button>
+              <Button type="button" variant="secondary" size="sm" disabled={summaryBusy} onClick={() => changeSummary('disable')}>Usar mensagens completas</Button>
+            </div>
+            {showSummary && <pre className="chat-summary-text">{conversation.summary.content}</pre>}
+          </div>}
+          {!loadingHistory && conversationId && conversation?.summaryDisabled && <div className="chat-summary-notice" role="note">
+            <p>Esta conversa usa as mensagens completas.</p>
+            <div className="chat-summary-actions"><Button type="button" variant="secondary" size="sm" disabled={summaryBusy} onClick={() => changeSummary('enable')}>Permitir resumo</Button></div>
           </div>}
           {!loadingHistory && messages.map(message => <article key={message.id} className={'message ' + (message.role === 'user' ? 'user' : 'agent')}>
             {message.role === 'user' ? <span className="message-text">{message.content}</span> : <AnswerText>{message.content}</AnswerText>}

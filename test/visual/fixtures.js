@@ -16,6 +16,9 @@ const educationConversation={id:'conversation-2',title:'Relatório da educação
 const schedule={id:'schedule-1',name:'Resumo diário',cronExpression:'0 8 * * 1-5',timezone:'America/Cuiaba',enabled:true,nextRunAt:now};
 const automation={id:'automation-1',name:'Resumo de gestão',description:'Consolida informações do município.',agentId:agent.id,agent,status:'ACTIVE',timeoutSeconds:300,retries:2,steps:[{id:'step-1',name:'Preparar resumo',actionType:'AGENT',configuration:{prompt:'Prepare um resumo.'}}],schedules:[schedule]};
 const execution={id:'execution-1',automation,agent,schedule,status:'SUCCESS',startedAt:now,finishedAt:now,createdAt:now,durationMs:2500,input:{},output:{result:{answer:'Resumo concluído.'},steps:[{stepId:'step-1',name:'Preparar resumo',actionType:'AGENT',output:{answer:'Orientações consolidadas.'}}]}};
+const summaryConversation={...conversation,id:'conversation-3',title:'Conversa longa',summary:{content:'Resumo fixture: contrato 12/2026, valor R$ 1.500,00.',throughMessageId:'message-1',updatedAt:now},summaryDisabled:false};
+const fullConversation={...conversation,id:'conversation-4',title:'Conversa completa',summary:null,summaryDisabled:true};
+export const summaryConversations=[summaryConversation,fullConversation];
 export const fixtures={
   '/auth/me':{id:'user-1',name:'Ana de Teste',email:'ana@example.test',roles:['SUPER_ADMIN'],permissions:['*']},
   '/agents':[agent,educationAgent],'/departments':[department],'/models':[model,claude,gemini],'/providers':[provider,anthropic,google],'/tools':[tool],'/knowledge-bases':[base],
@@ -25,6 +28,8 @@ export const fixtures={
   '/automations':[automation],'/executions':[execution],'/executions/execution-1':execution,
   '/conversations':[conversation,educationConversation],
   '/conversations/conversation-1':{...conversation,messages:[{id:'message-1',role:'user',content:'Como consultar as orientações?',createdAt:now},{id:'message-2',role:'assistant',content:'Consulte o guia municipal na base de conhecimento.',createdAt:now,metadata:{modelId:model.id,model:model.slug,modelName:model.name,providerName:provider.name,sources:[{id:'doc-1',documentName:'Guia municipal.pdf'}]}}]},
+  '/conversations/conversation-3':{...summaryConversation,messages:[{id:'message-5',role:'user',content:'Pergunta antiga.',createdAt:now}]},
+  '/conversations/conversation-4':{...fullConversation,messages:[{id:'message-6',role:'user',content:'Pergunta completa.',createdAt:now}]},
   '/conversations/conversation-2':{...educationConversation,messages:[{id:'message-3',role:'user',content:'Analise o relatório de educação.',createdAt:now,attachments:[{document:attachment}]},{id:'message-4',role:'assistant',content:'O relatório recomenda acompanhar a frequência escolar.',createdAt:now,metadata:{modelId:claude.id,model:claude.slug,modelName:claude.name,providerName:anthropic.name}}]},
   '/chat/attachments/attachment-1':attachment,
   '/dashboard':{agents:1,conversations:1,automations:1,documents:1,requests:3,inputTokens:1500,outputTokens:600,timezone:'America/Cuiaba',daily:[{date:'2026-10-01',inputTokens:800,outputTokens:300},{date:'2026-10-02',inputTokens:700,outputTokens:300}],executions:[{status:'SUCCESS',count:1}],recent:[{event:'Agente atualizado',resource:'agents',createdAt:now}]},

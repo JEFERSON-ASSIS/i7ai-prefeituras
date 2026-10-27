@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { mockSession, fixtures } from './fixtures';
+import { mockSession, fixtures, summaryConversations } from './fixtures';
 
 for (const width of [1440, 390]) {
   test('chat seleciona agente e modelo independentes e envia pelo teclado em ' + width + 'px', async ({ page }) => {
@@ -232,4 +232,49 @@ test('recusa 403 do servidor aparece como veio', async ({ page }) => {
   await page.getByLabel('Mensagem', { exact: true }).fill('Olá');
   await page.getByRole('button', { name: 'Enviar mensagem' }).click();
   await expect(page.getByText(message)).toBeVisible();
+});
+
+test('resumo da conversa é visível e reversível; conversa sem resumo não mostra aviso', async ({ page }) => {
+  const writes = [];
+  let disabled = false;
+  await mockSession(page, {
+    writes,
+    overrides: { '/conversations': [...fixtures['/conversations'], ...summaryConversations] },
+    writeHandler: async (route, { path, headers }) => {
+      if (!path.endsWith('/summary/disable')) return false;
+      disabled = true;
+      await route.fulfill({ status: 200, json: { id: 'conversation-3', summaryDisabled: true }, headers });
+      return true;
+    }
+  });
+  await page.route('http://localhost:3000/api/conversations/conversation-3', route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const body = disabled ? { ...fixtures['/conversations/conversation-3'], summary: null, summaryDisabled: true } : fixtures['/conversations/conversation-3'];
+    return route.fulfill({ status: 200, json: body, headers: { 'Access-Control-Allow-Origin': '*' } });
+  });
+  await page.goto('/?module=chat');
+  await page.getByRole('button', { name: 'Orientação municipal' }).click();
+  await expect(page.getByText('Como consultar as orientações?')).toBeVisible();
+  await expect(page.getByText(/foram resumidas para reduzir o custo/)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Conversa longa' }).click();
+  await expect(page.getByText(/As mensagens anteriores a .+ foram resumidas para reduzir o custo\. As mensagens continuam salvas\./)).toBeVisible();
+  await expect(page.getByText('Pergunta antiga.')).toBeVisible();
+  await page.getByRole('button', { name: 'Ver resumo' }).click();
+  await expect(page.locator('pre')).toContainText('Resumo fixture: contrato 12/2026');
+  await page.getByRole('button', { name: 'Usar mensagens completas' }).click();
+  await expect(page.getByText('Esta conversa usa as mensagens completas.')).toBeVisible();
+  await expect(page.getByText(/foram resumidas para reduzir o custo/)).toHaveCount(0);
+  expect(writes.some(item => item.path === '/conversations/conversation-3/summary/disable' && item.method === 'POST')).toBe(true);
+  await expect(page.getByRole('button', { name: 'Permitir resumo' })).toBeVisible();
+  await expect(page.getByText('Pergunta antiga.')).toBeVisible();
+});
+
+test('conversa com resumo desligado mostra a linha e permite religar', async ({ page }) => {
+  const writes = [];
+  await mockSession(page, { writes, overrides: { '/conversations': [...fixtures['/conversations'], ...summaryConversations] } });
+  await page.goto('/?module=chat');
+  await page.getByRole('button', { name: 'Conversa completa' }).click();
+  await expect(page.getByText('Esta conversa usa as mensagens completas.')).toBeVisible();
+  await page.getByRole('button', { name: 'Permitir resumo' }).click();
+  await expect.poll(() => writes.some(item => item.path === '/conversations/conversation-4/summary/enable')).toBe(true);
 });
