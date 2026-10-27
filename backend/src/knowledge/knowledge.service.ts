@@ -5,7 +5,8 @@ import { Document, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentPipelineService, readDocumentBuffer } from './document-pipeline.service';
 import { CreateKnowledgeBaseDto, UpdateKnowledgeBaseDto } from './dto/knowledge.dto';
-import { DocumentUpload, validateDocument } from './document-extractor';
+import { DocumentUpload } from './document-extractor';
+import { validateKnowledgeUpload } from './knowledge-image';
 import { assertLicenseCapacity, assertStorageCapacity } from '../catalog/license-policy';
 import { CHAT_ATTACHMENT_MAX_COUNT, CHAT_ATTACHMENT_TEXT_LIMIT, validateChatAttachment } from './chat-attachment-validation';
 
@@ -42,7 +43,7 @@ export class KnowledgeService implements OnModuleInit, OnModuleDestroy {
   }
 
   async uploadDocument(tenantId: string, file?: DocumentUpload, knowledgeBaseId?: string, userId?: string) {
-    const mimeType = validateDocument(file);
+    const mimeType = validateKnowledgeUpload(file);
     if (knowledgeBaseId) await this.requireBase(tenantId, knowledgeBaseId);
     return this.storeDocument(tenantId, file!, mimeType, file!.originalname.slice(0, 255), knowledgeBaseId, userId);
   }

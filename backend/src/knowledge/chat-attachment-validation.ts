@@ -99,7 +99,7 @@ function validateOfficeArchive(buffer: Buffer, extension: string) {
   if (!names.has('[Content_Types].xml') || !names.has(extension === '.xlsx' ? 'xl/workbook.xml' : 'word/document.xml')) throw new BadRequestException('O conteúdo não corresponde ao formato Office informado.');
 }
 
-function imageDimensions(buffer: Buffer, mime: string): { width: number; height: number } {
+export function imageDimensions(buffer: Buffer, mime: string): { width: number; height: number } {
   if (mime === 'image/png') {
     if (buffer.length < 33 || !buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || buffer.toString('ascii', 12, 16) !== 'IHDR') throw new BadRequestException('O conteúdo não é uma imagem PNG válida.');
     return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };

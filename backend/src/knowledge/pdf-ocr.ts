@@ -1,7 +1,7 @@
 import type { PDFParse, PageTextResult } from 'pdf-parse';
 import { LocalOcrProcess } from './local-ocr-process';
 
-async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<T> {
+export async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try { return await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('O OCR excedeu o tempo limite. Divida o PDF em arquivos menores.')), milliseconds); })]); }
   finally { clearTimeout(timer); }
@@ -31,5 +31,16 @@ export async function ocrPdfPages(parser: PDFParse, pages: PageTextResult[]): Pr
       texts.push(text);
     }
     return texts.join('\n\n');
+  } finally { await worker.close(); }
+}
+
+export const IMAGE_OCR_NO_TEXT_MESSAGE = 'Não foi possível ler texto nesta imagem.';
+
+// Same bundled Portuguese model and subprocess isolation as scanned PDFs.
+export async function ocrImage(image: Buffer): Promise<string> {
+  const worker = new LocalOcrProcess();
+  try {
+    await bounded(worker.ready, 60000);
+    return await bounded(worker.recognize(image), 90000);
   } finally { await worker.close(); }
 }

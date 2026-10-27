@@ -3,7 +3,9 @@ import { extname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import * as mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
-import { ocrPdfPages } from './pdf-ocr';
+import { IMAGE_OCR_NO_TEXT_MESSAGE, ocrImage, ocrPdfPages } from './pdf-ocr';
+
+export const KNOWLEDGE_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp'];
 
 export const DOCUMENT_MAX_BYTES = Math.min(100 * 1024 * 1024, Math.max(1024, Number(process.env.DOCUMENT_MAX_BYTES) || 50 * 1024 * 1024));
 export const MIME_BY_EXTENSION: Record<string, string> = {
@@ -81,6 +83,9 @@ export async function extractDocumentText(name: string, buffer: Buffer): Promise
       const extracted = await parser.getText({ pageJoiner: '' });
       text = await ocrPdfPages(parser, extracted.pages);
     } finally { await parser.destroy(); }
+  } else if (KNOWLEDGE_IMAGE_EXTENSIONS.includes(extension)) {
+    text = await ocrImage(buffer);
+    if (!text.trim()) throw new Error(IMAGE_OCR_NO_TEXT_MESSAGE);
   } else if (extension === '.docx') {
     text = (await mammoth.extractRawText({ buffer })).value;
   } else if (extension === '.doc' || extension === '.xls') {
