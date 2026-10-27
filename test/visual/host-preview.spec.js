@@ -3,7 +3,7 @@ const routes = {
   dashboard:'Dashboard',chat:'Novo chat',agents:'Agentes de IA',models:'Modelos de IA',executions:'Execuções',
   knowledge:'Bases de conhecimento',documents:'Documentos',automations:'Automações',schedules:'Agendamentos',
   tools:'Ferramentas & MCP',integrations:'Integrações',
-  reports:'Relatórios e consumo',licensing:'Licenciamento',
+  reports:'Relatórios e consumo',
 };
 for (const width of [1440,390]) {
   test(`prévia dentro do host SGDM em ${width}px`,async({page})=>{

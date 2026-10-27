@@ -3,9 +3,9 @@ import { mockSession, fixtures } from './fixtures';
 import fs from 'node:fs';
 const folder='output/verification/sgdm/screenshots-embedded';
 fs.mkdirSync(folder,{recursive:true});
-const pages={dashboard:'Dashboard',chat:'Novo chat',agents:'Agentes de IA',models:'Modelos de IA',executions:'Execuções',knowledge:'Bases de conhecimento',documents:'Documentos',automations:'Automações',schedules:'Agendamentos',tools:'Ferramentas & MCP',integrations:'Integrações',reports:'Relatórios e consumo',licensing:'Licenciamento'};
+const pages={dashboard:'Dashboard',chat:'Novo chat',agents:'Agentes de IA',models:'Modelos de IA',executions:'Execuções',knowledge:'Bases de conhecimento',documents:'Documentos',automations:'Automações',schedules:'Agendamentos',tools:'Ferramentas & MCP',integrations:'Integrações',reports:'Relatórios e consumo'};
 for(const viewport of [{width:1440,height:1050},{width:390,height:844}]) {
-  test(`13 páginas em ${viewport.width}px`,async({page})=>{
+  test(`12 páginas em ${viewport.width}px`,async({page})=>{
     test.setTimeout(120000);
     await page.setViewportSize(viewport);const errors=[];page.on('pageerror',error=>errors.push(error.message));await mockSession(page);
     for(const [route,title] of Object.entries(pages)) {
@@ -26,7 +26,7 @@ for(const viewport of [{width:1440,height:1050},{width:390,height:844}]) {
     expect(errors).toEqual([]);
   });
 }
-const editors=[['agents','Novo agente'],['knowledge','Nova base'],['automations','Nova automação'],['schedules','Novo agendamento'],['tools','Nova ferramenta'],['licensing','Editar licença']];
+const editors=[['agents','Novo agente'],['knowledge','Nova base'],['automations','Nova automação'],['schedules','Novo agendamento'],['tools','Nova ferramenta']];
 for(const [route,name] of editors) {
   test(`modal: ${name}`,async({page})=>{
     await mockSession(page);await page.goto('/?module='+route);const trigger=page.getByRole('button',{name,exact:true});await trigger.click();const dialog=page.getByRole('dialog');await expect(dialog).toBeVisible();
@@ -70,9 +70,10 @@ test('execução com dados removidos mantém status e explica a retenção',asyn
   await page.screenshot({path:`${folder}/execution-retention.png`,fullPage:true});
 });
 
-test('licenciamento mostra reservas pendentes sem apresentá-las como consumo medido',async({page})=>{
-  const data=fixtures['/licensing'];await mockSession(page,{overrides:{'/licensing':{...data,usage:{...data.usage,reservedTokens:'3000'}}}});await page.goto('/?module=licensing');
-  await expect(page.getByText(/3.000 tokens reservados/)).toBeVisible();await page.screenshot({path:`${folder}/license-reservations.png`,fullPage:true});
+test('módulo licensing não existe mais e cai no Dashboard',async({page})=>{
+  await mockSession(page);await page.goto('/?module=licensing');
+  await expect(page.getByRole('region',{name:'i7Ai',exact:true}).getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();
+  await expect(page.getByText('Licenciamento')).toHaveCount(0);
 });
 
 test('agente mantém as quatro etapas e salva configurações',async({page})=>{
