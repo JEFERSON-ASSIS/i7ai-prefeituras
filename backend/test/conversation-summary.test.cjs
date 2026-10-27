@@ -126,13 +126,38 @@ test('segunda tentativa completa: criado, e a marca de recusa anterior é zerada
   assert.equal(conversation.summaryRejections, 0); assert.equal(conversation.summaryRejectedThroughMessageId, null);
 });
 
-test('resposta cortada pelo limite de tokens = recusa (sem lançar, sem nova tentativa)', async () => {
+test('resposta cortada abaixo do teto = skip (sem strike, marca de espera N/2, auditoria só com contagens)', async () => {
   const { service, records, conversation } = fixture({ answers: [{ length: true }] });
-  assert.equal(await service.summarize('tenant-a', 'conv-a'), 'rejeitado');
+  assert.equal(await service.summarize('tenant-a', 'conv-a'), 'ignorado');
   assert.equal(records.requests.length, 1);
-  assert.equal(conversation.summary, null); assert.equal(conversation.summaryRejections, 1);
-  assert.deepEqual(records.audit[0].metadata, { missing: 0, messages: 12, truncated: true, failed: false });
+  assert.ok(records.requests[0].max_tokens < 1500);
+  assert.equal(conversation.summary, null); assert.equal(conversation.summaryRejections, 0);
+  assert.equal(conversation.summaryRejectedThroughMessageId, 'm12');
+  assert.deepEqual(records.updates, [{ summaryRejectedThroughMessageId: 'm12' }]);
+  assert.deepEqual(records.audit.map(row => row.event), ['conversation.summary_skipped']);
+  assert.deepEqual(records.audit[0].metadata, { messages: 12, truncated: true });
   assert.equal(records.usage.length, 1); // the cut call is still paid and recorded
+});
+
+test('resposta cortada já no teto (limite do modelo) = recusa com strike', async () => {
+  const haiku = catalog.find(row => row.id === 'haiku');
+  haiku.capabilities = { maxOutputTokens: 300 };
+  try {
+    const { service, records, conversation } = fixture({ answers: [{ length: true }] });
+    assert.equal(await service.summarize('tenant-a', 'conv-a'), 'rejeitado');
+    assert.equal(records.requests.length, 1); assert.equal(records.requests[0].max_tokens, 300);
+    assert.equal(conversation.summary, null); assert.equal(conversation.summaryRejections, 1);
+    assert.deepEqual(records.audit[0].metadata, { missing: 0, messages: 12, truncated: true, failed: false });
+  } finally { haiku.capabilities = {}; }
+});
+
+test('o prompt do resumo leva o orçamento de palavras (maxTokens x 0,7) e mantém a regra literal', async () => {
+  const { service, records } = fixture();
+  await service.summarize('tenant-a', 'conv-a');
+  const body = records.requests[0];
+  const system = body.messages[0].content;
+  assert.ok(system.includes('no máximo ~' + Math.floor(body.max_tokens * 0.7) + ' palavras'), system);
+  assert.match(system, /literalmente/);
 });
 
 test('falhas que se repetiriam (filtro de conteúdo, finish inválido, resposta vazia, 4xx do gateway) = recusa, sem nova tentativa', async () => {

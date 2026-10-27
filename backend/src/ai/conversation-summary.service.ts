@@ -9,8 +9,8 @@ import { SgdmOptimizationService } from '../sgdm/sgdm-optimization.service';
 import { SgdmAccessService } from '../sgdm/sgdm-access.service';
 import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
 import {
-  SUMMARY_MAX_CALLS, SUMMARY_MAX_REJECTIONS, SUMMARY_MIN_SOURCE_CHARS, SUMMARY_PROMPT, SUMMARY_RETRY_HINT,
-  chooseSummaryModel, missingItems, planSummary, summaryBatchLimits, summaryMaxTokens, summaryThreshold, summaryTooLong,
+  SUMMARY_MAX_CALLS, SUMMARY_MAX_REJECTIONS, SUMMARY_MIN_SOURCE_CHARS, SUMMARY_RETRY_HINT,
+  chooseSummaryModel, missingItems, planSummary, summaryBatchLimits, summaryCeiling, summaryMaxTokens, summaryPrompt, summaryThreshold, summaryTooLong,
 } from './history-summary';
 
 type SummaryJob = { tenantId: string; conversationId: string; calls?: number };
@@ -149,7 +149,10 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
     const replaced = (conversation.summary ?? '') + batch;
     const capabilities = model.capabilities && typeof model.capabilities === 'object' && !Array.isArray(model.capabilities) ? model.capabilities as Record<string, unknown> : {};
     // Proportional to what it replaces, so the summary cannot cost more than the messages it stands for.
-    const maxTokens = summaryMaxTokens(replaced, typeof capabilities.maxOutputTokens === 'number' ? capabilities.maxOutputTokens : undefined);
+    const modelCap = typeof capabilities.maxOutputTokens === 'number' ? capabilities.maxOutputTokens : undefined;
+    const maxTokens = summaryMaxTokens(replaced, modelCap);
+    // A cut at the ceiling would be cut again by any retry; below it the cap was only the proportional one.
+    const atCeiling = maxTokens >= summaryCeiling(modelCap);
     // The summary call never uses the prompt cache, the exact cache or the agent's output cap.
     const optimization: OtimizacaoEfetiva = { ...cfg, cachePrompt: { ligado: false }, cacheExato: { ...cfg.cacheExato, ligado: false }, limiteSaida: { ligado: false, tokens: null } };
     const omni = this.omni;
@@ -164,7 +167,7 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
       try {
         const answer = await omni.generate({
           agent: { id: agent.id, tenantId, systemPrompt: null, temperature: 0, maxTokens, advancedReasoning: false },
-          model, instructions: { fixed: SUMMARY_PROMPT, variable: '' }, message, history: [], historyComplete: true, functions: [],
+          model, instructions: { fixed: summaryPrompt(maxTokens), variable: '' }, message, history: [], historyComplete: true, functions: [],
           userId: conversation.userId, origin: 'i7ai-resumo', conversationId, quotaScope, optimization,
         });
         await this.quota.finish(quotaScope, 'COMPLETED');
@@ -199,6 +202,14 @@ export class ConversationSummaryService implements OnModuleInit, OnModuleDestroy
       await this.prisma.$transaction(async tx => {
         await tx.conversation.updateMany({ where: unchanged, data: { summaryRejectedThroughMessageId: plan.throughId } });
         await tx.auditLog.create({ data: audit('conversation.summary_skipped', { messages: plan.toSummarize.length, summaryChars: summary.length, replacedChars: replaced.length }) });
+      });
+      return 'ignorado';
+    }
+    if (truncated && !failed && !missing.length && !atCeiling) {
+      // Cut by the proportional cap, not by the ceiling: not the summary's fault. Like "too long": no strike, waits N/2.
+      await this.prisma.$transaction(async tx => {
+        await tx.conversation.updateMany({ where: unchanged, data: { summaryRejectedThroughMessageId: plan.throughId } });
+        await tx.auditLog.create({ data: audit('conversation.summary_skipped', { messages: plan.toSummarize.length, truncated: true }) });
       });
       return 'ignorado';
     }
