@@ -785,3 +785,11 @@ test('cache de prompt desligado: mensagem de sistema é a string de hoje (parte 
   assert.equal(body.messages.at(-1).content, input.message);
   assert.ok(!JSON.stringify(body).includes('cache_control'));
 });
+
+test('cache de prompt ligado com Claude: histórico cortado pelo próprio OmniRouter não ganha a 2ª marcação mesmo com historyComplete', async t => {
+  const history = Array.from({ length: 41 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: 'Turno ' + index }));
+  const { service, input } = cacheOn('anthropic/claude-haiku-5-5', history, true);
+  const local = await provider(t, (_body, response) => json(response, completion()));
+  await service.generate(input);
+  assert.equal(countMarkers(local.requests[0].body), 1);
+});
