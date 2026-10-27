@@ -3,9 +3,9 @@ import { mockSession, fixtures } from './fixtures';
 import fs from 'node:fs';
 const folder='output/verification/sgdm/screenshots-embedded';
 fs.mkdirSync(folder,{recursive:true});
-const pages={dashboard:'Dashboard',chat:'Novo chat',agents:'Agentes de IA',models:'Modelos de IA',executions:'Execuções',knowledge:'Bases de conhecimento',documents:'Documentos',automations:'Automações',schedules:'Agendamentos',tools:'Ferramentas & MCP',integrations:'Integrações',users:'Usuários',departments:'Departamentos',reports:'Relatórios e consumo',licensing:'Licenciamento',settings:'Configurações'};
+const pages={dashboard:'Dashboard',chat:'Novo chat',agents:'Agentes de IA',models:'Modelos de IA',executions:'Execuções',knowledge:'Bases de conhecimento',documents:'Documentos',automations:'Automações',schedules:'Agendamentos',tools:'Ferramentas & MCP',integrations:'Integrações',reports:'Relatórios e consumo',licensing:'Licenciamento'};
 for(const viewport of [{width:1440,height:1050},{width:390,height:844}]) {
-  test(`16 páginas em ${viewport.width}px`,async({page})=>{
+  test(`13 páginas em ${viewport.width}px`,async({page})=>{
     test.setTimeout(120000);
     await page.setViewportSize(viewport);const errors=[];page.on('pageerror',error=>errors.push(error.message));await mockSession(page);
     for(const [route,title] of Object.entries(pages)) {
@@ -26,7 +26,7 @@ for(const viewport of [{width:1440,height:1050},{width:390,height:844}]) {
     expect(errors).toEqual([]);
   });
 }
-const editors=[['agents','Novo agente'],['models','Novo modelo'],['knowledge','Nova base'],['automations','Nova automação'],['schedules','Novo agendamento'],['tools','Nova ferramenta'],['users','Novo usuário'],['departments','Novo departamento'],['licensing','Editar licença']];
+const editors=[['agents','Novo agente'],['knowledge','Nova base'],['automations','Nova automação'],['schedules','Novo agendamento'],['tools','Nova ferramenta'],['licensing','Editar licença']];
 for(const [route,name] of editors) {
   test(`modal: ${name}`,async({page})=>{
     await mockSession(page);await page.goto('/?module='+route);const trigger=page.getByRole('button',{name,exact:true});await trigger.click();const dialog=page.getByRole('dialog');await expect(dialog).toBeVisible();
@@ -36,26 +36,16 @@ for(const [route,name] of editors) {
     await page.screenshot({path:`${folder}/modal-${route}.png`,fullPage:true});await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);await expect(trigger).toBeFocused();
   });
 }
-test('formulário salva pela API e mostra toast oficial',async({page})=>{
-  const writes=[];await mockSession(page,{writes});await page.goto('/?module=departments');await page.getByRole('button',{name:'Novo departamento'}).click();await page.getByLabel(/^Nome/).fill('Planejamento');await page.getByLabel('Descrição').fill('Planejamento municipal');await page.getByRole('button',{name:'Salvar',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByText('Registro salvo.')).toBeVisible();expect(writes[0].path).toBe('/departments');expect(JSON.parse(writes[0].body).name).toBe('Planejamento');
+test('Modelos é só consulta: sem "Novo modelo" e com o aviso do SGDM',async({page})=>{
+  await mockSession(page);await page.goto('/?module=models');
+  await expect(page.getByRole('heading',{level:1,name:'Modelos de IA',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Novo modelo'})).toHaveCount(0);await expect(page.getByRole('button',{name:'Configurar'})).toHaveCount(0);
+  await expect(page.getByText('Os modelos são ativados e liberados pelo dono da plataforma na Central de IA do SGDM. Os preços vêm do LiteLLM.')).toBeVisible();
+  await expect(page.getByRole('cell',{name:'gpt-fixture'})).toBeVisible();
 });
-test('cadastro de usuário envia identidade e permissões sem senha local',async({page})=>{
-  const writes=[];await mockSession(page,{writes});await page.goto('/?module=users');
-  await page.getByRole('button',{name:'Novo usuário',exact:true}).click();
-  await expect(page.getByLabel(/senha/i)).toHaveCount(0);
-  await page.getByLabel(/^Nome/).fill('Pessoa de Teste');await page.getByLabel('E-mail').fill('pessoa@example.test');
-  await page.getByLabel('ADMIN',{exact:true}).check();await page.getByRole('button',{name:'Salvar',exact:true}).click();
-  await expect(page.getByRole('dialog')).toHaveCount(0);expect(writes[0].path).toBe('/users');
-  expect(JSON.parse(writes[0].body)).toEqual({name:'Pessoa de Teste',email:'pessoa@example.test',status:'ACTIVE',departmentId:null,roleIds:['role-1']});
-});
-
-test('retenção só envia prazo explícito e permite desativar a limpeza',async({page})=>{
-  const writes=[];await mockSession(page,{writes,overrides:{'/settings':{name:'Prefeitura de Teste',settings:{retentionDays:null}}}});
-  await page.goto('/?module=settings');const field=page.getByLabel('Retenção de conversas e dados de execução (dias)');
-  await expect(field).toHaveValue('');await field.fill('30');await page.getByRole('button',{name:'Salvar configurações'}).click();
-  await expect.poll(()=>writes.length).toBe(1);expect(JSON.parse(writes[0].body).retentionDays).toBe(30);
-  await expect(page.getByText('Configurações salvas.')).toBeVisible();await field.fill('');await page.getByRole('button',{name:'Salvar configurações'}).click();
-  await expect.poll(()=>writes.length).toBe(2);expect(JSON.parse(writes[1].body).retentionDays).toBe(null);
+test('?module=users cai no Dashboard',async({page})=>{
+  await mockSession(page);await page.goto('/?module=users');
+  await expect(page.getByRole('region',{name:'i7Ai',exact:true}).getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();
 });
 
 for(const [type,name] of [['INTERNAL_DATABASE','Documentos vinculados'],['EXTERNAL_SEARCH','Pesquisa autorizada']]) {
@@ -106,10 +96,10 @@ test('navegação do módulo preserva a rota e a estrutura do SGDM',async({page}
 
 test('SGDM controla página e renovação de sessão sem login próprio',async({page})=>{
   await mockSession(page,{context:{navigationManagedByHost:true}});await page.goto('/');await expect(page.getByRole('heading',{level:1,name:'Dashboard',exact:true})).toBeVisible();await expect(page.getByLabel('Área do i7Ai')).toHaveCount(0);
-  await page.evaluate(()=>{window.__SGDM_CONTEXT__.modulePage='departments';window.dispatchEvent(new Event('sgdm:context-updated'));});await expect(page.getByRole('heading',{level:1,name:'Departamentos',exact:true})).toBeVisible();
+  await page.evaluate(()=>{window.__SGDM_CONTEXT__.modulePage='agents';window.dispatchEvent(new Event('sgdm:context-updated'));});await expect(page.getByRole('heading',{level:1,name:'Agentes de IA',exact:true})).toBeVisible();
   await page.evaluate(()=>{window.sessionReason=null;window.addEventListener('i7ai:session-required',event=>window.sessionReason=event.detail.reason);window.dispatchEvent(new Event('i7ai:session-expired'));});
   await expect(page.getByText('Sessão do SGDM expirada',{exact:true})).toBeVisible();expect(await page.evaluate(()=>window.sessionReason)).toBe('expired');await expect(page.getByLabel(/^Senha/)).toHaveCount(0);
-  await page.evaluate(()=>{window.__SGDM_CONTEXT__.accessToken='fixture-refreshed';window.dispatchEvent(new Event('sgdm:context-updated'));});await expect(page.getByRole('heading',{level:1,name:'Departamentos',exact:true})).toBeVisible();
+  await page.evaluate(()=>{window.__SGDM_CONTEXT__.accessToken='fixture-refreshed';window.dispatchEvent(new Event('sgdm:context-updated'));});await expect(page.getByRole('heading',{level:1,name:'Agentes de IA',exact:true})).toBeVisible();
 });
 
 test('sessão ausente ignora login legado e solicita acesso ao SGDM',async({page})=>{

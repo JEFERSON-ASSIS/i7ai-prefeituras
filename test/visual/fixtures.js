@@ -19,7 +19,7 @@ const execution={id:'execution-1',automation,agent,schedule,status:'SUCCESS',sta
 export const fixtures={
   '/auth/me':{id:'user-1',name:'Ana de Teste',email:'ana@example.test',roles:['SUPER_ADMIN'],permissions:['*']},
   '/agents':[agent,educationAgent],'/departments':[department],'/models':[model,claude,gemini],'/providers':[provider,anthropic,google],'/tools':[tool],'/knowledge-bases':[base],
-  '/chat/catalog':{agents:[agent,educationAgent],models:[model,claude,gemini]},
+  '/chat/catalog':{agents:[agent,educationAgent],models:[model,claude,gemini],defaultModelId:model.id},
   '/chat/attachments/capabilities':{extensions:['pdf','txt','csv','xlsx','docx','md','json','xml','html','htm','png','jpg','jpeg','webp'],maxFiles:5,maxBytes:20*1024*1024,imageMaxBytes:10*1024*1024},
   '/documents':[{id:'doc-1',name:'Guia municipal.pdf',knowledgeBaseId:base.id,status:'READY',sizeBytes:123000,updatedAt:now}],
   '/automations':[automation],'/executions':[execution],'/executions/execution-1':execution,
@@ -27,8 +27,6 @@ export const fixtures={
   '/conversations/conversation-1':{...conversation,messages:[{id:'message-1',role:'user',content:'Como consultar as orientações?',createdAt:now},{id:'message-2',role:'assistant',content:'Consulte o guia municipal na base de conhecimento.',createdAt:now,metadata:{modelId:model.id,model:model.slug,modelName:model.name,providerName:provider.name,sources:[{id:'doc-1',documentName:'Guia municipal.pdf'}]}}]},
   '/conversations/conversation-2':{...educationConversation,messages:[{id:'message-3',role:'user',content:'Analise o relatório de educação.',createdAt:now,attachments:[{document:attachment}]},{id:'message-4',role:'assistant',content:'O relatório recomenda acompanhar a frequência escolar.',createdAt:now,metadata:{modelId:claude.id,model:claude.slug,modelName:claude.name,providerName:anthropic.name}}]},
   '/chat/attachments/attachment-1':attachment,
-  '/users':[{id:'user-1',name:'Ana de Teste',email:'ana@example.test',department,status:'ACTIVE',roles:[{roleId:'role-1',role:{name:'ADMIN'}}]}],
-  '/roles':[{id:'role-1',name:'ADMIN'}],'/settings':{name:'Prefeitura de Teste',settings:{organizationName:'Prefeitura de Teste',timezone:'America/Cuiaba',locale:'pt-BR',retentionDays:365}},
   '/licensing':{license:{id:'license-1',status:'ACTIVE',maxUsers:20,maxAgents:10,maxAutomations:10,maxKnowledgeBases:10,maxTokens:'1000000',maxStorageBytes:'10737418240',startDate:now,endDate:null},usage:{users:1,agents:1,automations:1,knowledgeBases:1,tokensThisMonth:2100,storageBytes:123000}},
   '/dashboard':{agents:1,conversations:1,automations:1,documents:1,requests:3,inputTokens:1500,outputTokens:600,timezone:'America/Cuiaba',daily:[{date:'2026-10-01',inputTokens:800,outputTokens:300},{date:'2026-10-02',inputTokens:700,outputTokens:300}],executions:[{status:'SUCCESS',count:1}],recent:[{event:'Agente atualizado',resource:'agents',createdAt:now}]},
   '/reports':{inputTokens:1500,outputTokens:600,requests:3,cost:0.0027,models:[{name:model.name,provider:provider.name,inputTokens:1500,outputTokens:600,cost:0.0027,costConfigured:true}]},

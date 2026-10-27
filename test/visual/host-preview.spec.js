@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 const routes = {
   dashboard:'Dashboard',chat:'Novo chat',agents:'Agentes de IA',models:'Modelos de IA',executions:'Execuções',
   knowledge:'Bases de conhecimento',documents:'Documentos',automations:'Automações',schedules:'Agendamentos',
-  tools:'Ferramentas & MCP',integrations:'Integrações',users:'Usuários',departments:'Departamentos',
-  reports:'Relatórios e consumo',licensing:'Licenciamento',settings:'Configurações',
+  tools:'Ferramentas & MCP',integrations:'Integrações',
+  reports:'Relatórios e consumo',licensing:'Licenciamento',
 };
 for (const width of [1440,390]) {
   test(`prévia dentro do host SGDM em ${width}px`,async({page})=>{
@@ -27,10 +27,11 @@ for (const width of [1440,390]) {
       }))).toEqual({documentOverflow:'hidden',mainOverflow:'auto'});
       await page.screenshot({path:`output/verification/sgdm/screenshots-embedded/host-${route}-${width}.png`,fullPage:true});
     }
-    if(width===390)await page.getByLabel('Área da prévia').selectOption('departments');
-    else await page.getByRole('link',{name:'Departamentos',exact:true}).click();
-    await page.getByRole('button',{name:'Novo departamento'}).click();await page.getByLabel(/^Nome/).fill('Teste da prévia');
-    await page.getByRole('button',{name:'Salvar',exact:true}).click();
+    await expect(page.getByRole('link',{name:/^(Usuários|Departamentos|Configurações)$/})).toHaveCount(0);
+    if(width===390)await page.getByLabel('Área da prévia').selectOption('chat');
+    else await page.getByRole('link',{name:'Novo chat',exact:true}).click();
+    await page.getByLabel('Agente da conversa').selectOption('agent-1');await page.getByLabel('Mensagem',{exact:true}).fill('Teste da prévia');
+    await page.getByRole('button',{name:'Enviar mensagem'}).click();
     await expect(page.getByText('Esta prévia usa dados de teste. Alterações e chamadas de IA estão desabilitadas.')).toBeVisible();
     expect(apiCalls).toEqual([]);expect(errors).toEqual([]);
   });

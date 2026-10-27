@@ -208,17 +208,28 @@ test('catálogo de chat usa permissão de execução e leitura não concede envi
   await expect(page.getByRole('button', { name: 'Enviar mensagem' })).toBeDisabled();
 });
 
-test('editor do catálogo salva capacidades declaradas e limites em tokens', async ({ page }) => {
-  const writes = [];
-  await mockSession(page, { writes });
-  await page.goto('/?module=models');
-  await page.getByRole('button', { name: 'Novo modelo' }).click();
-  await page.getByLabel('Nome de exibição').fill('Modelo de imagens');
-  await page.getByLabel('Identificador no provedor').fill('modelo-imagens');
-  await page.getByLabel('Permite analisar imagens').check();
-  await page.getByLabel('Janela de contexto (tokens)').fill('64000');
-  await page.getByLabel('Limite de saída do modelo (tokens)').fill('8000');
-  await page.getByRole('button', { name: 'Salvar modelo' }).click();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
-  expect(JSON.parse(writes[0].body).capabilities).toEqual({ supportsVision: true, supportsTools: true, contextWindow: 64000, maxOutputTokens: 8000 });
+test('agente com modelo fora da lista liberada abre no modelo padrão', async ({ page }) => {
+  await mockSession(page, { overrides: { '/chat/catalog': { agents: fixtures['/agents'], models: [fixtures['/models'][1], fixtures['/models'][2]], defaultModelId: 'model-3' } } });
+  await page.goto('/?module=chat');
+  await page.getByLabel('Agente da conversa').selectOption('agent-1');
+  await expect(page.getByLabel('Modelo da conversa')).toHaveValue('model-3');
+});
+
+test('sem modelos liberados o seletor fica desabilitado e explica o motivo', async ({ page }) => {
+  await mockSession(page, { overrides: { '/chat/catalog': { agents: fixtures['/agents'], models: [], defaultModelId: null } } });
+  await page.goto('/?module=chat');
+  await page.getByLabel('Agente da conversa').selectOption('agent-1');
+  await expect(page.getByLabel('Modelo da conversa')).toBeDisabled();
+  await expect(page.getByText('Nenhum modelo de IA foi liberado para você. Fale com o administrador da plataforma.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Enviar mensagem' })).toBeDisabled();
+});
+
+test('recusa 403 do servidor aparece como veio', async ({ page }) => {
+  const message = 'Este modelo não está liberado para você. Escolha outro no seletor do chat.';
+  await mockSession(page, { writeHandler: async (route, { headers }) => { await route.fulfill({ status: 403, json: { message }, headers }); return true; } });
+  await page.goto('/?module=chat');
+  await page.getByLabel('Agente da conversa').selectOption('agent-1');
+  await page.getByLabel('Mensagem', { exact: true }).fill('Olá');
+  await page.getByRole('button', { name: 'Enviar mensagem' }).click();
+  await expect(page.getByText(message)).toBeVisible();
 });

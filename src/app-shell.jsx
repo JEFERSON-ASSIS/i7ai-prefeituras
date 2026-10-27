@@ -1,6 +1,6 @@
 import { PageHeader, Button, Select, Card, EmptyState, useToast } from '@sgdm/design';
 import { useEffect, useState } from 'react';
-import { Activity, Bot, BrainCircuit, CalendarClock, FileText, ChartNoAxesColumnIncreasing, Grid2X2, LayoutDashboard, LibraryBig, Link2, Plug, Settings, ShieldCheck, Sparkles, Users, Zap } from 'lucide-react';
+import { Activity, Bot, BrainCircuit, CalendarClock, FileText, ChartNoAxesColumnIncreasing, LayoutDashboard, LibraryBig, Link2, Plug, ShieldCheck, Sparkles, Zap } from 'lucide-react';
 import { PermissionProvider, hasPermission } from './api/permissions';
 import { ModelPage } from './features/ModelPages';
 import { LicensePage } from './features/LicensePage';
@@ -11,7 +11,6 @@ import { AgentsPage } from './features/AgentPages';
 import { ChatPage } from './features/ChatPage';
 import { KnowledgePage } from './features/KnowledgePage';
 import { ToolsPage } from './features/ToolPages';
-import { OrganizationPage } from './features/OrganizationPages';
 import { Dashboard, ReportsPage } from './features/OverviewPages';
 import { AutomationPage, ExecutionsPage } from './features/AutomationPages';
 export const moduleNavigationGroups = [
@@ -20,8 +19,7 @@ export const moduleNavigationGroups = [
   ['Conhecimento', [['knowledge', 'Bases de conhecimento', LibraryBig], ['documents', 'Documentos', FileText]]],
   ['Automação', [['automations', 'Automações', Zap], ['schedules', 'Agendamentos', CalendarClock]]],
   ['Ferramentas', [['tools', 'Ferramentas & MCP', Plug], ['integrations', 'Integrações', Link2]]],
-  ['Organização', [['users', 'Usuários', Users], ['departments', 'Departamentos', Grid2X2], ['licensing', 'Licenciamento', ShieldCheck]]],
-  ['Preferências', [['settings', 'Configurações', Settings]]],
+  ['Organização', [['licensing', 'Licenciamento', ShieldCheck]]],
 ];
 const titles = {
   dashboard: ['Dashboard', 'Acompanhe os dados reais da sua operação.'],
@@ -35,10 +33,7 @@ const titles = {
   schedules: ['Agendamentos', 'Programe as automações da prefeitura.'],
   tools: ['Ferramentas & MCP', 'Configure ferramentas autorizadas para seus agentes.'],
   integrations: ['Integrações', 'Conecte APIs, webhooks, n8n e servidores MCP.'],
-  users: ['Usuários', 'Gerencie pessoas e perfis de acesso.'],
-  departments: ['Departamentos', 'Organize as áreas da prefeitura.'],
   reports: ['Relatórios e consumo', 'Tokens, custos registrados e auditoria.'],
-  settings: ['Configurações', 'Preferências da sua organização.'],
   licensing: ['Licenciamento', 'Limites contratados da prefeitura.']
 };
 export function App() {
@@ -93,7 +88,7 @@ export function App() {
   if (active === 'dashboard') content = <Dashboard token={token} navigate={navigate} />;else if (active === 'agents') content = <AgentsPage token={token} notify={notify} onOpen={id => {
     setSelectedAgentId(id);
     navigate('chat');
-  }} />;else if (active === 'chat') content = <ChatPage token={token} selectedAgentId={selectedAgentId} onSelectAgent={setSelectedAgentId} />;else if (['knowledge', 'documents'].includes(active)) content = <KnowledgePage token={token} active={active} notify={notify} />;else if (['tools', 'integrations'].includes(active)) content = <ToolsPage token={token} notify={notify} />;else if (['automations', 'schedules'].includes(active)) content = <AutomationPage token={token} active={active} notify={notify} />;else if (active === 'executions') content = <ExecutionsPage token={token} notify={notify} />;else if (active === 'models') content = <ModelPage token={token} notify={notify} canWrite={session.data.roles.includes('SUPER_ADMIN')} />;else if (active === 'reports') content = <ReportsPage token={token} />;else if (active === 'licensing') content = <LicensePage token={token} notify={notify} platformAdmin={user.roles.includes('SUPER_ADMIN')} />;else content = <OrganizationPage key={active} token={token} active={titles[active] ? active : 'settings'} notify={notify} />;
+  }} />;else if (active === 'chat') content = <ChatPage token={token} selectedAgentId={selectedAgentId} onSelectAgent={setSelectedAgentId} />;else if (['knowledge', 'documents'].includes(active)) content = <KnowledgePage token={token} active={active} notify={notify} />;else if (['tools', 'integrations'].includes(active)) content = <ToolsPage token={token} notify={notify} />;else if (['automations', 'schedules'].includes(active)) content = <AutomationPage token={token} active={active} notify={notify} />;else if (active === 'executions') content = <ExecutionsPage token={token} notify={notify} />;else if (active === 'models') content = <ModelPage token={token} notify={notify} />;else if (active === 'reports') content = <ReportsPage token={token} />;else if (active === 'licensing') content = <LicensePage token={token} notify={notify} platformAdmin={user.roles.includes('SUPER_ADMIN')} />;else content = <Dashboard token={token} navigate={navigate} />;
   const sections = moduleNavigationGroups.map(([label, items]) => ({
     label,
     items: items.filter(([id]) => hasPermission(user.permissions, {

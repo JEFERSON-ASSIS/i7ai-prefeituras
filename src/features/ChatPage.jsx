@@ -77,6 +77,14 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
   const scope = useRef(0);
   const currentAgentId = useRef(selectedAgentId);
   const agent = agents.find(item => item.id === selectedAgentId);
+  // Agent's own model if still released; otherwise the user's default; otherwise the first released one.
+  const initialModelId = target => {
+    const own = target?.modelId || target?.models?.find(item => item.isPrimary)?.modelId;
+    if (own && models.some(item => item.id === own)) return own;
+    if (catalog.data.defaultModelId && models.some(item => item.id === catalog.data.defaultModelId)) return catalog.data.defaultModelId;
+    return models[0]?.id || '';
+  };
+  const noModels = canSend && !catalog.loading && !catalog.error && models.length === 0;
   const model = models.find(item => item.id === modelId) || (conversation?.modelId === modelId ? conversation.model : null);
   const supportsImages = model?.capabilities?.supportsVision && Number(model?.capabilities?.contextWindow) >= 4096;
   const canUseAgent = canSend && agent?.status === 'ACTIVE';
@@ -114,7 +122,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     setSending(false);
     setLoadingHistory(false);
     const next = agents.find(item => item.id === nextAgentId);
-    setModelId(next?.modelId || next?.models?.find(item => item.isPrimary)?.modelId || '');
+    setModelId(initialModelId(next));
   }
   function selectAgent(id) {
     currentAgentId.current = id;
@@ -128,7 +136,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     }
   }, [selectedAgentId]);
   useEffect(() => {
-    if (!modelId && !conversationId && agent) setModelId(agent.modelId || agent.models?.find(item => item.isPrimary)?.modelId || '');
+    if (!modelId && !conversationId && agent) setModelId(initialModelId(agent));
   }, [agent]);
   useEffect(() => () => {
     scope.current++;
@@ -173,7 +181,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
       setMessages(history.messages || []);
       const latest = [...(history.messages || [])].reverse().find(message => message.metadata?.modelId);
       const defaultAgent = agents.find(item => item.id === history.agentId);
-      setModelId(history.modelId || latest?.metadata.modelId || defaultAgent?.modelId || defaultAgent?.models?.find(item => item.isPrimary)?.modelId || '');
+      setModelId(history.modelId || latest?.metadata.modelId || initialModelId(defaultAgent));
     } catch (caught) {
       if (caught.name !== 'AbortError' && request.current === controller) setError(caught.message);
     } finally {
@@ -314,7 +322,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
               {visibleAgents.map(item => <option key={item.id} value={item.id}>{item.name}{item.status === 'DRAFT' ? ' (rascunho)' : ''}</option>)}
               {(!agent || agent.status === 'ARCHIVED') && conversation?.agent && <option value={conversation.agentId}>{conversation.agent.name}</option>}
             </Select>
-            <Select aria-label="Modelo da conversa" size="compact" icon={<Cpu size={14} />} value={modelId} onChange={event => setModelId(event.target.value)} disabled={sending || loadingHistory || !canSend}>
+            <Select aria-label="Modelo da conversa" size="compact" icon={<Cpu size={14} />} value={modelId} onChange={event => setModelId(event.target.value)} disabled={sending || loadingHistory || !canSend || noModels}>
               <option value="">Selecione um modelo</option>
               {models.map(item => <option key={item.id} value={item.id}>{item.name} · {item.provider?.name}</option>)}
               {modelId && !models.some(item => item.id === modelId) && <option value={modelId}>{model?.name || 'Modelo usado nesta conversa'}</option>}
@@ -350,6 +358,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
 
         <div className="chat-footer">
           {error && <Alert tone="danger">{error}</Alert>}
+          {noModels && <Alert tone="info">Nenhum modelo de IA foi liberado para você. Fale com o administrador da plataforma.</Alert>}
           {!canSend && <p className="panel-note">Seu perfil permite consultar as conversas.</p>}
           {agent && agent.status !== 'ACTIVE' && <p className="panel-note">Ative o agente nas configurações para conversar.</p>}
           {canUseAgent && incompatibleImage && <Alert tone="danger">{historicalImages ? 'Esta conversa contém imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou inicie uma nova conversa.' : 'Os anexos incluem imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou remova esses arquivos.'}</Alert>}
