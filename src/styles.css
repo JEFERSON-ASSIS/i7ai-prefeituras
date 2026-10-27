@@ -32,6 +32,8 @@ html.sgdm-app-shell, html.sgdm-app-shell body, html.sgdm-app-shell #root { heigh
 .card-top, .agent-card-meta, .agent-card-foot, .tool-detail { justify-content: space-between; margin-bottom: 16px; }
 .base-count { display: inline-flex; align-items: center; gap: 8px; }
 .agent-card-foot { margin-top: 20px; margin-bottom: 0; }
+/* Long objectives show two lines in the card; the full text is in the tooltip and inside the agent. */
+.agent-card-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .muted, .agent-card-foot > span { color: rgb(var(--sd-color-text-muted)); font-size: 14px; }
 .panel-note { margin: 16px 0; }
 .quick-steps { margin-top: 20px; }

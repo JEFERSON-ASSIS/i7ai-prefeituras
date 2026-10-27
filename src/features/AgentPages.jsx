@@ -22,7 +22,7 @@ export function AgentsPage({
     <State loading={resource.loading} error={resource.error} retry={resource.reload} empty={!items.length && 'Nenhum agente encontrado. Crie um agente para começar.'}>
       <div className="section-grid">{items.map((agent, index) => <div key={agent.id}><Card title={<>{agent.name}</>}>
         <div className="card-top"><IconTile icon={Bot} tone="primary" /><IconButton disabled={!canWrite} title="Editar agente" aria-label={'Editar ' + agent.name} onClick={() => setEditor(agent)} icon={<><Pencil size={16} /></>} type="button" /></div>
-        <span className="muted">{agent.department?.name || 'Sem departamento'}</span><p>{agent.description}</p>
+        <span className="muted">{agent.department?.name || 'Sem departamento'}</span><p className="agent-card-description" title={agent.description || undefined}>{agent.description}</p>
         <div className="agent-card-meta"><span className="base-count"><Database size={14} />{agent.knowledgeBases?.length || 0} bases</span><Status value={agent.status} /></div>
         <div className="agent-card-foot"><span>{agent.models?.find(item => item.isPrimary)?.model?.name || agent.models?.[0]?.model?.name || 'Selecione um modelo'}</span><Button onClick={() => onOpen(agent.id)} variant="ghost" icon={<ArrowUpRight size={14} />} type="button">Abrir agente </Button></div>
       </Card></div>)}</div>
