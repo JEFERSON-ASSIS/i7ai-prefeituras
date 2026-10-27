@@ -7,6 +7,7 @@ export interface OtimizacaoEfetiva {
   limiteSaida: { ligado: boolean; tokens: number | null };
   imagensBaixa: { ligado: boolean };
   sugestoes: { ligado: boolean; minimoUsd: number };
+  pesquisaInternet: { ligado: boolean };
 }
 
 /** SGDM's `GET /integracoes/i7ai/otimizacoes/:tenantId` body; `agentes` only lists agents with an agent-scope row. */
@@ -24,4 +25,5 @@ export const OPTIMIZATION_DEFAULTS: OtimizacaoEfetiva = Object.freeze({
   limiteSaida: Object.freeze({ ligado: false, tokens: null }),
   imagensBaixa: Object.freeze({ ligado: true }),
   sugestoes: Object.freeze({ ligado: true, minimoUsd: 1 }),
+  pesquisaInternet: Object.freeze({ ligado: false }),
 }) as OtimizacaoEfetiva;

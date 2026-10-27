@@ -33,14 +33,21 @@ function validEffective(value: unknown): value is OtimizacaoEfetiva {
     && record(cacheExato) && bool(cacheExato.ligado) && num(cacheExato.ttlSegundos) && bool(cacheExato.chat)
     && record(limiteSaida) && bool(limiteSaida.ligado) && (limiteSaida.tokens === null || (Number.isSafeInteger(limiteSaida.tokens) && (limiteSaida.tokens as number) >= 1))
     && record(imagensBaixa) && bool(imagensBaixa.ligado)
-    && record(sugestoes) && bool(sugestoes.ligado) && num(sugestoes.minimoUsd);
+    && record(sugestoes) && bool(sugestoes.ligado) && num(sugestoes.minimoUsd)
+    && (value.pesquisaInternet === undefined || (record(value.pesquisaInternet) && bool(value.pesquisaInternet.ligado)));
 }
+
+/** An older SGDM may not send `pesquisaInternet` yet: web search stays off (the default). */
+const withSearch = (value: OtimizacaoEfetiva): OtimizacaoEfetiva => ({ ...value, pesquisaInternet: value.pesquisaInternet ?? { ligado: false } });
 
 function parseOptimizations(body: unknown): OtimizacaoI7ai {
   if (!record(body) || !validEffective(body.padrao) || !record(body.agentes) || !Object.values(body.agentes).every(validEffective)) {
     throw new Error('resposta inválida do SGDM');
   }
-  return { padrao: body.padrao, agentes: body.agentes as Record<string, OtimizacaoEfetiva> };
+  return {
+    padrao: withSearch(body.padrao),
+    agentes: Object.fromEntries(Object.entries(body.agentes as Record<string, OtimizacaoEfetiva>).map(([id, own]) => [id, withSearch(own)])),
+  };
 }
 
 const copy = (value: OtimizacaoEfetiva): OtimizacaoEfetiva => structuredClone(value);

@@ -48,6 +48,7 @@ test('OPTIMIZATION_DEFAULTS é exatamente a tabela de padrões (mesmo literal do
     limiteSaida: { ligado: false, tokens: null },
     imagensBaixa: { ligado: true },
     sugestoes: { ligado: true, minimoUsd: 1 },
+    pesquisaInternet: { ligado: false },
   });
 });
 
