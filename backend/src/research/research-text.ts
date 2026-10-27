@@ -44,16 +44,44 @@ async function readLimited(response: Response): Promise<string> {
 }
 
 /** Faz a chamada com tempo limite de 10 s (somado ao sinal do chamador) e lê no máximo 1 MB. */
+export const RETRY_ATTEMPTS = 4;
+const RETRY_DELAYS_MS = [250, 750, 1500];
+const TRANSIENT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT']);
+
+/** A dropped or refused connection (not a timeout of the whole request, not a redirect or a caller abort). */
+export function isTransientNetworkError(error: unknown): boolean {
+  const cause = (error as { cause?: { code?: string } } | null)?.cause;
+  return error instanceof TypeError && !!cause?.code && TRANSIENT_CODES.has(cause.code);
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  });
+}
+
 export async function requestJson(
   fetchFn: FetchLike,
   url: string,
   init: Record<string, unknown>,
   caller?: AbortSignal,
 ): Promise<{ status: number; ok: boolean; data: any }> {
-  const response = await fetchFn(url, { ...init, redirect: 'error', signal: requestSignal(caller) });
-  const text = await readLimited(response);
+  // Public sources (PNCP above all) drop connections often: retry dropped connections and 502/503/504.
+  let response: Awaited<ReturnType<FetchLike>> | undefined;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      response = await fetchFn(url, { ...init, redirect: 'error', signal: requestSignal(caller) });
+      if (![502, 503, 504].includes(response.status) || attempt >= RETRY_ATTEMPTS) break;
+    } catch (error) {
+      if (caller?.aborted || attempt >= RETRY_ATTEMPTS || !isTransientNetworkError(error)) throw error;
+    }
+    await sleep(RETRY_DELAYS_MS[attempt - 1] ?? 750, caller);
+  }
+  const text = await readLimited(response!);
   let data: any = null;
   let parsed = true;
   try { data = text ? JSON.parse(text) : null; } catch { parsed = false; }
-  return { status: response.status, ok: response.ok && parsed, data };
+  return { status: response!.status, ok: response!.ok && parsed, data };
 }
