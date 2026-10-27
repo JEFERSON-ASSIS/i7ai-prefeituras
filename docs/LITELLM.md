@@ -197,6 +197,37 @@ O resumo do histórico (`origem:i7ai-resumo`) conta na caixa de chat, porque é 
 
 Variáveis: nenhuma nova.
 
+### O que os usuários pedem
+
+A Visão geral tem o cartão **O que os usuários pedem** (temas mais frequentes e conversas de alto custo), e o **Consumo e custo › Por conversa** tem as colunas **Tema** e **i7Ai** e o filtro **Tema**. A Central mostra temas e números; o texto das conversas só no i7Ai, com registro.
+
+**Temas por lista fixa.** O tema de cada conversa é calculado no i7Ai, sem chamar modelo nenhum (nenhum dado de conversa sai só para ser classificado), por palavras-chave do **título** (peso 2) e do **nome do agente** (peso 1), sem acentos nem maiúsculas. Vence a maior pontuação; empate, quem teve mais palavras; ainda empate, a ordem da tabela; nenhuma palavra: `outros`. Os temas são: `licitacoes` (Licitações e contratos), `juridico` (Pareceres e questões jurídicas), `documentos` (Ofícios e documentos oficiais), `pessoal` (Pessoal e RH), `tributos` (Tributos e arrecadação), `financas` (Orçamento e finanças), `saude` (Saúde), `educacao` (Educação), `assistencia` (Assistência social), `obras` (Obras e urbanismo), `meio-ambiente` (Meio ambiente), `atendimento` (Atendimento ao cidadão), `tecnologia` (Tecnologia e sistemas), `texto` (Revisão e resumo de textos) e `outros`. A tabela e as regras estão em `backend/src/sgdm/themes.ts`.
+
+- A conversa nova já nasce com `theme` e `themeVersion` (colunas de `conversations`).
+- **Versão e recálculo.** `THEME_VERSION` (hoje 2) sobe sempre que a tabela ou as regras mudam. Só vale o tema de linhas com `themeVersion` igual ou maior que a versão atual. **Depois de subir a versão, tudo conta como `semTema` até o recálculo rodar**: o cartão e o filtro ficam vazios ou incompletos nesse intervalo. O recálculo (`ThemeBackfillService`) roda 60 s depois de o backend subir e depois a cada `THEME_BACKFILL_INTERVAL_MS` (padrão 10 min; `0` desliga), em rodadas de até 20 lotes de 500 conversas, **das mais recentes para as mais antigas**, e é idempotente (linha atualizada sai do filtro; uma linha já classificada por versão mais nova nunca é sobrescrita). O log traz só contagens, nunca títulos. Medido no banco local: 62 conversas recalculadas em 1 lote, 83 ms.
+- **Migration `20261031000100_conversation_theme`.** Soma as colunas `theme` e `themeVersion` e cria três índices em `conversations` (`createdAt`; `tenantId, createdAt`; `themeVersion`) com `CREATE INDEX` comum, que **trava as escritas na tabela enquanto o índice é construído**. Aplique-a em horário calmo, sobretudo com milhões de conversas.
+
+**Máscara de títulos e o limite dela.** O título que sai do i7Ai para a Central (`POST /api/integracoes/sgdm/nomes`) passa por `maskPersonalData`, nesta ordem: e-mail → `[e-mail]`, CNPJ → `[CNPJ]`, CPF (com ou sem pontos e traço) → `[CPF]`, telefone com DDD → `[telefone]` e qualquer sequência de 6 ou mais dígitos, mesmo com espaços, pontos ou hífens → `[número]` (um número de processo não é tomado por telefone). O título no banco do i7Ai não muda. **Nomes de pessoas não são detectados** e não são mascarados: "Férias do servidor João" sai como está. Por isso o título só vai para quem tem `IA_CENTRAL`, e o texto das mensagens nunca sai por esses endpoints.
+
+**Endpoints internos.** Chamados só entre servidores, com a chave de integração (`SGDM_INTEGRATION_KEY`, igual a `I7AI_INTEGRACAO_CHAVE` no SGDM). Nenhum devolve texto de mensagem.
+
+| Endpoint | Devolve |
+| --- | --- |
+| `GET /api/integracoes/sgdm/temas?inicio=AAAA-MM-DD&fim=AAAA-MM-DD[&tenantId=]` | por tema: id, rótulo, conversas, usuários e prefeituras; mais `semTema`. Período de até 366 dias, por data de criação da conversa |
+| `POST /api/integracoes/sgdm/nomes` (ids de agentes e de conversas no corpo) | nome de cada agente e, para cada conversa, o título mascarado e o `tema` (id e rótulo). Conversa com `themeVersion` antigo é classificada na hora, sem gravar; por isso a coluna Tema do Consumo já mostra o tema mesmo antes do recálculo, enquanto o cartão de temas ainda conta essas conversas como `semTema` |
+| `POST /api/central/conversas/:id/abrir` | única rota que devolve texto, e não é de integração: usa a sessão do usuário (veja abaixo) |
+
+O SGDM mostra "Temas indisponíveis" (no cartão e na coluna Tema) quando o i7Ai não responde; o resto da Central continua. No Consumo, o filtro por tema olha só as 200 conversas de maior custo do período.
+
+**Abertura de uma conversa (auditada).** O link **ver no i7Ai** abre `/i7ai/?conversa=<id>` em nova aba, que pede o **motivo** antes de mostrar qualquer coisa.
+
+1. `POST /api/central/conversas/:id/abrir` com `{ "motivo": "..." }` (10 a 300 caracteres). Só quem tem `centralIa` na sessão (permissão `IA_CENTRAL` do SGDM) abre; os demais recebem **403 antes de qualquer leitura ou validação do corpo**, então a resposta não revela se a conversa existe, e nada é gravado. Id sem conversa: 404.
+2. Em **uma transação**, o i7Ai lê a conversa (as 1.000 mensagens mais recentes; `truncada: true` se havia mais), grava na auditoria **da prefeitura dona da conversa** o evento `conversation.viewed_by_platform` (recurso `conversations`, com `motivo`, `viewerEmail`, `viewerTenantId`, `origem: central-ia` e o número de mensagens) e só então responde. Se a auditoria falhar, nada é devolvido.
+3. A visualização é só de leitura e em texto puro, com `Cache-Control: no-store`. O log do servidor traz só o id e a contagem de mensagens, nunca o motivo, o título nem o conteúdo.
+4. O administrador da prefeitura vê o evento em **i7Ai › Relatórios › Auditoria**, com o nome de quem abriu e o motivo.
+
+O dono da plataforma precisa ter entrado no i7Ai ao menos uma vez para existir no espelho de usuários. Um usuário que tem `IA_CENTRAL` mas **nenhum papel i7Ai** não ocupa vaga de licença (senão o dono ficaria bloqueado em prefeituras com a licença cheia); a vaga só é conferida se ele ganhar um papel i7Ai.
+
 ## Otimização
 
 As otimizações da Entrega 4 reduzem o custo por conversa do i7Ai. São configuradas no SGDM, em **Central de IA › Otimização** (tabela `ia_otimizacoes`, escopo agente > prefeitura > todos > padrão), e o i7Ai só lê (`GET /integracoes/i7ai/otimizacoes/:tenantId`, cache `SGDM_OPTIMIZATION_CACHE_SECONDS`). Sem resposta do SGDM e sem cache, o i7Ai usa os padrões abaixo e nunca bloqueia o chat. As peças do SGDM (`origem:sgdm-pecas`) não recebem nenhuma delas.
