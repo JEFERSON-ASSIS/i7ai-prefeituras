@@ -239,6 +239,7 @@ model AiModel {
   outputPrice Decimal?     @db.Decimal(10, 6)
   cachedInputPrice Decimal? @db.Decimal(12, 6)
   capabilities Json?
+  active      Boolean      @default(true)
   provider    AiProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
   agents      AgentModel[]
   usage       AiUsage[]

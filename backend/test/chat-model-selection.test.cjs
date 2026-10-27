@@ -2,14 +2,18 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 require('reflect-metadata');
 const { AiGatewayService } = require('../dist/ai/ai-gateway.service');
+const http = require('node:http');
+const { ForbiddenException } = require('@nestjs/common');
 const { quotaFixture } = require('./helpers/quota-fixture.cjs');
+const { SgdmAccessService } = require('../dist/sgdm/sgdm-access.service');
+const { ChatCatalogController } = require('../dist/ai/chat-catalog.controller');
 
-const keys = ['OMNIROUTER_BASE_URL', 'OMNIROUTER_API_KEY', 'AI_GATEWAY_URL', 'OPENAI_API_KEY', 'NODE_ENV'];
+const keys = ['OMNIROUTER_BASE_URL', 'OMNIROUTER_API_KEY', 'AI_GATEWAY_URL', 'OPENAI_API_KEY', 'NODE_ENV', 'SGDM_API_URL', 'SGDM_INTEGRATION_KEY', 'SGDM_ACCESS_CACHE_SECONDS'];
 const original = Object.fromEntries(keys.map(key => [key, process.env[key]]));
 test.beforeEach(() => { keys.forEach(key => delete process.env[key]); process.env.OMNIROUTER_BASE_URL = 'https://fixture.invalid/v1'; process.env.OMNIROUTER_API_KEY = 'synthetic-fixture'; });
 test.afterEach(() => keys.forEach(key => { if (original[key] === undefined) delete process.env[key]; else process.env[key] = original[key]; }));
 
-function fixture() {
+function fixture(access) {
   const records = { messages: [], usage: [], audit: [], conversations: [], requests: [], preparedFiles: [] };
   const primary = { id: 'default-model', name: 'GPT', slug: 'original-model', inputPrice: null, outputPrice: null, provider: { name: 'OpenAI', slug: 'openai' } };
   const selected = { id: 'selected-model', name: 'Claude', slug: 'account-specific-claude', capabilities: { supportsTools: true, contextWindow: 32000 }, inputPrice: null, outputPrice: null, provider: { name: 'Anthropic', slug: 'anthropic', config: { apiKey: 'never-public' } } };
@@ -27,7 +31,7 @@ function fixture() {
   const files = [{ id: 'file', name: 'relatório.txt', mimeType: 'text/plain', sizeBytes: '32', status: 'READY' }];
   const knowledge = { prepareChatAttachments: async (...args) => { records.preparedFiles.push(args); return { documents: files, text: '[Arquivo: relatório.txt]\nDespesa de 100 reais.', images: [] }; } };
   const omni = { generate: async input => { records.requests.push(input); return { answer: 'Análise concluída.', inputTokens: 30, outputTokens: 10, measured: true, toolCalls: [] }; } };
-  const service = new AiGatewayService(prisma, { searchForAgent: async () => [] }, { load: async () => [] }, quota, knowledge, omni);
+  const service = new AiGatewayService(prisma, { searchForAgent: async () => [] }, { load: async () => [] }, quota, knowledge, omni, access);
   return { service, records, prisma, agent, selected, files };
 }
 
@@ -126,4 +130,72 @@ test('a failed first generation creates no conversation row', async () => {
   await assert.rejects(service.chat('agent', 'tenant', { message: 'Olá' }, 'user'), /gateway down/);
   assert.equal(records.conversations.length, 0);
   service.omni.generate = generate;
+});
+
+const NOT_ALLOWED = 'Este modelo não está liberado para você. Escolha outro no seletor do chat.';
+async function sgdm(t, allowed) {
+  const calls = [];
+  const server = http.createServer((request, response) => {
+    calls.push(request.url);
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(allowed));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  process.env.NODE_ENV = 'test';
+  process.env.SGDM_API_URL = `http://127.0.0.1:${server.address().port}/api/v1`;
+  process.env.SGDM_INTEGRATION_KEY = 'integration-secret';
+  return calls;
+}
+const forbidden = error => error instanceof ForbiddenException && error.message === NOT_ALLOWED;
+
+test('modelId forçado de um modelo ativo não liberado é recusado com 403, sem chamada ao gateway', async t => {
+  const calls = await sgdm(t, { modelos: ['original-model'], padrao: 'original-model' });
+  const { service, records, selected } = fixture(new SgdmAccessService());
+  selected.active = true;
+  await assert.rejects(service.chat('agent', 'tenant', { message: 'Olá', modelId: 'selected-model' }, 'user'), forbidden);
+  assert.equal(records.requests.length, 0); assert.equal(records.messages.length, 0);
+  assert.deepEqual(calls, ['/api/v1/integracoes/i7ai/acesso/tenant?usuarioId=user']);
+});
+
+test('modelo principal do agente não liberado é recusado com 403', async t => {
+  await sgdm(t, { modelos: ['account-specific-claude'], padrao: null });
+  const { service, records } = fixture(new SgdmAccessService());
+  await assert.rejects(service.chat('agent', 'tenant', { message: 'Olá' }, 'user'), forbidden);
+  assert.equal(records.requests.length, 0);
+  // The allowed one still runs.
+  await service.chat('agent', 'tenant', { message: 'Olá', modelId: 'selected-model' }, 'user');
+  assert.equal(records.requests.length, 1);
+});
+
+test('automação (sem userId) consulta acesso da prefeitura, sem usuarioId', async t => {
+  const calls = await sgdm(t, { modelos: ['original-model'], padrao: 'original-model' });
+  const { service, records } = fixture(new SgdmAccessService());
+  await service.executeAgent('agent', 'tenant', { message: 'Rodar' });
+  assert.deepEqual(calls, ['/api/v1/integracoes/i7ai/acesso/tenant']);
+  assert.equal(records.requests.length, 1);
+});
+
+test('modelo inativo é recusado com a mesma mensagem, mesmo sem integração', async () => {
+  const { service, records, selected } = fixture(new SgdmAccessService());
+  selected.active = false;
+  await assert.rejects(service.chat('agent', 'tenant', { message: 'Olá', modelId: 'selected-model' }, 'user'), forbidden);
+  assert.equal(records.requests.length, 0);
+});
+
+test('/chat/catalog mostra só os modelos liberados e o defaultModelId do padrão', async t => {
+  const calls = await sgdm(t, { modelos: ['anthropic/claude-sonnet-5', 'openai/gpt-5.5'], padrao: 'anthropic/claude-sonnet-5' });
+  const models = [{ id: '1', slug: 'openai/gpt-5.5' }, { id: '2', slug: 'anthropic/claude-sonnet-5' }, { id: '3', slug: 'openai/o4-mini' }];
+  const catalog = { activeModels: async () => models };
+  const agents = { list: async () => [{ id: 'agent', status: 'ACTIVE' }, { id: 'draft', status: 'DRAFT' }] };
+  const controller = new ChatCatalogController(agents, catalog, new SgdmAccessService());
+  const result = await controller.list({ user: { tenantId: 'tenant', sub: 'user', roles: ['SUPER_ADMIN'] } });
+  assert.deepEqual(result.models.map(model => model.id), ['1', '2']);
+  assert.equal(result.defaultModelId, '2');
+  assert.deepEqual(result.agents.map(agent => agent.id), ['agent']);
+  assert.deepEqual(calls, ['/api/v1/integracoes/i7ai/acesso/tenant?usuarioId=user']);
+  // Without integration every active model is offered and there is no default.
+  delete process.env.SGDM_API_URL;
+  const local = await new ChatCatalogController(agents, catalog, new SgdmAccessService()).list({ user: { tenantId: 'tenant', sub: 'user', roles: [] } });
+  assert.equal(local.models.length, 3); assert.equal(local.defaultModelId, null);
 });

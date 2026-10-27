@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { gatewayBaseAllowed } from '../catalog/model-route-policy';
+import { SgdmNotFound, SgdmUnavailable, sgdmIntegrationEnabled, sgdmIntegrationGet } from '../sgdm/sgdm-integration';
 
 type TenantKey = { provider: string; apiKey: string } | null;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -17,7 +17,7 @@ export class TenantAiKeyService {
   private readonly cache = new Map<string, { expires: number; key: TenantKey }>();
 
   enabled(env: NodeJS.ProcessEnv = process.env) {
-    return Boolean(env.SGDM_API_URL?.trim() && env.SGDM_INTEGRATION_KEY?.trim());
+    return sgdmIntegrationEnabled(env);
   }
 
   /** Key for this tenant when the model belongs to the provider configured in SGDM. */
@@ -41,24 +41,16 @@ export class TenantAiKeyService {
   }
 
   private async fetchKey(tenantId: string): Promise<TenantKey> {
-    let base: URL;
-    try { base = new URL(process.env.SGDM_API_URL!.trim()); } catch { return null; }
-    if (!gatewayBaseAllowed(base, process.env, 'SGDM_INTERNAL_HOSTS')) return null;
+    let body: { habilitado?: unknown; provedor?: unknown; apiKey?: unknown };
     try {
-      const response = await fetch(base.href.replace(/\/+$/, '') + '/integracoes/i7ai/ia/' + tenantId, {
-        redirect: 'error', signal: AbortSignal.timeout(8000),
-        headers: { Authorization: 'Bearer ' + process.env.SGDM_INTEGRATION_KEY!.trim(), Accept: 'application/json' },
-      });
-      if (!response.ok) {
-        this.logger.warn('SGDM não forneceu a configuração de IA da prefeitura (HTTP ' + response.status + ').');
-        return null;
-      }
-      const body = await response.json() as { habilitado?: unknown; provedor?: unknown; apiKey?: unknown };
-      if (body.habilitado !== true || typeof body.provedor !== 'string' || typeof body.apiKey !== 'string' || !body.apiKey.trim() || /\s/.test(body.apiKey.trim())) return null;
-      return { provider: body.provedor.toLowerCase(), apiKey: body.apiKey.trim() };
-    } catch {
-      this.logger.warn('SGDM não respondeu à consulta da configuração de IA da prefeitura.');
+      body = await sgdmIntegrationGet<typeof body>('/integracoes/i7ai/ia/' + tenantId);
+    } catch (error) {
+      const status = error instanceof SgdmNotFound ? 404 : error instanceof SgdmUnavailable ? error.status : undefined;
+      if (status) this.logger.warn('SGDM não forneceu a configuração de IA da prefeitura (HTTP ' + status + ').');
+      else this.logger.warn('SGDM não respondeu à consulta da configuração de IA da prefeitura.');
       return null;
     }
+    if (body?.habilitado !== true || typeof body.provedor !== 'string' || typeof body.apiKey !== 'string' || !body.apiKey.trim() || /\s/.test(body.apiKey.trim())) return null;
+    return { provider: body.provedor.toLowerCase(), apiKey: body.apiKey.trim() };
   }
 }

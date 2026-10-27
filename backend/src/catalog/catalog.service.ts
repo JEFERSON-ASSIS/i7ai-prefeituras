@@ -1,10 +1,10 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateModelDto, CreateUserDto, DepartmentDto, LicenseDto, SettingsDto, UpdateDepartmentDto, UpdateModelDto, UpdateUserDto } from './catalog.dto';
+import { CreateUserDto, DepartmentDto, LicenseDto, SettingsDto, UpdateDepartmentDto, UpdateUserDto } from './catalog.dto';
 import { assertLicenseCapacity } from './license-policy';
 import { publicModelCapabilities } from './model-capabilities';
-import { gatewayRoutingActive, isAllowedRoute, routePolicyMessage } from './model-route-policy';
+import { SgdmAccessService } from '../sgdm/sgdm-access.service';
 
 const userSelect = {
   id: true, tenantId: true, departmentId: true, name: true, email: true, status: true,
@@ -20,14 +20,6 @@ function largeInteger(value: string | undefined, field: string): bigint | undefi
   if (value === undefined) return undefined;
   if (!/^\d{1,19}$/.test(value) || BigInt(value) > 9223372036854775807n) throw new BadRequestException(`${field} deve ser um inteiro positivo`);
   return BigInt(value);
-}
-
-export function validateModelPrice(value: unknown, field: string): number | null | undefined {
-  if (value === undefined || value === null) return value;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 9999.999999 || Math.round(value * 1_000_000) / 1_000_000 !== value) {
-    throw new BadRequestException(`${field} deve ser um preço em USD por milhão de tokens entre 0 e 9999.999999, com até 6 casas decimais`);
-  }
-  return value;
 }
 
 function providerMetadata(provider: { id: string; name: string; slug: string; config?: Prisma.JsonValue }) {
@@ -54,7 +46,7 @@ function serializeModel(model: Prisma.AiModelGetPayload<{ include: typeof modelI
 
 @Injectable()
 export class CatalogService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly access?: SgdmAccessService) {}
 
   async settings(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true, name: true, slug: true, settings: true } });
@@ -100,62 +92,20 @@ export class CatalogService {
       });
     } catch (error) { conflict(error); }
   }
-  async models() {
-    const models = await this.prisma.aiModel.findMany({ include: modelInclude, orderBy: [{ provider: { name: 'asc' } }, { name: 'asc' }] });
+  /** Read-only catalog: the SGDM Central de IA decides which models are active and released to whom. */
+  async models(actor: { sub: string; tenantId: string; roles: string[] }) {
+    const models = await this.activeModels();
+    if (actor.roles.includes('SUPER_ADMIN')) return models;
+    const allowed = await this.access?.allowed(actor.tenantId, actor.sub);
+    return allowed ? models.filter(model => allowed.slugs.includes(model.slug)) : models;
+  }
+  async activeModels() {
+    const models = await this.prisma.aiModel.findMany({ where: { active: true }, include: modelInclude, orderBy: [{ provider: { name: 'asc' } }, { name: 'asc' }] });
     return models.map(serializeModel);
   }
   async providers() {
     const providers = await this.prisma.aiProvider.findMany({ select: { id: true, name: true, slug: true, config: true }, orderBy: { name: 'asc' } });
     return providers.map(providerMetadata);
-  }
-  private async requireSupportedProvider(tx: Prisma.TransactionClient, providerId: string) {
-    const provider = await tx.aiProvider.findUnique({ where: { id: providerId }, select: { id: true, name: true, slug: true } });
-    if (!provider) throw new BadRequestException('Provedor não encontrado no catálogo');
-    if (!providerMetadata(provider).capabilities.supported) throw new BadRequestException('Este provedor precisa de um gateway de IA configurado no servidor');
-    return provider;
-  }
-  private async requireGlobalModelAdmin(tenantId: string, userId?: string) {
-    if (!userId || !await this.prisma.userRole.findFirst({ where: { userId, user: { tenantId, status: 'ACTIVE' }, role: { name: 'SUPER_ADMIN' } } })) {
-      throw new ForbiddenException('Somente SUPER_ADMIN pode alterar o catálogo global de modelos e preços');
-    }
-  }
-  async createModel(tenantId: string, input: CreateModelDto, userId?: string) {
-    await this.requireGlobalModelAdmin(tenantId, userId);
-    const inputPrice = validateModelPrice(input.inputPrice, 'inputPrice');
-    const outputPrice = validateModelPrice(input.outputPrice, 'outputPrice');
-    if (!input.name?.trim() || !input.slug?.trim()) throw new BadRequestException('Informe nome e identificador do modelo');
-    if (gatewayRoutingActive() && !isAllowedRoute(input.slug)) throw new BadRequestException(routePolicyMessage(input.slug.trim()));
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        await this.requireSupportedProvider(tx, input.providerId);
-        const model = await tx.aiModel.create({ data: { providerId: input.providerId, name: input.name.trim(), slug: input.slug.trim(), inputPrice, outputPrice, ...(input.capabilities !== undefined ? { capabilities: input.capabilities === null ? Prisma.DbNull : input.capabilities as Prisma.InputJsonObject } : {}) }, include: modelInclude });
-        await tx.auditLog.create({ data: { tenantId, userId, event: 'model.created', resource: 'models', resourceId: model.id, metadata: { providerId: model.providerId, slug: model.slug } } });
-        return serializeModel(model);
-      });
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('Este identificador já está cadastrado para o provedor');
-      throw error;
-    }
-  }
-  async updateModel(tenantId: string, id: string, input: UpdateModelDto, userId?: string) {
-    await this.requireGlobalModelAdmin(tenantId, userId);
-    const inputPrice = validateModelPrice(input.inputPrice, 'inputPrice');
-    const outputPrice = validateModelPrice(input.outputPrice, 'outputPrice');
-    if ((input.name !== undefined && !input.name?.trim()) || (input.slug !== undefined && !input.slug?.trim())) throw new BadRequestException('Informe nome e identificador do modelo');
-    if (input.slug !== undefined && gatewayRoutingActive() && !isAllowedRoute(input.slug)) throw new BadRequestException(routePolicyMessage(input.slug.trim()));
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        const existing = await tx.aiModel.findUnique({ where: { id } });
-        if (!existing) throw new NotFoundException('Modelo não encontrado');
-        await this.requireSupportedProvider(tx, input.providerId ?? existing.providerId);
-        const model = await tx.aiModel.update({ where: { id }, data: { providerId: input.providerId, name: input.name?.trim(), slug: input.slug?.trim(), inputPrice, outputPrice, ...(input.capabilities !== undefined ? { capabilities: input.capabilities === null ? Prisma.DbNull : input.capabilities as Prisma.InputJsonObject } : {}) }, include: modelInclude });
-        await tx.auditLog.create({ data: { tenantId, userId, event: 'model.updated', resource: 'models', resourceId: model.id, metadata: { providerId: model.providerId, slug: model.slug } } });
-        return serializeModel(model);
-      });
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('Este identificador já está cadastrado para o provedor');
-      throw error;
-    }
   }
   users(tenantId: string) { return this.prisma.user.findMany({ where: { tenantId }, select: userSelect, orderBy: { name: 'asc' } }); }
   roles() { return this.prisma.role.findMany({ include: { permissions: { include: { permission: true } } }, orderBy: { name: 'asc' } }); }

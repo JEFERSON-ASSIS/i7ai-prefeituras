@@ -38,7 +38,7 @@ test('catálogo do chat oculta modelos de rotas proibidas quando o gateway está
   const previous = process.env.OMNIROUTER_BASE_URL;
   t.after(() => { process.env.OMNIROUTER_BASE_URL = previous; });
   const models = [{ id: '1', slug: 'openai/gpt-5.5' }, { id: '2', slug: 'antigravity/claude-sonnet-4-6' }, { id: '3', slug: 'cx/gpt-5.6-luna-low' }];
-  const controller = new ChatCatalogController({ list: async () => [{ id: 'agent', status: 'ACTIVE' }] }, { models: async () => models });
+  const controller = new ChatCatalogController({ list: async () => [{ id: 'agent', status: 'ACTIVE' }] }, { activeModels: async () => models });
   const request = { user: { tenantId: 't', sub: 'u' } };
   process.env.OMNIROUTER_BASE_URL = 'https://gateway.example/v1';
   assert.deepEqual((await controller.list(request)).models.map(model => model.id), ['1']);

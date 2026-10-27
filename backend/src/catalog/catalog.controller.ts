@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Req, UseGuard
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RequirePermission } from '../auth/permissions.decorator';
 import { CatalogService } from './catalog.service';
-import { CreateModelDto, CreateUserDto, DepartmentDto, LicenseDto, SettingsDto, UpdateDepartmentDto, UpdateModelDto, UpdateUserDto } from './catalog.dto';
+import { CreateUserDto, DepartmentDto, LicenseDto, SettingsDto, UpdateDepartmentDto, UpdateUserDto } from './catalog.dto';
 
 @Controller()
 @UseGuards(JwtAuthGuard)
@@ -19,13 +19,9 @@ export class CatalogController {
   @Patch('departments/:id') @RequirePermission('departments', 'write')
   updateDepartment(@Req() req: AuthenticatedRequest, @Param('id', ParseUUIDPipe) id: string, @Body() body: UpdateDepartmentDto) { return this.catalog.updateDepartment(req.user!.tenantId, id, body, req.user!.sub); }
   @Get('models') @RequirePermission('models', 'read')
-  models() { return this.catalog.models(); }
+  models(@Req() req: AuthenticatedRequest) { return this.catalog.models(req.user!); }
   @Get('providers') @RequirePermission('models', 'read')
   providers() { return this.catalog.providers(); }
-  @Post('models') @RequirePermission('models', 'write')
-  createModel(@Req() req: AuthenticatedRequest, @Body() body: CreateModelDto) { return this.catalog.createModel(req.user!.tenantId, body, req.user!.sub); }
-  @Patch('models/:id') @RequirePermission('models', 'write')
-  updateModel(@Req() req: AuthenticatedRequest, @Param('id', ParseUUIDPipe) id: string, @Body() body: UpdateModelDto) { return this.catalog.updateModel(req.user!.tenantId, id, body, req.user!.sub); }
   @Get('roles') @RequirePermission('users', 'read')
   roles() { return this.catalog.roles(); }
   @Get('users') @RequirePermission('users', 'read')

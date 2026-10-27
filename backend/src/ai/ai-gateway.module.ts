@@ -13,10 +13,9 @@ import { ChatAttachmentsController } from './chat-attachments.controller';
 import { ChatCatalogController } from './chat-catalog.controller';
 import { AgentsModule } from '../agents/agents.module';
 import { CatalogModule } from '../catalog/catalog.module';
-import { ProviderCredentialsController } from './provider-credentials.controller';
-import { ProviderCredentialsService } from './provider-credentials.service';
+import { SgdmModule } from '../sgdm/sgdm.module';
 import { TenantAiKeyService } from './tenant-ai-key.service';
 import { ModelPricingSyncService } from './model-pricing-sync.service';
 
-@Module({ imports: [AuthModule, KnowledgeModule, ToolsModule, McpModule, AgentsModule, CatalogModule], controllers: [AiGatewayController, ConversationsController, ChatAttachmentsController, ChatCatalogController, ProviderCredentialsController], providers: [AiGatewayService, AgentToolsService, AiQuotaService, OmniRouterService, ProviderCredentialsService, TenantAiKeyService, ModelPricingSyncService], exports: [AiGatewayService] })
+@Module({ imports: [AuthModule, KnowledgeModule, ToolsModule, McpModule, AgentsModule, CatalogModule, SgdmModule], controllers: [AiGatewayController, ConversationsController, ChatAttachmentsController, ChatCatalogController], providers: [AiGatewayService, AgentToolsService, AiQuotaService, OmniRouterService, TenantAiKeyService, ModelPricingSyncService], exports: [AiGatewayService] })
 export class AiGatewayModule {}

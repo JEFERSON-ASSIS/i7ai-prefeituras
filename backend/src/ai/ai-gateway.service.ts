@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, HttpException, Injectable, NotFoundException, Optional, ServiceUnavailableException, StreamableFile } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ForbiddenException, HttpException, Injectable, NotFoundException, Optional, ServiceUnavailableException, StreamableFile } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import OpenAI from 'openai';
@@ -12,6 +12,7 @@ import { AgentFunction, AgentToolCall, AgentToolsService } from './agent-tools.s
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import { OmniRouterService } from './omnirouter.service';
 import { publicModelCapabilities } from '../catalog/model-capabilities';
+import { SgdmAccessService } from '../sgdm/sgdm-access.service';
 import { EXPORT_MIME, ExportFormat, exportFileName, exportTitle, parseAnswer, renderExport } from './chat-export';
 
 // The chat UI turns any answer into PDF, Word or Excel; models otherwise apologize or emit generator code.
@@ -38,7 +39,7 @@ export { calculateUsageCost };
 
 @Injectable()
 export class AiGatewayService {
-  constructor(private readonly prisma: PrismaService, private readonly rag: RagService, private readonly agentTools: AgentToolsService, private readonly quota: AiQuotaService, @Optional() private readonly knowledge?: KnowledgeService, @Optional() private readonly omni?: OmniRouterService) {}
+  constructor(private readonly prisma: PrismaService, private readonly rag: RagService, private readonly agentTools: AgentToolsService, private readonly quota: AiQuotaService, @Optional() private readonly knowledge?: KnowledgeService, @Optional() private readonly omni?: OmniRouterService, private readonly access?: SgdmAccessService) {}
 
   async chat(agentId: string, tenantId: string, input: ChatDto, userId: string, options: ChatRunOptions = {}) {
     options.signal?.throwIfAborted();
@@ -162,6 +163,9 @@ export class AiGatewayService {
     const binding = agent.models.find((item) => item.isPrimary);
     const model: LoadedModel | null = input.modelId ? await this.prisma.aiModel.findUnique({ where: { id: input.modelId }, include: { provider: true } }) : binding?.model || null;
     if (!model) throw new BadRequestException(input.modelId ? 'Modelo não encontrado no catálogo.' : 'Selecione um modelo principal nas configurações do agente.');
+    // Released models come from SGDM (chat, stream and automations alike); automations use the prefeitura's list.
+    if (model.active === false) throw new ForbiddenException('Este modelo não está liberado para você. Escolha outro no seletor do chat.');
+    await this.access?.assertAllowed(agent.tenantId, input.userId, model.slug);
     const omniConfigured = Boolean(process.env.OMNIROUTER_BASE_URL || process.env.OMNIROUTER_API_KEY);
     if (!omniConfigured && !process.env.AI_GATEWAY_URL && model.provider.slug.toLowerCase() !== 'openai') throw new ServiceUnavailableException('Configure o OmniRouter no servidor para usar este provedor.');
     if (!omniConfigured && !process.env.AI_GATEWAY_URL && !process.env.OPENAI_API_KEY) throw new ServiceUnavailableException('O provedor de IA não está configurado. Defina as credenciais do OmniRouter no servidor.');
