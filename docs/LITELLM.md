@@ -327,3 +327,30 @@ Antes de ligar o cache de prompt em produção, rode o teste ao vivo com Claude 
 ### Medir o custo por conversa
 
 `node scripts/smoke-custo-conversa.cjs --agente <id> --mensagens 24 --rotulo antes|depois` abre uma conversa nova, envia as mensagens fixas do script (com leis, datas e valores), espera o resumo quando ele está ligado e imprime `rotulo; conversa; chamadas; tokens entrada; tokens cache; tokens saída; custo US$`. O custo é a soma das chamadas com a tag `conversa:<id>` em `/spend/logs/v2` do LiteLLM, conferida com `ai_usage`. A chave do LiteLLM (`LITELLM_MASTER_KEY` ou `LITELLM_ADMIN_KEY`) e a sessão local (`npm run local:session`) vêm do ambiente e do `.env`, e nunca são impressas. Só para desenvolvimento.
+
+## Pesquisa na internet
+
+Os agentes podem pesquisar na internet e em compras públicas durante a resposta. Vale só no caminho OmniRouter/LiteLLM e só para modelos com `supportsTools`.
+
+**Como ligar.** O padrão é **desligado**. O dono da plataforma (permissão `IA_CENTRAL`) liga em **Central de IA › Otimização › Pesquisa na internet**, para todas as prefeituras ou para uma. O SGDM guarda o interruptor, a chave do Serper e o custo por pesquisa; o i7Ai lê tudo em `GET /integracoes/i7ai/pesquisa` do SGDM (mesma chave de integração das outras leituras; cache curto; SGDM antigo sem o campo conta como desligado).
+
+**Fontes.**
+- **Compras públicas (PNCP)**, sem chave: `pesquisar_compras_publicas` busca em `pncp.gov.br/api/search/` (edital, ata ou contrato; UF opcional), detalha até 5 compras por chamada (itens e resultados) e devolve preços, órgão, data e o link `https://pncp.gov.br/app/editais/...` (atas e contratos têm link próprio). Custo 0.
+- **Internet (Serper)**: `pesquisar_internet` faz `POST https://google.serper.dev/search` com o cabeçalho `X-API-KEY`. Precisa da chave cadastrada em **Central de IA › Modelos e acesso › Pesquisa na internet (Serper)**. Sem chave, só a função de compras é oferecida.
+- A única saída de rede é para `google.serper.dev` e `pncp.gov.br`; 10 s por chamada; resposta lida até 1 MB.
+
+**Limites.** Até **5 pesquisas por resposta** (internet e compras somadas). A 6ª recebe "limite de pesquisas desta resposta atingido" e o modelo conclui com o que tem; o teto de 8 rodadas do OmniRouter não muda. Cada resultado é cortado em 12.000 caracteres antes de ir ao modelo. O limite por minuto do usuário conta as pesquisas junto com as reservas de tokens; a verificação por rodada de modelo ainda conta só as reservas.
+
+**Custo.** Cada pesquisa na internet soma ao consumo o valor configurado pelo dono (padrão **US$ 0,001**, aceita vírgula). PNCP custa 0 e também é registrado. Tabela `research_calls` do i7Ai (migration `20261101000100_research_calls`): prefeitura, conversa, fonte, status, custo e data, sem o texto pesquisado. A Central mostra o total por prefeitura em **Visão geral** (cartão "Pesquisas na internet") e em **Consumo e custo** (tabela "Pesquisas por prefeitura"), por `GET /integracoes/sgdm/pesquisas` do i7Ai.
+
+**Privacidade.** O termo enviado ao Serper e ao PNCP passa por `maskPersonalData` (CPF, telefone etc. saem mascarados). A chave do Serper é cifrada no SGDM, nunca volta à tela (só o final mascarado) e não entra em log nem em auditoria; o log do i7Ai guarda só contagens, a fonte e um código de erro (`SERPER_RECUSOU`, `SERPER_FALHOU`, `PNCP_FALHOU`). Se o Serper recusar a chave, a sessão para de chamá-lo naquela resposta. Os resultados chegam ao modelo marcados como dados, não instruções.
+
+**Falhas e fontes.** Fonte fora do ar ou lenta: a ferramenta devolve "A fonte não respondeu agora." e a resposta sai com o resto; o chat não quebra. Se a resposta final não citar nenhum link coletado, o servidor acrescenta "Fontes" (até 10 links), também no streaming.
+
+**Mensagens do modelo.** Pesquisa desligada: o prompt manda dizer com clareza que a pesquisa não está liberada para a prefeitura e não inventar números nem links. Pesquisa ligada com modelo sem `supportsTools`: o prompt manda dizer que o modelo escolhido não pesquisa e sugerir outro modelo.
+
+**Automações perdem o cache exato.** Com a pesquisa ligada, as funções entram na requisição e o cache exato (que só vale sem ferramentas) deixa de valer nas automações da prefeitura. A tela de Otimização avisa disso.
+
+**Word e Excel antigos (.doc/.xls).** O chat e a base de conhecimento passam a ler `.doc` e `.xls` (dependência `xlsx` 0.20.3 vinda de `https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`; o `docker build` precisa de acesso a `cdn.sheetjs.com`). A leitura roda num `worker_thread` com 15 s de tempo limite (o worker é encerrado) e limites: 50 planilhas, 200.000 linhas, 2.000.000 de células e 4.000.000 de caracteres; planilha acima disso é recusada com mensagem clara.
+
+**Migrations.** i7Ai `20261101000100_research_calls`; SGDM `20261216100000_ia_pesquisa_internet`.
