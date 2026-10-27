@@ -94,6 +94,9 @@ O gateway pode retornar chamadas em vez da resposta final:
 O endpoint `/chat/stream` responde SSE:
 
 ```text
+event: progress
+data: {"etapa":"pesquisa_compras"}
+
 event: delta
 data: {"text":"trecho incremental"}
 
@@ -104,7 +107,7 @@ event: error
 data: {"message":"Motivo da falha"}
 ```
 
-`complete` representa a confirmação de conversa, mensagens, consumo e auditoria persistidos. O payload real contém as duas mensagens novas e seus IDs. Desconectar cancela a geração; texto parcial não é salvo. Comentários heartbeat são enviados a cada 15 segundos.
+`complete` representa a confirmação de conversa, mensagens, consumo e auditoria persistidos. O payload real contém as duas mensagens novas e seus IDs. Desconectar cancela a geração; texto parcial não é salvo. Comentários heartbeat são enviados a cada 15 segundos. `progress` é informativo e traz só a etapa (`pesquisa_internet`, `pesquisa_compras`, `ferramenta` ou `documentos`), nunca argumentos ou termos pesquisados; clientes que não o conhecem o ignoram.
 
 ## Reserva de consumo
 
