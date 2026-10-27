@@ -156,3 +156,5 @@ html.sgdm-app-shell, html.sgdm-app-shell body, html.sgdm-app-shell #root { heigh
   .chat-hint-long { display: none; }
   .chat-hint-short { display: inline; }
 }
+.chat-composer-buttons { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.chat-visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

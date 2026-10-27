@@ -186,7 +186,7 @@ test('interromper resposta conserva pergunta e impede persistência visual tardi
   await page.getByLabel('Agente da conversa').selectOption('agent-1');
   await page.getByLabel('Mensagem', { exact: true }).fill('Pergunta para interromper.');
   await page.getByRole('button', { name: 'Enviar mensagem' }).click();
-  await page.getByRole('button', { name: 'Interromper resposta' }).click();
+  await page.getByRole('button', { name: 'Parar a resposta' }).click();
   expect(errors).toEqual([]);
   await expect(page.getByText(/Resposta interrompida/)).toBeVisible();
   releaseResponse();
@@ -373,16 +373,19 @@ test('composer continua editável durante a resposta; Enter enfileira e a fila s
   await composer.fill('Primeira pergunta.');
   await composer.press('Enter');
   await expect.poll(async () => (await streams(page)).length).toBe(1);
-  await expect(page.getByRole('button', { name: 'Interromper resposta' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Parar a resposta' })).toBeVisible();
   await expect(composer).toBeEnabled();
   await expect(page.getByLabel('Modelo da conversa')).toBeDisabled();
   await expect(page.getByLabel('Agente da conversa')).toBeDisabled();
   await composer.type('Segunda pergunta.');
   await expect(composer).toHaveValue('Segunda pergunta.');
   await composer.press('Enter');
+  // Mouse/touch path: the queue button next to Parar.
+  await expect(page.getByRole('button', { name: 'Adicionar à fila' })).toBeDisabled();
   await composer.fill('Terceira pergunta.');
-  await composer.press('Enter');
+  await page.getByRole('button', { name: 'Adicionar à fila' }).click();
   await expect(composer).toHaveValue('');
+  await expect(page.locator('.chat-visually-hidden')).toHaveText('Mensagem na fila (2)');
   const queue = page.getByRole('list', { name: 'Mensagens na fila' });
   await expect(queue.getByRole('listitem')).toHaveCount(2);
   await expect(queue.getByRole('listitem').first()).toContainText('Na fila');
@@ -430,7 +433,7 @@ test('Parar e Esc interrompem a resposta e guardam o trecho recebido como parcia
   await expect.poll(async () => (await streams(page)).length).toBe(1);
   await push(page, 0, 'delta', { text: 'O edital trata de merenda' });
   await expect(page.getByText('O edital trata de merenda')).toBeVisible();
-  await page.getByRole('button', { name: 'Interromper resposta' }).click();
+  await page.getByRole('button', { name: 'Parar a resposta' }).click();
   expect((await streams(page))[0].aborted).toBe(true);
   const partial = page.locator('.message.agent').last();
   await expect(partial).toContainText('O edital trata de merenda');
@@ -520,4 +523,37 @@ test('caixa de mensagem cresce com o texto até cerca de dez linhas e depois rol
   expect(capped).toBeGreaterThan(grown);
   expect(await composer.evaluate(element => element.scrollHeight > element.clientHeight && getComputedStyle(element).overflowY === 'auto')).toBe(true);
   expect(capped).toBeLessThan(initial * 8);
+});
+
+test('imagem colada em formato não suportado mostra o motivo e não é enviada', async ({ page }) => {
+  const writes = [];
+  const composer = await openChat(page, { writes });
+  await composer.evaluate(element => {
+    const data = new DataTransfer();
+    data.items.add(new File([new Uint8Array([71, 73, 70])], 'image.gif', { type: 'image/gif' }));
+    element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(page.getByRole('alert')).toContainText('Formato de imagem não suportado. Use PNG, JPG ou WebP.');
+  expect(writes.filter(item => item.path === '/chat/attachments')).toEqual([]);
+});
+
+test('soltar arquivo sem poder anexar não abre o arquivo e explica o motivo', async ({ page }) => {
+  const writes = [];
+  await controlledStreams(page);
+  await mockSession(page, { writes });
+  await page.goto('/?module=chat');
+  await expect(page.getByLabel('Agente da conversa')).toBeVisible();
+  const prevented = await page.getByRole('region', { name: 'Conversa' }).evaluate(element => {
+    const data = new DataTransfer();
+    data.items.add(new File(['x'], 'relatorio.txt', { type: 'text/plain' }));
+    const over = new DragEvent('dragover', { dataTransfer: data, bubbles: true, cancelable: true });
+    element.dispatchEvent(over);
+    const drop = new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true });
+    element.dispatchEvent(drop);
+    return over.defaultPrevented && drop.defaultPrevented;
+  });
+  expect(prevented).toBe(true);
+  await expect(page.getByText('Solte para anexar')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toContainText('Escolha um agente ativo para anexar arquivos.');
+  expect(writes).toEqual([]);
 });

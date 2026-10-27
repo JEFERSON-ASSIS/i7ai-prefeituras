@@ -21,7 +21,7 @@ const stageLabels = {
   ferramenta: 'Usando uma ferramenta do agente…',
   documentos: 'Lendo os documentos anexados…',
 };
-const pastedExtension = type => ({ 'image/jpeg': 'jpg', 'image/webp': 'webp' })[type] || 'png';
+const pastedExtensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
 const preview = text => text.length > 60 ? text.slice(0, 57) + '...' : text;
 const suggestions = [
   'Resuma o edital anexado: objeto, valor estimado, prazos e exigências de habilitação.',
@@ -112,7 +112,8 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
   const attachmentsBusy = attachments.some(file => file.status !== 'READY');
   const contextualAttachments = contextAttachments(attachments, messages);
   const historicalImages = contextualAttachments.some(file => file.mimeType?.startsWith('image/') && !attachments.some(current => current.id === file.id));
-  const incompatibleImage = contextualAttachments.some(file => file.mimeType?.startsWith('image/')) && !supportsImages;
+  // Queued messages are sent later with the same model, so their images count too.
+  const incompatibleImage = [...contextualAttachments, ...queue.flatMap(item => item.files)].some(file => file.mimeType?.startsWith('image/')) && !supportsImages;
   // The composer stays editable while an answer streams: Enter then queues the message.
   const composerLocked = loadingHistory || !canUseAgent;
   const modelReady = models.some(item => item.id === modelId);
@@ -122,6 +123,16 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
   const sendDisabled = !(draftReady || queueResumable);
   const attachAllowed = !composerLocked && !!modelId && !uploadCapabilities.loading && !uploadCapabilities.error;
   queryRef.current = query;
+  // The queue drains from an earlier render's closure: read the current values from refs.
+  const live = useRef({});
+  live.current = { token, agent, modelId, model, reloadConversations: conversations.reload };
+  function attachBlockedReason() {
+    if (!canUseAgent) return 'Escolha um agente ativo para anexar arquivos.';
+    if (loadingHistory) return 'Aguarde a conversa carregar para anexar arquivos.';
+    if (!modelId) return 'Selecione um modelo para anexar arquivos.';
+    if (uploadCapabilities.loading) return 'As opções de anexo ainda estão carregando. Tente novamente em instantes.';
+    return 'Não foi possível carregar as opções de anexo. Tente carregá-las de novo.';
+  }
 
   function updateAttachments(update) {
     const next = typeof update === 'function' ? update(attachmentState.current) : update;
@@ -186,6 +197,9 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     scope.current++;
     request.current?.abort();
     for (const controller of uploadRequests.current.values()) controller.abort();
+    // Queued messages never leave this screen: their uploaded files are removed with it.
+    for (const file of queueState.current.flatMap(item => item.files)) if (file.id) apiRequest('/chat/attachments/' + file.id, { token, method: 'DELETE' }).catch(() => {});
+    queueState.current = [];
   }, [token]);
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -255,12 +269,12 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
       setSummaryBusy(false);
     }
   }
-  async function upload(files) {
+  async function upload(files, extraErrors = []) {
     if (composerLocked || uploadCapabilities.loading || uploadCapabilities.error) return;
     setError('');
     const uploadScope = scope.current;
     const accepted = [];
-    const errors = [];
+    const errors = [...extraErrors];
     for (const file of files) {
       const extension = file.name.split('.').pop().toLowerCase();
       const image = imageExtensions.includes(extension);
@@ -365,6 +379,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     setStage('');
     setError('');
     setPending({ question: item.text, answer: '', attachments: item.files });
+    const { token, agent, modelId, model, reloadConversations } = live.current;
     try {
       const response = await apiRequest('/agents/' + agent.id + '/chat/stream', {
         token, method: 'POST', body: { message: item.text, modelId, ...(targetConversationId ? { conversationId: targetConversationId } : {}), ...(item.files.length ? { attachmentIds: item.files.map(file => file.id) } : {}) }, signal: controller.signal, raw: true
@@ -378,7 +393,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
       setConversationId(result.conversationId);
       setConversation(current => ({ ...current, agentId: agent.id, agent: { id: agent.id, name: agent.name }, modelId, model }));
       setMessages(current => [...current, ...result.messages]);
-      conversations.reload();
+      reloadConversations();
       // Only a confirmed answer releases the next queued message; errors and Parar leave the queue waiting.
       const [next, ...rest] = queueState.current;
       if (next) {
@@ -420,20 +435,26 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     // Text (even text copied along with a picture of it, as Office does) pastes as text.
     if (!files.length || data.getData('text/plain')) return;
     event.preventDefault();
-    if (!attachAllowed) return;
-    upload(files.map(file => file.type.startsWith('image/') ? new File([file], 'imagem-colada-' + (++pastedCount.current) + '.' + pastedExtension(file.type), { type: file.type }) : file));
+    if (!attachAllowed) { setError(attachBlockedReason()); return; }
+    const images = files.filter(file => file.type.startsWith('image/'));
+    const unsupported = images.filter(file => !pastedExtensions[file.type]);
+    const accepted = files.filter(file => !unsupported.includes(file));
+    upload(accepted.map(file => pastedExtensions[file.type] ? new File([file], 'imagem-colada-' + (++pastedCount.current) + '.' + pastedExtensions[file.type], { type: file.type }) : file),
+      unsupported.length ? ['Formato de imagem não suportado. Use PNG, JPG ou WebP.'] : []);
   }
   const draggingFiles = event => [...(event.dataTransfer?.types || [])].includes('Files');
+  // File drags are always taken here, so a drop never makes the browser open the file.
   function onDragEnter(event) {
-    if (!draggingFiles(event) || !attachAllowed) return;
+    if (!draggingFiles(event)) return;
     event.preventDefault();
+    if (!attachAllowed) return;
     dragDepth.current++;
     setDragging(true);
   }
   function onDragOver(event) {
-    if (!draggingFiles(event) || !attachAllowed) return;
+    if (!draggingFiles(event)) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
+    event.dataTransfer.dropEffect = attachAllowed ? 'copy' : 'none';
   }
   function onDragLeave(event) {
     if (!draggingFiles(event)) return;
@@ -445,7 +466,8 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
     event.preventDefault();
     dragDepth.current = 0;
     setDragging(false);
-    if (attachAllowed && event.dataTransfer.files.length) upload([...event.dataTransfer.files]);
+    if (!attachAllowed) setError(attachBlockedReason());
+    else if (event.dataTransfer.files.length) upload([...event.dataTransfer.files]);
   }
   useLayoutEffect(() => {
     // Grows with the text up to about ten lines, then scrolls.
@@ -475,7 +497,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
         </div>
       </aside>
 
-      <section className={'chat-panel chat-window' + (dragging ? ' is-dragging' : '')} aria-label="Conversa" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} onKeyDown={event => { if (event.key === 'Escape' && sending) stop(event); }}>
+      <section className={'chat-panel chat-window' + (dragging ? ' is-dragging' : '')} aria-label="Conversa" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} onKeyDown={event => { if (event.key === 'Escape' && sending && !event.nativeEvent.isComposing && event.target.tagName !== 'SELECT') stop(event); }}>
         {dragging && <div className="chat-drop-overlay" aria-hidden="true"><Paperclip size={22} aria-hidden="true" /> Solte para anexar</div>}
         <header className="chat-window-head">
           <h2 title={title}>{title}</h2>
@@ -539,6 +561,7 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
           {agent && agent.status !== 'ACTIVE' && <p className="panel-note">Ative o agente nas configurações para conversar.</p>}
           {canUseAgent && incompatibleImage && <Alert tone="danger">{historicalImages ? 'Esta conversa contém imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou inicie uma nova conversa.' : 'Os anexos incluem imagens. Selecione um modelo com análise de imagens e janela de contexto configuradas ou remova esses arquivos.'}</Alert>}
           {canUseAgent && uploadCapabilities.error && <Alert tone="danger" actions={<Button type="button" variant="secondary" onClick={uploadCapabilities.reload}>Tentar carregar opções de anexo</Button>}>{uploadCapabilities.error}</Alert>}
+          <p className="chat-visually-hidden" aria-live="polite">{queue.length ? 'Mensagem na fila (' + queue.length + ')' : ''}</p>
           <form className="chat-composer" onSubmit={submit}>
             {!!queue.length && <ul className="chat-queue" aria-label="Mensagens na fila">{queue.map(item => <li key={item.id} className="chat-queue-item">
               <span className="chat-queue-tag"><Clock size={12} aria-hidden="true" /> Na fila</span>
@@ -558,7 +581,10 @@ export function ChatPage({ token, selectedAgentId, onSelectAgent }) {
             <div className="chat-composer-actions">
               <FileButton onFiles={upload} accept={[...documentExtensions, ...(supportsImages ? supportedImages : [])].map(extension => '.' + extension).join(',')} multiple disabled={!attachAllowed || attachments.length >= maxFiles} icon={<Paperclip size={16} />} variant="ghost" size="sm">Anexar arquivos</FileButton>
               {canUseAgent && <p className="chat-hint"><span className="chat-hint-long">Shift+Enter quebra a linha. Cole ou arraste arquivos. Até {maxFiles} arquivos de {fileSize(maxBytes)}{supportsImages ? ', imagens até ' + fileSize(Math.min(imageMaxBytes, maxBytes)) : ''}.</span><span className="chat-hint-short">Shift+Enter quebra a linha.</span></p>}
-              {sending ? <Button key="stop" type="button" variant="secondary" size="sm" aria-label="Interromper resposta (Esc)" onClick={stop}><Square size={13} aria-hidden="true" /> Parar</Button> : <Button key="send" type="submit" size="sm" aria-label="Enviar mensagem" disabled={sendDisabled}>Enviar <Send size={14} aria-hidden="true" /></Button>}
+              {sending ? <div className="chat-composer-buttons">
+                <Button key="queue" type="submit" variant="secondary" size="sm" aria-label="Adicionar à fila" disabled={!draftReady}><Clock size={13} aria-hidden="true" /> Adicionar à fila</Button>
+                <Button key="stop" type="button" variant="secondary" size="sm" aria-label="Parar a resposta (Esc)" onClick={stop}><Square size={13} aria-hidden="true" /> Parar</Button>
+              </div> : <Button key="send" type="submit" size="sm" aria-label="Enviar mensagem" disabled={sendDisabled}>Enviar <Send size={14} aria-hidden="true" /></Button>}
             </div>
           </form>
         </div>
