@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
 
 export const MAX_OPEN_MESSAGES = 1000;
+const ROLES = new Set(['user', 'assistant', 'system', 'tool']);
 
 export interface CentralConversationView {
   id: string; titulo: string | null; prefeitura: string; agente: string; modelo: string | null;
@@ -38,7 +39,8 @@ export class CentralConversationsService {
       const truncada = conversation.messages.length > MAX_OPEN_MESSAGES;
       const mensagens = conversation.messages.slice(0, MAX_OPEN_MESSAGES).reverse().map(message => ({
         id: message.id,
-        role: message.role as CentralConversationView['mensagens'][number]['role'],
+        // An unknown stored role is shown as 'system' so the view never carries a value outside the contract.
+        role: ROLES.has(message.role) ? message.role as CentralConversationView['mensagens'][number]['role'] : 'system',
         content: message.content,
         createdAt: message.createdAt.toISOString(),
         anexos: message.attachments.map(item => item.document.name),
@@ -57,7 +59,7 @@ export class CentralConversationsService {
         id: conversation.id, titulo: conversation.title, prefeitura: conversation.tenant.name, agente: conversation.agent.name,
         modelo: conversation.model?.slug ?? null, criadaEm: conversation.createdAt.toISOString(), truncada, mensagens,
       } satisfies CentralConversationView;
-    });
+    }, { timeout: 15_000 });
 
     // Counts only: never the reason, the title or the content.
     this.logger.log('Conversa ' + id + ' aberta pela Central de IA (' + view.mensagens.length + ' mensagens).');

@@ -172,7 +172,8 @@ export class SgdmLicenseService implements OnModuleInit, OnModuleDestroy {
     for (const tenantId of tenantIds) {
       const [license, users, agents, automations, knowledgeBases, storage, usage] = await Promise.all([
         this.prisma.license.findFirst({ where: { tenantId }, orderBy: { createdAt: 'desc' }, select: { startDate: true } }),
-        this.prisma.user.count({ where: { tenantId, status: { not: 'SUSPENDED' } } }),
+        // Users without any i7Ai role (only IA_CENTRAL) do not take a license seat.
+        this.prisma.user.count({ where: { tenantId, status: { not: 'SUSPENDED' }, roles: { some: {} } } }),
         this.prisma.agent.count({ where: { tenantId, status: { not: 'ARCHIVED' } } }),
         this.prisma.automation.count({ where: { tenantId, status: { not: 'ARCHIVED' } } }),
         this.prisma.knowledgeBase.count({ where: { tenantId } }),

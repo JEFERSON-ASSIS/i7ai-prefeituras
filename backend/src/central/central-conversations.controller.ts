@@ -1,11 +1,12 @@
 import { Body, Controller, Header, HttpCode, Ip, Param, ParseUUIDPipe, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CentralIaGuard } from './central-ia.guard';
 import { CentralConversationsService } from './central-conversations.service';
 import { OpenConversationDto } from './dto/open-conversation.dto';
 
-// No @RequirePermission: access is the SGDM IA_CENTRAL flag, checked first in the service.
+// No @RequirePermission: access is the SGDM IA_CENTRAL flag, checked by CentralIaGuard (and again first in the service).
 @Controller('central/conversas')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, CentralIaGuard)
 export class CentralConversationsController {
   constructor(private readonly conversations: CentralConversationsService) {}
 

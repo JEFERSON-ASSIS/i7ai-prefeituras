@@ -152,8 +152,9 @@ export class SgdmIdentityService {
       const existing = await tx.user.findUnique({ where: { id: identity.id }, select: { tenantId: true, status: true, name: true, email: true } });
       if (existing && existing.tenantId !== identity.tenantId) throw new UnauthorizedException('Este usuário pertence a outra prefeitura no i7Ai.');
       if (!existing) {
+        // A user with only IA_CENTRAL (no i7Ai role) takes no seat, so the owner is never blocked by a full license.
         // Without a license the user still enters and sees the license notice; with one, the user limit applies.
-        if (await tx.license.findFirst({ where: { tenantId: identity.tenantId }, select: { id: true } })) await assertLicenseCapacity(tx, identity.tenantId, 'users');
+        if (identity.roles.length && await tx.license.findFirst({ where: { tenantId: identity.tenantId }, select: { id: true } })) await assertLicenseCapacity(tx, identity.tenantId, 'users');
         await tx.user.create({ data: { id: identity.id, tenantId: identity.tenantId, name: identity.name, email: identity.email, status: 'ACTIVE' } });
       } else if (existing.name !== identity.name || existing.email !== identity.email || existing.status === 'INVITED') {
         await tx.user.update({ where: { id: identity.id }, data: { name: identity.name, email: identity.email, ...(existing.status === 'INVITED' ? { status: 'ACTIVE' } : {}) } });

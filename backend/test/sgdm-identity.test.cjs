@@ -145,6 +145,7 @@ test('users without any i7Ai permission are refused before anything is stored', 
 test('IA_CENTRAL alone enters without i7Ai roles; other permissions set the flag off', async t => {
   let permissoes = ['IA_CENTRAL'];
   await sgdm(t, () => [200, me(permissoes)]);
+  t.after(() => { delete process.env.SGDM_SESSION_CACHE_SECONDS; });
   process.env.SGDM_SESSION_CACHE_SECONDS = '0';
   const { db, prisma, roleNames } = database();
   const service = new SgdmIdentityService(prisma);
@@ -168,6 +169,8 @@ test('the guard exposes centralIa from the SGDM identity, and false without SGDM
   await new JwtAuthGuard(jwt, guardPrisma, new SgdmIdentityService(prisma)).canActivate({ switchToHttp: () => ({ getRequest: () => request }) });
   assert.equal(request.user.centralIa, true);
   assert.deepEqual(request.user.permissions, []);
+  const savedUrl = process.env.SGDM_API_URL;
+  t.after(() => { process.env.SGDM_API_URL = savedUrl; });
   delete process.env.SGDM_API_URL;
   const local = { headers: { authorization: 'Bearer x' } };
   await new JwtAuthGuard(jwt, guardPrisma, new SgdmIdentityService(prisma)).canActivate({ switchToHttp: () => ({ getRequest: () => local }) });
@@ -199,6 +202,16 @@ test('a full license blocks new users from that prefeitura', async t => {
   const license = { status: 'ACTIVE', startDate: new Date(0), endDate: null, maxUsers: 1 };
   const { prisma } = database({ users: [{ id: '44444444-4444-4444-8444-444444444444', tenantId: TENANT, email: 'outro@prefeitura.gov.br', name: 'Outro', status: 'ACTIVE' }], licenses: [license] });
   await assert.rejects(new SgdmIdentityService(prisma).resolve(token()), /Limite de usuários/);
+});
+
+test('a user with only IA_CENTRAL takes no license seat, even when the license is full', async t => {
+  process.env.NODE_ENV = 'test';
+  await sgdm(t, () => [200, me(['IA_CENTRAL'])]);
+  const license = { status: 'ACTIVE', startDate: new Date(0), endDate: null, maxUsers: 1 };
+  const { db, prisma } = database({ users: [{ id: '44444444-4444-4444-8444-444444444444', tenantId: TENANT, email: 'outro@prefeitura.gov.br', name: 'Outro', status: 'ACTIVE' }], licenses: [license] });
+  const identity = await new SgdmIdentityService(prisma).resolve(token());
+  assert.equal(identity.centralIa, true);
+  assert.ok(db.users.some(user => user.id === USER));
 });
 
 test('SGDM URL follows the HTTPS policy, with internal Docker hosts opt-in', async t => {

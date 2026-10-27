@@ -21,7 +21,8 @@ export async function assertLicenseCapacity(tx: Prisma.TransactionClient, tenant
   const license = await assertActiveLicense(tx, tenantId);
   if (!license) return;
   const count = resource === 'users'
-    ? await tx.user.count({ where: { tenantId, status: { not: 'SUSPENDED' } } })
+    // Users mirrored without any i7Ai role (only IA_CENTRAL) do not take a seat.
+    ? await tx.user.count({ where: { tenantId, status: { not: 'SUSPENDED' }, roles: { some: {} } } })
     : resource === 'agents' ? await tx.agent.count({ where: { tenantId, status: { not: 'ARCHIVED' } } })
     : resource === 'automations' ? await tx.automation.count({ where: { tenantId, status: { not: 'ARCHIVED' }, ...(excludeId ? { id: { not: excludeId } } : {}) } })
     : await tx.knowledgeBase.count({ where: { tenantId } });

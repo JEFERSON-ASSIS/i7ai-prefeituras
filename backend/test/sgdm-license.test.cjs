@@ -37,6 +37,7 @@ function database({ licenses = [], tenants = [{ id: T1, status: 'ACTIVE' }], row
   let id = 0;
   const byTenant = (list, where) => list.filter(item => item.tenantId === where.tenantId
     && (!where.status || (where.status.not ? item.status !== where.status.not : where.status.in.includes(item.status)))
+    && (!where.roles || (item.roles ?? ['x']).length > 0)
     && (!where.createdAt || item.createdAt >= where.createdAt.gte));
   const newest = list => [...list].sort((a, b) => b.createdAt - a.createdAt)[0] || null;
   const tx = {
@@ -150,7 +151,7 @@ test('usage of two prefeituras is counted separately, with big numbers as string
   const month = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
   const now = new Date();
   const { prisma } = database({ rows: {
-    users: [{ tenantId: T1, status: 'ACTIVE' }, { tenantId: T1, status: 'SUSPENDED' }, { tenantId: T2, status: 'ACTIVE' }, { tenantId: T2, status: 'INVITED' }],
+    users: [{ tenantId: T1, status: 'ACTIVE' }, { tenantId: T1, status: 'SUSPENDED' }, { tenantId: T2, status: 'ACTIVE' }, { tenantId: T2, status: 'INVITED' }, { tenantId: T2, status: 'ACTIVE', roles: [] }],
     agents: [{ tenantId: T1, status: 'ACTIVE' }, { tenantId: T1, status: 'ARCHIVED' }],
     automations: [{ tenantId: T2, status: 'ACTIVE' }],
     knowledgeBases: [{ tenantId: T1 }, { tenantId: T1 }],

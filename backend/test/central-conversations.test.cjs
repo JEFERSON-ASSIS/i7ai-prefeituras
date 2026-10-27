@@ -9,6 +9,7 @@ const { PermissionsGuard } = require('../dist/auth/permissions.guard');
 const { PERMISSION_KEY } = require('../dist/auth/permissions.decorator');
 const { ConversationsController } = require('../dist/ai/conversations.controller');
 const { Reflector } = require('@nestjs/core');
+const { CentralIaGuard } = require('../dist/central/central-ia.guard');
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
@@ -32,7 +33,7 @@ function fixture({ messages = [message(1), message(2)], exists = true, auditFail
     message: { create: async () => { calls.updates++; } },
     auditLog: { create: async ({ data }) => { if (auditFails) throw new Error('audit down'); calls.audits.push(data); return data; } },
   };
-  const prisma = { $transaction: async fn => { const staged = calls.audits.length; try { return await fn(tx); } catch (error) { calls.audits.length = staged; throw error; } } };
+  const prisma = { $transaction: async (fn, options) => { calls.options = options; const staged = calls.audits.length; try { return await fn(tx); } catch (error) { calls.audits.length = staged; throw error; } } };
   return { service: new CentralConversationsService(prisma), calls };
 }
 
@@ -95,9 +96,24 @@ test('a platform viewer opens another prefeitura conversation in chronological o
   assert.equal(audit.ipAddress, '203.0.113.7');
   assert.deepEqual(audit.metadata, { viewerTenantId: A, viewerEmail: VIEWER.email, motivo: MOTIVO, origem: 'central-ia', mensagens: 3 });
   assert.equal(calls.updates, 0);
+  assert.deepEqual(calls.options, { timeout: 15000 });
   const output = logs.join('\n');
   assert.ok(logs.length > 0);
   assert.ok(!output.includes(MOTIVO) && !output.includes(SECRET_CONTENT) && !output.includes('Titulo original'));
+});
+
+test('an unknown stored role is returned as system', async () => {
+  const { service } = fixture({ messages: [message(1, { role: 'function' }), message(2, { role: 'tool' })] });
+  const view = await service.open(VIEWER, CONVERSATION, MOTIVO);
+  assert.deepEqual(view.mensagens.map(item => item.role), ['system', 'tool']);
+});
+
+test('CentralIaGuard answers 403 before pipes run, for viewers without IA_CENTRAL', () => {
+  const guards = Reflect.getMetadata('__guards__', CentralConversationsController);
+  assert.equal(guards.at(-1), CentralIaGuard);
+  const run = user => new CentralIaGuard().canActivate({ switchToHttp: () => ({ getRequest: () => ({ user }) }) });
+  assert.equal(run(VIEWER), true);
+  for (const user of [undefined, { ...VIEWER, centralIa: false }]) assert.throws(() => run(user), error => error instanceof ForbiddenException && error.message === 'Acesso restrito à Central de IA.');
 });
 
 test('when the audit cannot be written nothing is returned', async () => {
