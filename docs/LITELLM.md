@@ -336,7 +336,7 @@ Os agentes podem pesquisar na internet e em compras públicas durante a resposta
 
 **Fontes.**
 - **Compras públicas (PNCP)**, sem chave: `pesquisar_compras_publicas` busca em `pncp.gov.br/api/search/` (edital, ata ou contrato; UF opcional), detalha até 5 compras por chamada (itens e resultados) e devolve preços, órgão, data e o link `https://pncp.gov.br/app/editais/...` (atas e contratos têm link próprio). Custo 0.
-- **Internet (Serper)**: `pesquisar_internet` faz `POST https://google.serper.dev/search` com o cabeçalho `X-API-KEY`. Precisa da chave cadastrada em **Central de IA › Modelos e acesso › Pesquisa na internet (Serper)**. Sem chave, só a função de compras é oferecida.
+- **Internet (Serper)**: `pesquisar_internet` faz `POST https://google.serper.dev/search` com o cabeçalho `X-API-KEY`. Precisa da chave cadastrada em **Central de IA › Modelos e acesso › Chaves da plataforma › Pesquisa na internet (Serper)**. Sem chave, só a função de compras é oferecida.
 - A única saída de rede é para `google.serper.dev` e `pncp.gov.br`; 10 s por chamada; resposta lida até 1 MB.
 
 **Limites.** Até **5 pesquisas por resposta** (internet e compras somadas). A 6ª recebe "limite de pesquisas desta resposta atingido" e o modelo conclui com o que tem; o teto de 8 rodadas do OmniRouter não muda. Cada resultado é cortado em 12.000 caracteres antes de ir ao modelo. O limite por minuto do usuário conta as pesquisas junto com as reservas de tokens; a verificação por rodada de modelo ainda conta só as reservas.
