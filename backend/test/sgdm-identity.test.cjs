@@ -282,3 +282,23 @@ test('SGDM license endpoint down: the login completes with the local license', a
   assert.equal(db.users.length, 1);
   assert.deepEqual(db.licenses, [local]);
 });
+
+test('a failure while copying the SGDM license never fails the login', async t => {
+  await sgdmWithLicense(t, () => [200, { licenca: licenca() }]);
+  const local = { id: 'local', tenantId: TENANT, status: 'ACTIVE', startDate: new Date(0), endDate: null, maxUsers: 10, createdAt: new Date('2026-01-01') };
+  const { db, prisma } = database({ licenses: [local] });
+  const licenses = new SgdmLicenseService(prisma);
+  let applies = 0;
+  licenses.apply = async () => { applies++; throw new Error('deadlock detected'); };
+  const service = new SgdmIdentityService(prisma, undefined, licenses);
+  const warnings = [];
+  service.logger = { warn: message => warnings.push(message) };
+  const identity = await service.resolve(token());
+  assert.equal(identity.id, USER);
+  assert.equal(applies, 1);
+  assert.equal(db.users.length, 1);
+  assert.deepEqual(db.licenses, [local]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /seguindo com a licença atual/);
+  assert.ok(!warnings[0].includes('integration-secret'));
+});

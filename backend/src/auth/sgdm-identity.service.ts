@@ -5,9 +5,14 @@ import { gatewayBaseAllowed } from '../catalog/model-route-policy';
 import { assertLicenseCapacity } from '../catalog/license-policy';
 import { SGDM_MANAGED_ROLES, permissionEntries, rolesFromSgdm } from './role-catalog';
 import { SgdmOrganizationService, departmentExternalIdFor } from '../sgdm/sgdm-organization.service';
-import { SgdmLicenseService } from '../sgdm/sgdm-license.service';
+import { LicenseSnapshot, SgdmLicenseService } from '../sgdm/sgdm-license.service';
 
 export type SgdmIdentity = { id: string; tenantId: string; email: string; name: string; tenantName: string; roles: string[] };
+
+/** Marks a failure of the license copy so the login can retry without it (the transaction is already aborted). */
+class LicenseApplyFailed extends Error {
+  constructor(readonly reason: string) { super('Falha ao copiar a licença do SGDM.'); this.name = 'LicenseApplyFailed'; }
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_CACHE = 5000;
@@ -111,6 +116,22 @@ export class SgdmIdentityService {
     // Read outside the transaction: a slow SGDM must not hold a database transaction open.
     // undefined (integration off or SGDM down) keeps the current license; the login never fails on it.
     const license = this.licenses ? await this.licenses.fetch(identity.tenantId) : undefined;
+    try {
+      await this.mirror(identity, license);
+    } catch (error) {
+      if (!(error instanceof LicenseApplyFailed)) throw error;
+      // A failed write aborts the whole Postgres transaction, so it is rolled back and replayed without the
+      // license copy: the login goes on with the current license row. Prisma errors carry no secrets.
+      this.logger.warn('Não foi possível copiar a licença do SGDM da prefeitura ' + identity.tenantId + ' no login (' + error.reason + '); seguindo com a licença atual.');
+      await this.mirror(identity, undefined);
+    }
+    // After the commit: the organization sync updates the tenant row in its own transaction,
+    // which would wait on the row lock held by the identity transaction above.
+    await this.syncDepartment(identity);
+  }
+
+  /** Mirrors prefeitura, user and roles; with a license snapshot, copies it first in the same transaction. */
+  private async mirror(identity: SgdmIdentity, license: LicenseSnapshot | null | undefined) {
     await this.prisma.$transaction(async (tx) => {
       // i7Ai may suspend a prefeitura or user locally (license); SGDM never reactivates them.
       await tx.tenant.upsert({
@@ -119,7 +140,13 @@ export class SgdmIdentityService {
         update: { name: identity.tenantName },
       });
       // Same transaction (no self-lock): a new user below is already counted against the SGDM license.
-      if (license !== undefined) await this.licenses!.apply(tx, identity.tenantId, license);
+      if (license !== undefined) {
+        try {
+          await this.licenses!.apply(tx, identity.tenantId, license);
+        } catch (error) {
+          throw new LicenseApplyFailed(error instanceof Error ? error.message : String(error));
+        }
+      }
       const emailOwner = await tx.user.findUnique({ where: { email: identity.email }, select: { id: true } });
       if (emailOwner && emailOwner.id !== identity.id) throw new UnauthorizedException('O e-mail deste usuário do SGDM já pertence a outro cadastro no i7Ai. Ajuste o cadastro antigo.');
       const existing = await tx.user.findUnique({ where: { id: identity.id }, select: { tenantId: true, status: true, name: true, email: true } });
@@ -151,9 +178,6 @@ export class SgdmIdentityService {
         await tx.auditLog.create({ data: { tenantId: identity.tenantId, userId: identity.id, event: existing ? 'user.sgdm.roles_synced' : 'user.sgdm.created', resource: 'users', resourceId: identity.id, metadata: { roles: identity.roles } } });
       }
     });
-    // After the commit: the organization sync updates the tenant row in its own transaction,
-    // which would wait on the row lock held by the identity transaction above.
-    await this.syncDepartment(identity);
   }
 
   /** Places the user in the department of their SGDM setor. Never blocks the login. */

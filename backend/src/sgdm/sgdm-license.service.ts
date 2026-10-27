@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { sgdmIntegrationEnabled, sgdmIntegrationGet } from './sgdm-integration';
+import { SgdmNotFound, SgdmUnavailable, sgdmIntegrationEnabled, sgdmIntegrationGet } from './sgdm-integration';
 
 /** SGDM's `LicencaI7ai`, with the two big limits already as bigint. Dates are ISO strings (endDate exclusive). */
 export type LicenseSnapshot = {
@@ -27,7 +27,9 @@ function syncInterval() {
   return (Number.isFinite(value) && value > 0 ? value : 60) * 1000;
 }
 
-const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
+/** Contract cap of the SGDM LicencaDto (0–1.000.000); anything above is a malformed answer (and fits int4). */
+const MAX_COUNT = 1_000_000;
+const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) <= MAX_COUNT;
 const isInstant = (value: unknown): value is string => typeof value === 'string' && !Number.isNaN(Date.parse(value));
 const bigLimit = (value: unknown) => {
   if (typeof value !== 'string' || !/^\d{1,19}$/.test(value) || BigInt(value) > MAX_BIGINT) throw new Error('resposta inválida do SGDM');
@@ -45,6 +47,8 @@ function parseLicense(body: unknown): LicenseSnapshot | null {
     || !isCount(l.maxAutomations) || !isCount(l.maxKnowledgeBases)) {
     throw new Error('resposta inválida do SGDM');
   }
+  // endDate is exclusive (next day 03:00 UTC), so it must come strictly after startDate.
+  if (l.endDate !== null && Date.parse(l.endDate as string) <= Date.parse(l.startDate)) throw new Error('resposta inválida do SGDM (fim antes do início)');
   return {
     status: l.status, startDate: l.startDate, endDate: l.endDate as string | null,
     maxUsers: l.maxUsers, maxAgents: l.maxAgents, maxAutomations: l.maxAutomations, maxKnowledgeBases: l.maxKnowledgeBases,
@@ -61,6 +65,8 @@ function parseLicense(body: unknown): LicenseSnapshot | null {
 export class SgdmLicenseService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SgdmLicenseService.name);
   private readonly warnedWithoutLicense = new Set<string>();
+  private readonly quietTenants = new Set<string>();
+  private outage = false;
   private timer?: NodeJS.Timeout;
   private running?: Promise<unknown>;
   private stopping = false;
@@ -79,14 +85,37 @@ export class SgdmLicenseService implements OnModuleInit, OnModuleDestroy {
 
   /** undefined = integration off or SGDM failed (nothing must change); null = SGDM has no license for it. */
   async fetch(tenantId: string): Promise<LicenseSnapshot | null | undefined> {
-    if (!sgdmIntegrationEnabled()) return undefined;
+    return (await this.read(tenantId)).value;
+  }
+
+  /**
+   * `down` = SGDM itself is unreachable or failing (no answer, timeout, HTTP 5xx): warned once per outage and
+   * logged again only after a success. Per-tenant answers (404 = tenant unknown to SGDM, other 4xx, malformed
+   * body) are warned once per tenant until that tenant succeeds. Errors never carry the integration key.
+   */
+  private async read(tenantId: string): Promise<{ value: LicenseSnapshot | null | undefined; down: boolean }> {
+    if (!sgdmIntegrationEnabled()) return { value: undefined, down: false };
     try {
-      return parseLicense(await sgdmIntegrationGet<unknown>('/integracoes/i7ai/licenca/' + encodeURIComponent(tenantId)));
+      const value = parseLicense(await sgdmIntegrationGet<unknown>('/integracoes/i7ai/licenca/' + encodeURIComponent(tenantId)));
+      if (this.outage) {
+        this.outage = false;
+        this.logger.log('SGDM voltou a responder às consultas de licença.');
+      }
+      this.quietTenants.delete(tenantId);
+      return { value, down: false };
     } catch (error) {
-      // SgdmIntegration errors never carry the integration key.
       const reason = error instanceof Error ? error.message : String(error);
-      this.logger.warn('Não foi possível consultar a licença da prefeitura ' + tenantId + ' no SGDM (' + reason + '); a licença atual continua valendo.');
-      return undefined;
+      const down = error instanceof SgdmUnavailable && (error.status === undefined || error.status >= 500);
+      if (down) {
+        if (!this.outage) this.logger.warn('SGDM indisponível ao consultar licenças (' + reason + '); as licenças atuais continuam valendo.');
+        this.outage = true;
+      } else if (!this.quietTenants.has(tenantId)) {
+        this.quietTenants.add(tenantId);
+        this.logger.warn(error instanceof SgdmNotFound
+          ? 'O SGDM não conhece a prefeitura ' + tenantId + ' (404); a licença atual continua valendo.'
+          : 'Não foi possível ler a licença da prefeitura ' + tenantId + ' no SGDM (' + reason + '); a licença atual continua valendo.');
+      }
+      return { value: undefined, down };
     }
   }
 
@@ -117,7 +146,9 @@ export class SgdmLicenseService implements OnModuleInit, OnModuleDestroy {
     const tenants = await this.prisma.tenant.findMany({ where: { status: 'ACTIVE' }, select: { id: true } });
     let synced = 0;
     for (const { id } of tenants) {
-      const snapshot = await this.fetch(id);
+      const { value: snapshot, down } = await this.read(id);
+      // SGDM down: the remaining tenants would only wait for the same timeout; the next round retries.
+      if (down) break;
       if (snapshot === undefined) continue;
       try {
         await this.prisma.$transaction(async (tx) => {

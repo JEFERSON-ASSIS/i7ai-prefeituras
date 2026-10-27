@@ -94,3 +94,15 @@ test('integração desligada devolve null sem chamar o SGDM', async t => {
   assert.equal(await new SgdmLimitsService().forUser(TENANT, USER), null);
   assert.equal(calls.length, 0);
 });
+
+test('SGDM 404 is a definitive answer: cached as no user limit and logged once', async t => {
+  const calls = await sgdm(t, () => [404, { message: 'não encontrado' }]);
+  const service = new SgdmLimitsService();
+  const { warnings, logger } = quietLogger();
+  service.logger = logger;
+  assert.equal(await service.forUser(TENANT, USER), null);
+  assert.equal(await service.forUser(TENANT, USER), null);
+  assert.equal(calls.length, 1);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /404/);
+});

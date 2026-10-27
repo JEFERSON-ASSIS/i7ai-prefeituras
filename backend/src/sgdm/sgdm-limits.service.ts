@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { sgdmIntegrationEnabled, sgdmIntegrationGet } from './sgdm-integration';
+import { SgdmNotFound, sgdmIntegrationEnabled, sgdmIntegrationGet } from './sgdm-integration';
 
 /** A user's own AI limits, set in SGDM's Central de IA. null fields mean "no limit of that kind". */
 export type UserLimits = { monthlyBudgetUsd: number | null; block: boolean; callsPerMinute: number | null; tokensPerMinute: number | null };
@@ -50,14 +50,20 @@ export class SgdmLimitsService {
     try {
       value = parseLimits(await sgdmIntegrationGet<unknown>('/integracoes/i7ai/limites/' + encodeURIComponent(tenantId) + '?usuarioId=' + encodeURIComponent(userId)));
     } catch (error) {
-      // SgdmIntegration errors never carry the integration key.
-      const reason = error instanceof Error ? error.message : String(error);
-      if (hit && hit.staleUntil > now) {
-        this.logger.warn('SGDM indisponível ao consultar os limites de IA do usuário; usando a última resposta (' + reason + ').');
-        return hit.value;
+      if (!(error instanceof SgdmNotFound)) {
+        // SgdmIntegration errors never carry the integration key.
+        const reason = error instanceof Error ? error.message : String(error);
+        if (hit && hit.staleUntil > now) {
+          this.logger.warn('SGDM indisponível ao consultar os limites de IA do usuário; usando a última resposta (' + reason + ').');
+          return hit.value;
+        }
+        this.logger.warn('SGDM indisponível ao consultar os limites de IA do usuário ' + userId + ' (prefeitura ' + tenantId + '); seguindo sem limite do usuário (' + reason + ').');
+        return null;
       }
-      this.logger.warn('SGDM indisponível ao consultar os limites de IA do usuário ' + userId + ' (prefeitura ' + tenantId + '); seguindo sem limite do usuário (' + reason + ').');
-      return null;
+      // A definitive answer (unknown tenant/user): cached as "no user limit" like SgdmAccessService,
+      // logged once per new cache entry instead of on every paid round.
+      this.logger.warn('SGDM respondeu 404 ao consultar os limites de IA (prefeitura ' + tenantId + ', usuário ' + userId + '); seguindo sem limite do usuário.');
+      value = null;
     }
     const ttl = cacheSeconds() * 1000;
     this.cache.delete(key);

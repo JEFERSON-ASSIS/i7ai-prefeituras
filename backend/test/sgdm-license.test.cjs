@@ -132,7 +132,7 @@ test('SGDM 500, 404 or a malformed answer: fetch returns undefined and nothing c
   reply = [200, {}];
   assert.equal(await instance.fetch(T1), undefined);
   assert.deepEqual(db.licenses, [local]);
-  assert.ok(warnings.length >= 5);
+  assert.ok(warnings.length >= 2);
   assert.ok(warnings.every(message => !message.includes('integration-secret')));
 });
 
@@ -221,4 +221,76 @@ test('routes are GET integracoes/sgdm/licencas and POST integracoes/sgdm/licenca
   assert.equal(route('licenses'), 'GET licencas');
   assert.equal(route('usage'), 'POST licencas/uso');
   assert.equal(Reflect.getMetadata(HTTP_CODE_METADATA, SgdmLicensesController.prototype.usage), 200);
+});
+
+const T3 = '33333333-3333-4333-8333-333333333333';
+const threeTenants = [{ id: T1, status: 'ACTIVE' }, { id: T2, status: 'ACTIVE' }, { id: T3, status: 'ACTIVE' }];
+
+test('SGDM down (no answer) stops the round and warns once per outage; after a success it warns again', async t => {
+  let mode = 'drop';
+  const calls = [];
+  const server = http.createServer((request, response) => {
+    calls.push(request.url);
+    if (mode === 'drop') return request.socket.destroy();
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ licenca: licenca() }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  process.env.NODE_ENV = 'test';
+  process.env.SGDM_API_URL = `http://127.0.0.1:${server.address().port}/api/v1`;
+  process.env.SGDM_INTEGRATION_KEY = 'integration-secret';
+  const { db, prisma } = database({ tenants: threeTenants });
+  const { instance, warnings } = service(prisma);
+  assert.deepEqual(await instance.syncAll(), { synced: 0 });
+  assert.equal(calls.length, 1);
+  await instance.syncAll();
+  assert.equal(calls.length, 2);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /SGDM indisponível/);
+  mode = 'ok';
+  assert.deepEqual(await instance.syncAll(), { synced: 3 });
+  assert.equal(db.licenses.length, 3);
+  mode = 'drop';
+  await instance.syncAll();
+  assert.equal(warnings.length, 2);
+});
+
+test('HTTP 5xx also counts as SGDM down and stops the round', async t => {
+  const calls = await sgdm(t, () => [503, {}]);
+  const { prisma } = database({ tenants: threeTenants });
+  const { instance, warnings } = service(prisma);
+  await instance.syncAll();
+  await instance.syncAll();
+  assert.equal(calls.length, 2);
+  assert.equal(warnings.length, 1);
+});
+
+test('404 (tenant unknown to SGDM) is quiet: one warning per tenant, the round goes on, nothing changes', async t => {
+  const calls = await sgdm(t, url => url.endsWith(T1) ? [404, {}] : [200, { licenca: licenca() }]);
+  const local = { id: 'local', tenantId: T1, status: 'ACTIVE', maxUsers: 3, createdAt: new Date('2026-01-01') };
+  const { db, prisma } = database({ tenants: threeTenants, licenses: [local] });
+  const { instance, warnings } = service(prisma);
+  assert.deepEqual(await instance.syncAll(), { synced: 2 });
+  assert.deepEqual(await instance.syncAll(), { synced: 2 });
+  assert.equal(calls.length, 6);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /404/);
+  assert.deepEqual(db.licenses.find(item => item.id === 'local'), local);
+});
+
+test('counts above the contract (1.000.000, inside int4) and endDate not after startDate are malformed', async t => {
+  let reply = licenca({ maxUsers: 1000001 });
+  await sgdm(t, () => [200, { licenca: reply }]);
+  const { prisma } = database();
+  const { instance } = service(prisma);
+  assert.equal(await instance.fetch(T1), undefined);
+  reply = licenca({ maxKnowledgeBases: 2 ** 31 });
+  assert.equal(await instance.fetch(T1), undefined);
+  reply = licenca({ endDate: '2026-01-01T03:00:00.000Z' });
+  assert.equal(await instance.fetch(T1), undefined);
+  reply = licenca({ endDate: '2025-12-31T03:00:00.000Z' });
+  assert.equal(await instance.fetch(T1), undefined);
+  reply = licenca({ maxUsers: 1000000, endDate: '2026-01-02T03:00:00.000Z' });
+  assert.equal((await instance.fetch(T1)).maxUsers, 1000000);
 });
