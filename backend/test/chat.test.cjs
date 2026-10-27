@@ -185,6 +185,9 @@ test('OmniRouter path: cached tokens fall back to the input price and the respon
   try {
     const result = await gateway.chat('agent-a', 'tenant-a', { message: 'Qual o orçamento?' }, 'user-a');
     assert.equal(scope.cachedInputPrice, 0.15);
+    // No cache-write price in the catalog: written tokens fall back to the input price.
+    assert.equal(scope.cacheWriteInputPrice, 0.15);
+    assert.equal(scope.kind, 'resposta');
     assert.equal(result.usage.cost, calculateUsageCost(100, 10, 0.15, 0.60, 60, 0.15));
   } finally { delete process.env.OMNIROUTER_BASE_URL; }
 });

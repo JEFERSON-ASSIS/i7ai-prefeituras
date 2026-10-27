@@ -7,7 +7,7 @@ function fixture(limit=10000n) {
  const prisma={license:{findFirst:async()=>({status:'ACTIVE',startDate:new Date(Date.now()-86400000),endDate:null,maxTokens:limit})}, aiUsage:{create:async({data})=>{records.usage.push(data);return data;}}};
  prisma.$transaction=operation=>{const run=lock.then(()=>operation(prisma));lock=run.catch(()=>{});return run;};
  const quota=quotaFixture(prisma,records);
- const scope=quota.scope({tenantId:'tenant-a',agentId:'agent-a',modelId:'model-a',inputPrice:1,outputPrice:2});
+ const scope=quota.scope({tenantId:'tenant-a',agentId:'agent-a',modelId:'model-a',inputPrice:1,outputPrice:2,cacheWriteInputPrice:0,kind:'resposta'});
  return {quota,scope,records,prisma};
 }
 test('concurrent requests reserve tenant quota before provider execution',async()=>{
@@ -117,6 +117,26 @@ test('calculateUsageCost cobra tokens em cache pelo preço de cache', () => {
  assert.equal(calculateUsageCost(100,10,1,2),0.00012);
 });
 
+test('calculateUsageCost cobra tokens escritos no cache pelo preço de escrita (padrão: preço de entrada)', () => {
+ const {calculateUsageCost}=require('../dist/ai/ai-quota.service');
+ // (100 × 1 + 600 × 0,1 + 300 × 1,25 + 100 × 2) / 1e6
+ assert.equal(calculateUsageCost(1000,100,1,2,600,0.1,300,1.25),0.000735);
+ assert.equal(calculateUsageCost(1000,100,1,2,600,0.1,300),calculateUsageCost(1000,100,1,2,600,0.1));
+});
+
+test('record grava os fatos de economia e os padrões quando ausentes', async () => {
+ const {quota,scope,records}=fixture();
+ const withFacts={...scope,conversationId:'11111111-1111-1111-1111-111111111111',kind:'resumo',cacheWriteInputPrice:1.25,cachedInputPrice:0.1};
+ await quota.runRound(withFacts,{m:'a'},100,record=>record({inputTokens:1000,outputTokens:100,measured:true,cachedInputTokens:600,cacheWriteInputTokens:300,cacheHit:true,historySavedTokens:4000,lowDetailImages:2,highDetailImages:1,requestHash:'a'.repeat(64),truncated:true}));
+ const row=records.usage[0];
+ assert.deepEqual([row.cacheWriteInputTokens,row.cacheHit,row.historySavedTokens,row.lowDetailImages,row.highDetailImages,row.requestHash,row.truncated,row.kind,row.conversationId,row.cost],
+  [300,true,4000,2,1,'a'.repeat(64),true,'resumo','11111111-1111-1111-1111-111111111111',0.000735]);
+ await quota.runRound({...scope,runId:'22222222-2222-2222-2222-222222222222'},{m:'b'},100,record=>record({inputTokens:10,outputTokens:1,measured:true}));
+ const plain=records.usage[1];
+ assert.deepEqual([plain.cacheWriteInputTokens,plain.cacheHit,plain.historySavedTokens,plain.lowDetailImages,plain.highDetailImages,plain.requestHash,plain.truncated,plain.kind,plain.conversationId],
+  [0,false,0,0,0,null,false,'resposta',null]);
+});
+
 // Per-user limits from SGDM (Central de IA), enforced inside reserve().
 const USER_MONTH = 'Você atingiu o seu limite de IA deste mês. Fale com o administrador da plataforma.';
 const USER_MINUTE = 'Você atingiu o seu limite de uso de IA por minuto. Aguarde um instante e tente novamente.';
@@ -126,7 +146,7 @@ function userFixture(userLimits, limit = 1_000_000n) {
  prisma.$transaction = operation => operation(prisma);
  const limits = { forUser: async (tenantId, userId) => { lookups.push([tenantId, userId]); return userLimits; } };
  const quota = quotaFixture(prisma, records, limits);
- const scope = quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2 });
+ const scope = quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cacheWriteInputPrice: 0, kind: 'resposta' });
  return { quota, scope, records, lookups };
 }
 const ago = ms => new Date(Date.now() - ms);

@@ -190,7 +190,7 @@ export class AiGatewayService {
     const executionAgent = { ...agent, maxTokens: maxOutput };
     const provider = model.provider.slug.toLowerCase();
     const settings = { temperature: Number(agent.temperature), maxTokens: maxOutput, advancedReasoning: agent.advancedReasoning };
-    const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice ?? model.inputPrice) || 0 });
+    const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice ?? model.inputPrice) || 0, cacheWriteInputPrice: Number(model.cacheWriteInputPrice ?? model.inputPrice) || 0, conversationId: input.conversationId, kind: 'resposta' });
     try {
     const generated = omniConfigured
       ? await this.runOmniRouter(executionAgent, model, instructions, message, history, functions, input, quotaScope, onDelta)

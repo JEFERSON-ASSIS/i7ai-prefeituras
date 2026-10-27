@@ -68,10 +68,15 @@ function usageFrom(value: unknown): QuotaUsage {
   const details = usage.prompt_tokens_details;
   if (details !== undefined && details !== null && !object(details)) throw protocolError('O OmniRouter retornou contadores de consumo inválidos.');
   const cachedInputTokens = tokenCount(object(details)?.cached_tokens);
-  if (cachedInputTokens > inputTokens) throw protocolError('O OmniRouter retornou contadores de consumo inválidos.');
+  // LiteLLM reports written cache tokens at the top level (Anthropic) and mirrors them in the details;
+  // prompt_tokens already includes both read and written tokens, so they are never added again.
+  const written = usage.cache_creation_input_tokens ?? object(details)?.cache_creation_tokens ?? object(details)?.cache_write_tokens;
+  const cacheWriteInputTokens = tokenCount(written);
+  if (cachedInputTokens + cacheWriteInputTokens > inputTokens) throw protocolError('O OmniRouter retornou contadores de consumo inválidos.');
   return {
     inputTokens,
     cachedInputTokens,
+    cacheWriteInputTokens,
     // Some gateways include additional output tokens only in the total. Keep
     // that consumption without inferring missing prompt/completion counters.
     outputTokens: measured && totalTokens !== undefined ? totalTokens - inputTokens : outputTokens,

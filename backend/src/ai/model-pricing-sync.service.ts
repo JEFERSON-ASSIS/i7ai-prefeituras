@@ -137,6 +137,8 @@ export class ModelPricingSyncService implements OnModuleInit, OnModuleDestroy {
       if (output !== null) data.outputPrice = output;
       // No cache price at LiteLLM: null makes the cost fall back to the input price.
       if (input !== null) data.cachedInputPrice = perMillion(pricing.cache_read_input_token_cost);
+      // Same rule for the cache-write price (Anthropic's cache_creation_input_token_cost).
+      if (input !== null) data.cacheWriteInputPrice = perMillion(pricing.cache_creation_input_token_cost);
       const window = pricing.max_input_tokens;
       const current = model.capabilities && typeof model.capabilities === 'object' && !Array.isArray(model.capabilities) ? model.capabilities as Record<string, unknown> : {};
       // Fill the context window only when empty: an admin-set value is never overwritten.

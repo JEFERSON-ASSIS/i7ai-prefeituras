@@ -28,7 +28,7 @@ async function gateway(t, status, payload) {
 function fakePrisma() {
   const rows = [
     { id: 'm1', slug: 'openai/gpt-4o-mini', inputPrice: null, outputPrice: null, cachedInputPrice: null, capabilities: { vision: true } },
-    { id: 'm2', slug: 'google/gemini-x', inputPrice: '9.000000', outputPrice: '9.000000', cachedInputPrice: '9.000000', capabilities: null },
+    { id: 'm2', slug: 'google/gemini-x', inputPrice: '9.000000', outputPrice: '9.000000', cachedInputPrice: '9.000000', cacheWriteInputPrice: '9.000000', capabilities: null },
     { id: 'm3', slug: 'anthropic/x', inputPrice: '1.000000', outputPrice: '2.000000', cachedInputPrice: null, capabilities: {} },
   ];
   return {
@@ -42,7 +42,7 @@ function fakePrisma() {
 
 test('sync grava preços em USD por milhão, cache e contexto; ignora curinga', async t => {
   const calls = await gateway(t, 200, { data: [
-    { model_name: 'openai/gpt-4o-mini', model_info: { input_cost_per_token: 0.00000015, output_cost_per_token: 0.0000006, cache_read_input_token_cost: 0.000000075, max_input_tokens: 128000 } },
+    { model_name: 'openai/gpt-4o-mini', model_info: { input_cost_per_token: 0.00000015, output_cost_per_token: 0.0000006, cache_read_input_token_cost: 0.000000075, cache_creation_input_token_cost: 0.00000125, max_input_tokens: 128000 } },
     { model_name: 'google/gemini-x', model_info: { input_cost_per_token: 0.000001, output_cost_per_token: 0.000004, max_input_tokens: 'x' } },
     { model_name: 'openai/*', model_info: { input_cost_per_token: 1, output_cost_per_token: 1 } },
   ] });
@@ -56,6 +56,8 @@ test('sync grava preços em USD por milhão, cache e contexto; ignora curinga', 
   assert.deepEqual([a.inputPrice, a.outputPrice, a.cachedInputPrice], ['0.150000', '0.600000', '0.075000']);
   assert.deepEqual(a.capabilities, { vision: true, contextWindow: 128000 });
   assert.deepEqual([b.inputPrice, b.outputPrice, b.cachedInputPrice], ['1.000000', '4.000000', null]);
+  assert.equal(a.cacheWriteInputPrice, '1.250000');
+  assert.equal(b.cacheWriteInputPrice, null);
   assert.equal(b.capabilities, null);
   assert.deepEqual([c.inputPrice, c.outputPrice], ['1.000000', '2.000000']);
 });
@@ -187,7 +189,7 @@ test('syncCatalog não sobrescreve preços', async t => {
   assert.deepEqual([row.inputPrice, row.outputPrice, row.cachedInputPrice], ['1.250000', '10.000000', '0.125000']);
   for (const [kind, create, update] of prisma.writes) {
     if (kind !== 'model') continue;
-    for (const data of [create, update]) for (const field of ['inputPrice', 'outputPrice', 'cachedInputPrice']) assert.equal(field in data, false);
+    for (const data of [create, update]) for (const field of ['inputPrice', 'outputPrice', 'cachedInputPrice', 'cacheWriteInputPrice']) assert.equal(field in data, false);
   }
 });
 

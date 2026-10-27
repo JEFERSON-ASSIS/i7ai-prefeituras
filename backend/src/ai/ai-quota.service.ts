@@ -6,22 +6,35 @@ import { requireActiveLicense } from '../catalog/license-policy';
 import { SgdmLimitsService, UserLimits } from '../sgdm/sgdm-limits.service';
 import { LIMIT_MESSAGES } from './limit-messages';
 
-export type QuotaUsage = { inputTokens: number; outputTokens: number; measured: boolean; cachedInputTokens?: number; gatewayCost?: number };
+/**
+ * Counters of one gateway round. inputTokens counts every prompt token, including those read from
+ * (cachedInputTokens) and written to (cacheWriteInputTokens) the provider's prompt cache.
+ */
+export type QuotaUsage = {
+  inputTokens: number; outputTokens: number; measured: boolean; cachedInputTokens?: number; gatewayCost?: number;
+  cacheWriteInputTokens?: number; cacheHit?: boolean; historySavedTokens?: number; lowDetailImages?: number; highDetailImages?: number;
+  requestHash?: string; truncated?: boolean;
+};
 export type QuotaScope = {
   runId: string; tenantId: string; agentId: string; modelId: string; userId?: string; automationId?: string;
-  inputPrice: number; outputPrice: number; cachedInputPrice: number; started: number;
+  inputPrice: number; outputPrice: number; cachedInputPrice: number; cacheWriteInputPrice: number; started: number;
+  conversationId?: string; kind: 'resposta' | 'resumo';
 };
-/** Catalog cost in currency units; cached prompt tokens are billed at the cache price (default: the input price). */
-export function calculateUsageCost(inputTokens: number, outputTokens: number, inputPrice: unknown, outputPrice: unknown, cachedInputTokens = 0, cachedInputPrice: unknown = inputPrice): number {
+/**
+ * Catalog cost in currency units. inputTokens includes the cached (read) and cache-written tokens; read tokens
+ * are billed at the cache price and written ones at the cache-write price (both default to the input price).
+ */
+export function calculateUsageCost(inputTokens: number, outputTokens: number, inputPrice: unknown, outputPrice: unknown, cachedInputTokens = 0, cachedInputPrice: unknown = inputPrice, cacheWriteInputTokens = 0, cacheWriteInputPrice: unknown = inputPrice): number {
   const input = Math.max(0, Number(inputPrice) || 0); const output = Math.max(0, Number(outputPrice) || 0);
-  const cachedPrice = Math.max(0, Number(cachedInputPrice) || 0);
+  const cachedPrice = Math.max(0, Number(cachedInputPrice) || 0); const writePrice = Math.max(0, Number(cacheWriteInputPrice) || 0);
   const cached = Math.min(Math.max(0, cachedInputTokens), inputTokens);
-  return Number((((inputTokens - cached) * input + cached * cachedPrice + outputTokens * output) / 1_000_000).toFixed(6));
+  const written = Math.min(Math.max(0, cacheWriteInputTokens), inputTokens - cached);
+  return Number((((inputTokens - cached - written) * input + cached * cachedPrice + written * writePrice + outputTokens * output) / 1_000_000).toFixed(6));
 }
 /** Single cost computation shared by the persisted row and the chat response. */
-export function usageCost(scope: Pick<QuotaScope, 'inputPrice' | 'outputPrice' | 'cachedInputPrice'>, usage: QuotaUsage): { cost: number; costSource: 'gateway' | 'catalog' } {
+export function usageCost(scope: Pick<QuotaScope, 'inputPrice' | 'outputPrice' | 'cachedInputPrice' | 'cacheWriteInputPrice'>, usage: QuotaUsage): { cost: number; costSource: 'gateway' | 'catalog' } {
   if (usage.gatewayCost !== undefined) return { cost: usage.gatewayCost, costSource: 'gateway' };
-  return { cost: calculateUsageCost(usage.inputTokens, usage.outputTokens, scope.inputPrice, scope.outputPrice, usage.cachedInputTokens ?? 0, scope.cachedInputPrice), costSource: 'catalog' };
+  return { cost: calculateUsageCost(usage.inputTokens, usage.outputTokens, scope.inputPrice, scope.outputPrice, usage.cachedInputTokens ?? 0, scope.cachedInputPrice, usage.cacheWriteInputTokens ?? 0, scope.cacheWriteInputPrice), costSource: 'catalog' };
 }
 const pendingStatuses = ['RESERVED', 'UNCERTAIN'];
 
@@ -77,7 +90,7 @@ export class AiQuotaService {
   }
 
   async record(scope: QuotaScope, id: string, usage: QuotaUsage) {
-    if (![usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647)) throw new BadRequestException('Contadores de consumo inválidos.');
+    if (![usage.inputTokens, usage.outputTokens, usage.cachedInputTokens ?? 0, usage.cacheWriteInputTokens ?? 0, usage.historySavedTokens ?? 0, usage.lowDetailImages ?? 0, usage.highDetailImages ?? 0].every(value => Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647)) throw new BadRequestException('Contadores de consumo inválidos.');
     const persist = () => this.prisma.$transaction(async tx => {
       await tx.$queryRaw(Prisma.sql`SELECT id FROM tenants WHERE id = ${scope.tenantId}::uuid FOR UPDATE`);
       const reservation = await tx.aiTokenReservation.findFirst({ where: { id, runId: scope.runId, tenantId: scope.tenantId } });
@@ -90,7 +103,11 @@ export class AiQuotaService {
       const cachedInputTokens = usage.cachedInputTokens ?? 0;
       const { cost, costSource } = usageCost(scope, usage);
       const data = { tenantId: scope.tenantId, agentId: scope.agentId, modelId: scope.modelId, userId: scope.userId, automationId: scope.automationId,
-        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens, cost, costSource, usageMeasured: usage.measured, status: previous?.status || 'PENDING', latencyMs: Date.now() - scope.started };
+        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens, cost, costSource, usageMeasured: usage.measured, status: previous?.status || 'PENDING', latencyMs: Date.now() - scope.started,
+        // Savings facts; rounds that do not report them keep the column defaults.
+        cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0, cacheHit: usage.cacheHit ?? false, historySavedTokens: usage.historySavedTokens ?? 0,
+        lowDetailImages: usage.lowDetailImages ?? 0, highDetailImages: usage.highDetailImages ?? 0, requestHash: usage.requestHash ?? null,
+        truncated: usage.truncated ?? false, kind: scope.kind ?? 'resposta', conversationId: scope.conversationId ?? null };
       await tx.aiUsage.upsert({ where: { id }, create: { id, ...data, createdAt: reservation.createdAt }, update: data });
       await tx.aiTokenReservation.update({ where: { id }, data: { status: usage.measured ? 'MEASURED' : 'UNCERTAIN', reservedTokens: unresolved, finishedAt: new Date() } });
     });

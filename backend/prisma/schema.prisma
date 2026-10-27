@@ -240,6 +240,7 @@ model AiModel {
   inputPrice  Decimal?     @db.Decimal(10, 6)
   outputPrice Decimal?     @db.Decimal(10, 6)
   cachedInputPrice Decimal? @db.Decimal(12, 6)
+  cacheWriteInputPrice Decimal? @db.Decimal(12, 6)
   capabilities Json?
   active      Boolean      @default(true)
   provider    AiProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
@@ -536,6 +537,16 @@ model AiUsage {
   usageMeasured Boolean @default(true)
   cachedInputTokens Int  @default(0)
   costSource   String   @default("catalog")
+  cacheWriteInputTokens Int @default(0)
+  cacheHit     Boolean  @default(false)
+  historySavedTokens Int @default(0)
+  lowDetailImages Int   @default(0)
+  highDetailImages Int  @default(0)
+  requestHash  String?  @db.Char(64)
+  /// resposta | resumo
+  kind         String   @default("resposta")
+  truncated    Boolean  @default(false)
+  conversationId String? @db.Uuid
   tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   agent        Agent?   @relation(fields: [agentId], references: [id], onDelete: SetNull)
@@ -544,6 +555,7 @@ model AiUsage {
 
   @@index([tenantId, createdAt])
   @@index([tenantId, userId, createdAt])
+  @@index([tenantId, agentId, createdAt])
   @@map("ai_usage")
 }
 

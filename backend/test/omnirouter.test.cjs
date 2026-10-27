@@ -41,7 +41,7 @@ function fixture(functions = []) {
     instructions: 'Responda em português. O agente é um analista administrativo.',
     message: 'Analise o orçamento.', history: [{ role: 'user', content: 'Contexto anterior' }, { role: 'assistant', content: 'Resposta anterior' }],
     functions, userId: 'user-a', origin: 'i7ai-chat',
-    quotaScope: quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2 }),
+    quotaScope: quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cacheWriteInputPrice: 0, kind: 'resposta' }),
   };
   return { service: new OmniRouterService(runtime, quota), input, records, quota, runtime, prisma };
 }
@@ -522,7 +522,7 @@ test('tokens em cache e custo do cabeçalho entram no consumo; stream sem cabeç
   assert.equal(first.records.usage[0].costSource, 'gateway');
 
   const second = fixture(); second.input.onDelta = () => {};
-  second.input.quotaScope = second.quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cachedInputPrice: 0.5 });
+  second.input.quotaScope = second.quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cachedInputPrice: 0.5, cacheWriteInputPrice: 0, kind: 'resposta' });
   await provider(t, (_body, response) => sse(response, [frame(chunk({ role: 'assistant', content: 'ok' })), frame(chunk({}, 'stop')), frame({ choices: [], usage }), frame('[DONE]')]));
   await second.service.generate(second.input);
   assert.equal(second.records.usage[0].costSource, 'catalog');
@@ -546,11 +546,60 @@ test('response cost equals the recorded cost (gateway header and cached stream w
   assert.equal(gateway.cost, 0.000123); assert.equal(gateway.cost, first.records.usage[0].cost);
 
   const second = fixture(); second.input.onDelta = () => {};
-  second.input.quotaScope = second.quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cachedInputPrice: 1 });
+  second.input.quotaScope = second.quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2, cachedInputPrice: 1, cacheWriteInputPrice: 0, kind: 'resposta' });
   await provider(t, (_body, response) => sse(response, [frame(chunk({ role: 'assistant', content: 'ok' })), frame(chunk({}, 'stop')), frame({ choices: [], usage }), frame('[DONE]')]));
   const streamed = await second.service.generate(second.input);
   assert.equal(streamed.cost, calculateUsageCost(100, 10, 1, 2, 60, 1));
   assert.equal(streamed.cost, second.records.usage[0].cost);
+});
+
+test('escrita em cache do LiteLLM (fixtures de formato) entra no consumo e no custo', async t => {
+  const { calculateUsageCost } = require('../dist/ai/ai-quota.service');
+  const anthropic = require('./fixtures/litellm-anthropic-cache-usage.json');
+  const openai = require('./fixtures/litellm-openai-cache-usage.json');
+  const prices = { tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 0.1, outputPrice: 0.5, cachedInputPrice: 0.01, cacheWriteInputPrice: 0.125, kind: 'resposta' };
+
+  // Anthropic: prompt_tokens already includes the written tokens; no cost header -> catalog.
+  const first = fixture(); first.input.quotaScope = first.quota.scope(prices);
+  await provider(t, (_body, response) => json(response, completion('ok', { usage: anthropic })));
+  await first.service.generate(first.input);
+  const row = first.records.usage[0];
+  assert.deepEqual([row.inputTokens, row.cachedInputTokens, row.cacheWriteInputTokens], [2522, 0, 2510]);
+  assert.equal(row.costSource, 'catalog');
+  assert.equal(row.cost, calculateUsageCost(2522, 3, 0.1, 0.5, 0, 0.01, 2510, 0.125));
+  assert.equal(row.cost, 0.000316); // LiteLLM 1.106.4 completion_cost for this usage: 0.00031645
+
+  // Read and write in the same call (history read, new turn written); with header -> gateway.
+  const second = fixture(); second.input.quotaScope = second.quota.scope(prices);
+  const mixed = { prompt_tokens: 3000, completion_tokens: 3, total_tokens: 3003, prompt_tokens_details: { cached_tokens: 2510 }, cache_creation_input_tokens: 400 };
+  await provider(t, (_body, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json', 'x-litellm-response-cost': '0.0000855' });
+    response.end(JSON.stringify(completion('ok', { usage: mixed })));
+  });
+  await second.service.generate(second.input);
+  const both = second.records.usage[0];
+  assert.deepEqual([both.cachedInputTokens, both.cacheWriteInputTokens, both.cost, both.costSource], [2510, 400, 0.0000855, 'gateway']);
+  // (90 × 0,1 + 2510 × 0,01 + 400 × 0,125 + 3 × 0,5) / 1e6
+  assert.equal(calculateUsageCost(3000, 3, 0.1, 0.5, 2510, 0.01, 400, 0.125), 0.000086);
+
+  // Write count only in prompt_tokens_details (no top-level field).
+  const third = fixture(); third.input.quotaScope = third.quota.scope(prices);
+  await provider(t, (_body, response) => json(response, completion('ok', { usage: { prompt_tokens: 100, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 0, cache_creation_tokens: 70 } } })));
+  await third.service.generate(third.input);
+  assert.equal(third.records.usage[0].cacheWriteInputTokens, 70);
+
+  // OpenAI (real capture): cache_control accepted silently, no write counter; catalog cost matches the header LiteLLM sent.
+  const fourth = fixture(); fourth.input.quotaScope = fourth.quota.scope({ ...prices, inputPrice: 0.15, outputPrice: 0.6, cachedInputPrice: 0.075, cacheWriteInputPrice: 0.15 });
+  await provider(t, (_body, response) => json(response, completion('ok', { usage: openai })));
+  await fourth.service.generate(fourth.input);
+  const oa = fourth.records.usage[0];
+  assert.deepEqual([oa.inputTokens, oa.cachedInputTokens, oa.cacheWriteInputTokens], [24641, 24576, 0]);
+  assert.equal(oa.cost, 0.001854); // header was 0.00185415
+
+  // cached + write > prompt_tokens is a protocol error.
+  const fifth = fixture();
+  await provider(t, (_body, response) => json(response, completion('ok', { usage: { prompt_tokens: 100, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 60 }, cache_creation_input_tokens: 41 } })));
+  await assert.rejects(fifth.service.generate(fifth.input), /consumo inválidos/);
 });
 
 test('absent or invalid x-litellm-response-cost falls back to the catalog', async t => {
