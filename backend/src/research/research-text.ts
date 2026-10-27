@@ -53,6 +53,7 @@ export async function requestJson(
   const response = await fetchFn(url, { ...init, signal: requestSignal(caller) });
   const text = await readLimited(response);
   let data: any = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
-  return { status: response.status, ok: response.ok, data };
+  let parsed = true;
+  try { data = text ? JSON.parse(text) : null; } catch { parsed = false; }
+  return { status: response.status, ok: response.ok && parsed, data };
 }

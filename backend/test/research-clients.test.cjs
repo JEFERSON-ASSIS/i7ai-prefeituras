@@ -96,3 +96,42 @@ test('clip corta em 12000 por padrão e marca', () => {
   assert.ok(clip({ a: 'b'.repeat(20000) }, 100).endsWith('…(cortado)'));
   assert.equal(clip({ a: 1 }), '{"a":1}');
 });
+
+test('ata: lê itens da compra do item_url e linka a ata', async () => {
+  const calls = [];
+  const itens = [{ numeroItem: 1, descricao: 'Arroz polido', unidadeMedida: 'KG', quantidade: null, valorUnitarioEstimado: null, temResultado: false }, null];
+  const fetchFn = async (url) => {
+    calls.push(url);
+    if (url.includes('/api/search/')) return json(fixture('pncp-search-ata.json'));
+    return json(itens);
+  };
+  const out = await searchPurchases({ termo: 'arroz', tipo: 'ata' }, undefined, fetchFn);
+  assert.ok(calls.some((u) => u.includes('/orgaos/51885242000140/compras/2024/483/itens?')));
+  assert.equal(out.compras[0].link, 'https://pncp.gov.br/app/atas/51885242000140/2024/483/1');
+  assert.equal(out.compras[0].itens[0].quantidade, null);
+  assert.equal(out.compras[0].itens[0].precoEstimado, null);
+  assert.equal(out.compras[0].itens[0].precoContratado, null);
+});
+
+test('contrato: sem itens, com objeto e valor global', async () => {
+  const calls = [];
+  const out = await searchPurchases({ termo: 'arroz', tipo: 'contrato' }, undefined, async (url) => { calls.push(url); return json(fixture('pncp-search-contrato.json')); });
+  assert.equal(calls.length, 1);
+  const [c] = out.compras;
+  assert.deepEqual(c.itens, []);
+  assert.equal(c.valorTotal, 417240);
+  assert.match(c.objeto, /ARROZ/);
+  assert.equal(c.link, 'https://pncp.gov.br/app/contratos/76417005001743/2024/214');
+});
+
+test('hit sem item_url compatível é pulado', async () => {
+  const hit = { ...fixture('pncp-search.json').items[0], item_url: '/outra/coisa', ano: '2024', numero_sequencial: '25' };
+  const out = await searchPurchases({ termo: 'arroz' }, undefined, async () => json({ items: [hit] }));
+  assert.deepEqual(out.compras, []);
+});
+
+test('corpo que não é JSON vira erro', async () => {
+  const bad = async () => new Response('<html>', { status: 200 });
+  await assert.rejects(searchWeb('x', 'k', undefined, bad), /SERPER_FALHOU/);
+  await assert.rejects(searchPurchases({ termo: 'arroz' }, undefined, bad), /PNCP_FALHOU/);
+});
