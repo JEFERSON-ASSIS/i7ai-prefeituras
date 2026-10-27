@@ -40,7 +40,7 @@ function fixture(functions = []) {
     model: { slug: 'openai/model-from-catalog', capabilities: null, provider: { config: null } },
     instructions: 'Responda em português. O agente é um analista administrativo.',
     message: 'Analise o orçamento.', history: [{ role: 'user', content: 'Contexto anterior' }, { role: 'assistant', content: 'Resposta anterior' }],
-    functions, userId: 'user-a',
+    functions, userId: 'user-a', origin: 'i7ai-chat',
     quotaScope: quota.scope({ tenantId: 'tenant-a', agentId: 'agent-a', modelId: 'model-a', userId: 'user-a', inputPrice: 1, outputPrice: 2 }),
   };
   return { service: new OmniRouterService(runtime, quota), input, records, quota, runtime, prisma };
@@ -473,4 +473,16 @@ test('LiteLLM stream shape: an empty usage frame after the finish is accepted; t
   trailing = { content: 'extra' };
   const bad = fixture(); bad.input.onDelta = () => {};
   await assert.rejects(bad.service.generate(bad.input), /após concluir/);
+});
+
+test('cada chamada leva user = prefeitura e as tags de usuário, origem e conversa', async t => {
+  const { requests } = await provider(t, (_b, r) => json(r, completion()));
+  const { service, input } = fixture();
+  input.origin = 'i7ai-chat'; input.conversationId = 'conv-1';
+  await service.generate(input);
+  assert.equal(requests[0].body.user, 'tenant-a');
+  assert.deepEqual(requests[0].body.metadata.tags.sort(), ['conversa:conv-1', 'origem:i7ai-chat', 'usuario:user-a']);
+  const auto = fixture(); auto.input.origin = 'i7ai-automacao'; delete auto.input.userId; delete auto.input.conversationId;
+  await auto.service.generate(auto.input);
+  assert.deepEqual(requests[1].body.metadata.tags, ['origem:i7ai-automacao']);
 });

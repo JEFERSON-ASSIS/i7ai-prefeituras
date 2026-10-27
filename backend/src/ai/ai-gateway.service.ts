@@ -20,7 +20,7 @@ type HistoryItem = { role: string; content: string };
 type AttachmentContext = { documents: { id: string; name: string; mimeType: string; sizeBytes: string; status: string }[]; text: string; images: { name: string; mimeType: string; dataUrl: string }[] };
 type ChatRunOptions = { signal?: AbortSignal; onDelta?: (text: string) => void };
 export type ChatStreamEvent = 'delta' | 'complete';
-export type AgentExecutionInput = { message: string; userId?: string; automationId?: string; signal?: AbortSignal; modelId?: string; attachmentContext?: AttachmentContext };
+export type AgentExecutionInput = { message: string; userId?: string; automationId?: string; conversationId?: string; signal?: AbortSignal; modelId?: string; attachmentContext?: AttachmentContext };
 export type AgentAnswer = { answer: string; sources: RagSource[]; agentId: string; provider: string; model: string; toolCalls?: { callId: string; name: string }[]; usage: { inputTokens: number; outputTokens: number; cost: number; costConfigured: boolean; latencyMs: number; measured: boolean } };
 type PreparedAnswer = { quotaScope: QuotaScope; result: AgentAnswer; modelId: string; modelName: string; providerName: string; userId?: string; automationId?: string; tenantId: string };
 type ProviderAnswer = { answer: string; inputTokens: number; outputTokens: number; measured: boolean; toolCalls: { callId: string; name: string }[] };
@@ -67,7 +67,7 @@ export class AiGatewayService {
       attachmentContext = await this.knowledge.prepareChatAttachments(tenantId, userId, relevantIds);
     }
     options.signal?.throwIfAborted();
-    const prepared = await this.generate(agentId, tenantId, { message: input.message, userId, modelId, attachmentContext, signal: options.signal }, history, options.onDelta);
+    const prepared = await this.generate(agentId, tenantId, { message: input.message, userId, conversationId: input.conversationId, modelId, attachmentContext, signal: options.signal }, history, options.onDelta);
     try {
     options.signal?.throwIfAborted();
     const { conversationId, messages } = await this.prisma.$transaction(async (tx) => {
@@ -203,7 +203,7 @@ export class AiGatewayService {
 
   private async runOmniRouter(agent: LoadedAgent, model: LoadedModel, instructions: string, message: string, history: HistoryItem[], functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, onDelta?: (text: string) => void): Promise<ProviderAnswer> {
     if (!this.omni) throw new ServiceUnavailableException('O adaptador OmniRouter está indisponível.');
-    return this.omni.generate({ agent, model, instructions, message, history, images: input.attachmentContext?.images, functions, userId: input.userId, signal: input.signal, onDelta, quotaScope });
+    return this.omni.generate({ agent, model, instructions, message, history, images: input.attachmentContext?.images, functions, userId: input.userId, origin: input.automationId ? 'i7ai-automacao' : 'i7ai-chat', conversationId: input.conversationId, signal: input.signal, onDelta, quotaScope });
   }
 
   private async openAi(agent: LoadedAgent, tenantId: string, selectedModel: LoadedModel, instructions: string, message: string, history: HistoryItem[], functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, onDelta?: (text: string) => void): Promise<ProviderAnswer> {

@@ -13,6 +13,8 @@ export type OmniRouterInput = {
   images?: { name: string; mimeType: string; dataUrl: string }[];
   functions: AgentFunction[];
   userId?: string;
+  origin: 'i7ai-chat' | 'i7ai-automacao';
+  conversationId?: string;
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
   quotaScope: QuotaScope;
@@ -200,6 +202,15 @@ export class OmniRouterService {
     return [{ type: 'text', text: input.message }, ...images];
   }
 
+  // Ids only, never person names: the gateway groups spend by these tags.
+  private tags(input: OmniRouterInput): string[] {
+    return [
+      ...(input.userId ? ['usuario:' + input.userId] : []),
+      'origem:' + input.origin,
+      ...(input.conversationId ? ['conversa:' + input.conversationId] : []),
+    ];
+  }
+
   private async round(endpoint: string, apiKey: string, request: unknown, input: OmniRouterInput, record: UsageReporter, providerKey?: string): Promise<ChatRound> {
     const timeout = AbortSignal.timeout(60000);
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
@@ -207,7 +218,7 @@ export class OmniRouterService {
       const response = await fetch(endpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: input.onDelta ? 'text/event-stream' : 'application/json', Authorization: 'Bearer ' + apiKey },
         // `user` = prefeitura: the gateway groups spend by it (Relatórios › Custos de IA).
-        body: JSON.stringify({ ...(request as object), user: input.agent.tenantId, ...(providerKey ? { api_key: providerKey } : {}) }), signal, redirect: 'error',
+        body: JSON.stringify({ ...(request as object), user: input.agent.tenantId, metadata: { tags: this.tags(input) }, ...(providerKey ? { api_key: providerKey } : {}) }), signal, redirect: 'error',
       });
       input.signal?.throwIfAborted();
       if (!response.ok) throw this.httpError(response.status, await this.gatewayReason(response));
