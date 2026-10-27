@@ -11,6 +11,6 @@ export class RagController {
   @Get('search')
   @RequirePermission('documents', 'read')
   search(@Req() request: AuthenticatedRequest, @Query('q') query = '', @Query('limit') limit = '8') {
-    return this.rag.search(request.user!.tenantId, query, Number(limit));
+    return this.rag.search(request.user!.tenantId, query, Number(limit), undefined, request.user!.sub);
   }
 }

@@ -284,7 +284,7 @@ export class AiGatewayService {
     const loaded = await this.agentTools.load(tenantId, agentId, input.signal);
     // With screen content in the request, the agent's own http_*/mcp_* functions are withdrawn (prompt-injection guard).
     const functions = input.screenBlock ? loaded.filter(fn => !/^(http|mcp)_/.test(fn.definition.name)) : loaded;
-    const sources = await this.rag.searchForAgent(tenantId, agentId, message, 6);
+    const sources = await this.rag.searchForAgent(tenantId, agentId, message, 6, input.userId);
     // The typed text drives retrieval and storage; the model also sees the masked screen block.
     const modelMessage = input.screenBlock ? message + '\n\n' + input.screenBlock : message;
     const context = sources.map((source, index) => '[Fonte ' + (index + 1) + '] ' + source.documentName + ' (trecho ' + (source.chunkIndex + 1) + ')\n' + source.content).join('\n\n');

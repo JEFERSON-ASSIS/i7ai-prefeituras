@@ -14,23 +14,23 @@ export function searchTerms(query: string): string[] {
 export class RagService {
   constructor(private readonly prisma: PrismaService, private readonly embeddings: EmbeddingService) {}
 
-  async searchForAgent(tenantId: string, agentId: string, query: string, limit = 6): Promise<RagSource[]> {
+  async searchForAgent(tenantId: string, agentId: string, query: string, limit = 6, userId?: string): Promise<RagSource[]> {
     const agent = await this.prisma.agent.findFirst({ where: { id: agentId, tenantId }, select: { knowledgeBases: { select: { knowledgeBase: { select: { id: true, tenantId: true, status: true } } } } } });
     if (!agent) throw new NotFoundException('Agente não encontrado.');
     const bases = agent.knowledgeBases.map((link) => link.knowledgeBase).filter((base) => base.tenantId === tenantId && base.status === 'ACTIVE').map((base) => base.id);
     // An unconfigured agent must never gain access to every document in its tenant.
     if (!bases.length) return [];
-    return this.search(tenantId, query, limit, bases);
+    return this.search(tenantId, query, limit, bases, userId);
   }
 
-  async search(tenantId: string, query: string, limit = 8, knowledgeBaseIds?: string[]): Promise<RagSource[]> {
+  async search(tenantId: string, query: string, limit = 8, knowledgeBaseIds?: string[], userId?: string): Promise<RagSource[]> {
     if (!query.trim() || knowledgeBaseIds?.length === 0) return [];
     const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 20) : 8;
     const baseFilter = knowledgeBaseIds ? Prisma.sql`AND d."knowledgeBaseId" IN (${Prisma.join(knowledgeBaseIds.map((id) => Prisma.sql`${id}::uuid`))})` : Prisma.empty;
     let semantic: RagSource[] = [];
     if (this.embeddings.configured) {
       try {
-        const vectors = await this.embeddings.embed([query.slice(0, 8000)]);
+        const vectors = await this.embeddings.embed([query.slice(0, 8000)], { tenantId, userId, origem: 'i7ai-embeddings' });
         if (vectors) {
           semantic = await this.prisma.$queryRaw<RagSource[]>(Prisma.sql`
             SELECT dc."id", dc."content", dc."documentId", dc."chunkIndex", d."knowledgeBaseId", d."name" AS "documentName",

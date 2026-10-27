@@ -354,3 +354,26 @@ Os agentes podem pesquisar na internet e em compras públicas durante a resposta
 **Word e Excel antigos (.doc/.xls).** O chat e a base de conhecimento passam a ler `.doc` e `.xls` (dependência `xlsx` 0.20.3 vinda de `https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`; o `docker build` precisa de acesso a `cdn.sheetjs.com`). A leitura roda num `worker_thread` com 15 s de tempo limite (o worker é encerrado) e limites: 50 planilhas, 200.000 linhas, 2.000.000 de células e 4.000.000 de caracteres; planilha acima disso é recusada com mensagem clara.
 
 **Migrations.** i7Ai `20261101000100_research_calls`; SGDM `20261216100000_ia_pesquisa_internet`.
+
+## Busca por significado nas bases
+
+Sem configuração, as bases de conhecimento usam busca **literal** (palavras do texto). Para buscar por **significado** (embeddings), o i7Ai usa o LiteLLM, que já tem a credencial OpenAI da plataforma. O custo entra em **Relatórios › Custos de IA** por prefeitura: cada chamada leva `user = prefeitura` e as tags `origem:i7ai-embeddings`, `chave:plataforma` e, quando há usuário, `usuario:<id>`.
+
+**Como ligar (uma variável).** No stack do i7Ai defina `EMBEDDING_VIA_GATEWAY=1`. Vale só quando `EMBEDDING_BASE_URL` e `EMBEDDING_API_KEY` estão vazios e `OMNIROUTER_BASE_URL`/`OMNIROUTER_API_KEY` estão definidos (já estão): os embeddings usam o mesmo LiteLLM e a mesma chave do chat. Modelo padrão no gateway: `openai/text-embedding-3-small` (1536 dimensões).
+
+**Outras opções.**
+- `EMBEDDING_BASE_URL` + `EMBEDDING_API_KEY`: gateway explícito (mesmas tags e modelo `openai/...`).
+- `EMBEDDING_MODEL`: troca o modelo (precisa ter 1536 dimensões e existir no LiteLLM). Chunks gerados com outro modelo não entram na busca por significado até serem reprocessados.
+- Só `OPENAI_API_KEY`: OpenAI direto, modelo `text-embedding-3-small`, sem tags nem custo por prefeitura.
+- Documentos "só para o chat" nunca são indexados.
+
+**Custo.** `text-embedding-3-small` custa cerca de **US$ 0,02 por milhão de tokens**. Um documento de 100 páginas (~50 mil tokens) custa ~US$ 0,001; cada pergunta com busca custa uma fração de centavo.
+
+**Documentos já enviados.** Os que foram indexados como literal só passam a ter vetores ao reprocessar. No container do backend:
+
+```
+node scripts/reprocess-literal-documents.cjs --dry-run     # só conta
+node scripts/reprocess-literal-documents.cjs               # enfileira em lotes de 20, pausa de 2 s
+```
+
+Opções: `--batch N` (1 a 100), `--pause ms`, `--limit N`. O script usa a fila `document.process` (a mesma do botão "Reprocessar"), só mexe em documentos prontos com trechos literais, imprime apenas contagens e pode ser repetido sem duplicar (documentos já semânticos ou já na fila são ignorados). Durante o reprocesso o documento aparece como "processando" e a busca literal dele fica indisponível até terminar.
