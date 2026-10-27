@@ -11,6 +11,7 @@ import { ChatPage } from './features/ChatPage';
 import { KnowledgePage } from './features/KnowledgePage';
 import { ToolsPage } from './features/ToolPages';
 import { Dashboard, ReportsPage } from './features/OverviewPages';
+import { CentralConversationPage } from './features/CentralConversationPage';
 import { AutomationPage, ExecutionsPage } from './features/AutomationPages';
 export const moduleNavigationGroups = [
   ['Principal', [['dashboard', 'Dashboard', LayoutDashboard], ['reports', 'Relatórios', ChartNoAxesColumnIncreasing]]],
@@ -33,7 +34,14 @@ const titles = {
   integrations: ['Integrações', 'Conecte APIs, webhooks, n8n e servidores MCP.'],
   reports: ['Relatórios e consumo', 'Tokens, custos registrados e auditoria.']
 };
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function readCentralConversationId() {
+  const id = new URLSearchParams(window.location.search).get('conversa');
+  return id && uuidPattern.test(id) ? id : '';
+}
 export function App() {
+  // Read once: the SGDM Central de IA opens a conversation through ?conversa=<uuid>.
+  const [centralConversationId, setCentralConversationId] = useState(readCentralConversationId);
   const [active, setActive] = useState(() => titles[getSgdmContext().modulePage] ? getSgdmContext().modulePage : 'dashboard'),
     [selectedAgentId, setSelectedAgentId] = useState('');
   const [hostContext, setHostContext] = useState(getSgdmContext);
@@ -79,7 +87,15 @@ export function App() {
           window.dispatchEvent(new CustomEvent('i7ai:session-required', { detail: { reason: 'refresh' } }));
         }}>Atualizar sessão</Button>} /></Card></section>;
   if (session.loading || session.error || !session.data) return <section aria-label="i7Ai" className="module-layout"><State loading={session.loading} error={session.error} retry={session.reload} empty={!session.data && !session.loading && !session.error && 'Verificando sessão...'} /></section>;
-  const user = session.data,
+  const user = session.data;
+  if (centralConversationId) return <section aria-label="i7Ai" className="module-layout"><div className="page-content"><CentralConversationPage token={token} conversationId={centralConversationId} onClose={() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('conversa');
+    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+    setCentralConversationId('');
+  }} /></div></section>;
+  if (!user.roles?.length) return <section aria-label="i7Ai" className="module-layout"><Card><EmptyState icon={ShieldCheck} title="Acesso restrito" description="Seu acesso ao i7Ai serve só para abrir conversas pela Central de IA." /></Card></section>;
+  const
     [title, description] = titles[active] || titles.dashboard;
   let content;
   if (active === 'dashboard') content = <Dashboard token={token} navigate={navigate} />;else if (active === 'agents') content = <AgentsPage token={token} notify={notify} onOpen={id => {
