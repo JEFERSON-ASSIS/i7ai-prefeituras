@@ -15,7 +15,7 @@ import { publicModelCapabilities } from '../catalog/model-capabilities';
 import { SgdmAccessService } from '../sgdm/sgdm-access.service';
 import { SgdmOptimizationService } from '../sgdm/sgdm-optimization.service';
 import { OPTIMIZATION_DEFAULTS, OtimizacaoEfetiva } from '../sgdm/optimization-defaults';
-import { CHAT_EXPORT_INSTRUCTIONS, RESEARCH_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedInstructions, variableInstructions } from './instructions';
+import { CHAT_EXPORT_INSTRUCTIONS, RESEARCH_INSTRUCTIONS, RESEARCH_NO_TOOLS_INSTRUCTIONS, RESEARCH_OFF_INSTRUCTIONS, SplitInstructions, fixedInstructions, joinedInstructions, variableInstructions } from './instructions';
 import { ResearchConfigService } from '../research/research-config.service';
 import { ResearchSession, builtinResearchFunctions, researchRecorder, userMinuteCheck } from '../research/research-tools';
 import { SgdmLimitsService } from '../sgdm/sgdm-limits.service';
@@ -270,8 +270,13 @@ export class AiGatewayService {
     const cacheOn = omniConfigured && optimization.cachePrompt.ligado;
     // Built-in research: only on the OmniRouter path, with the switch on and a model that calls tools.
     const research = await this.researchFor(omniConfigured, optimization, model.capabilities, tenantId, agentId, input);
-    const allFunctions = research ? [...functions, ...research.functions] : functions;
-    const fixed = fixedInstructions(agent, Boolean(input.automationId), cacheOn) + (research ? '\n\n' + RESEARCH_INSTRUCTIONS : '');
+    const allFunctions = research.offered ? [...functions, ...research.offered.functions] : functions;
+    // OmniRouter only: the research block when offered, otherwise one line telling the model why it cannot search
+    // ("off" is skipped when the agent has a search tool of its own).
+    const researchLine = research.offered ? RESEARCH_INSTRUCTIONS
+      : research.reason === 'noTools' ? RESEARCH_NO_TOOLS_INSTRUCTIONS
+        : research.reason === 'off' && !functions.some(fn => fn.definition.name.startsWith('search_')) ? RESEARCH_OFF_INSTRUCTIONS : '';
+    const fixed = fixedInstructions(agent, Boolean(input.automationId), cacheOn, researchLine);
     const instructions: SplitInstructions = { fixed, variable: variableInstructions(context, input.attachmentContext?.text) };
     const joined = joinedInstructions(instructions);
     // The platform's per-agent output cap only lowers agent.maxTokens, never raises it.
@@ -302,7 +307,7 @@ export class AiGatewayService {
     const quotaScope = this.quota.scope({ tenantId, agentId, modelId: model.id, userId: input.userId, automationId: input.automationId, inputPrice: Number(model.inputPrice) || 0, outputPrice: Number(model.outputPrice) || 0, cachedInputPrice: Number(model.cachedInputPrice ?? model.inputPrice) || 0, cacheWriteInputPrice: Number(model.cacheWriteInputPrice ?? model.inputPrice) || 0, conversationId: input.conversationId, kind: 'resposta' });
     try {
     const generated = omniConfigured
-      ? await this.runOmniRouter(executionAgent, model, instructions, message, history, historyComplete, allFunctions, input, quotaScope, optimization, outputCapApplied, onDelta, historySavedTokens, research?.session)
+      ? await this.runOmniRouter(executionAgent, model, instructions, message, history, historyComplete, allFunctions, input, quotaScope, optimization, outputCapApplied, onDelta, historySavedTokens, research.offered?.session)
       : process.env.AI_GATEWAY_URL
         ? await this.externalGateway(executionAgent, model.slug, provider, joined, message, history, sources, settings, functions, input, quotaScope)
         : await this.openAi(executionAgent, tenantId, model, joined, message, history, functions, input, quotaScope, onDelta);
@@ -321,19 +326,20 @@ export class AiGatewayService {
   }
 
   /**
-   * The research functions and the session that runs them for this answer, or undefined when research is off, the
-   * path is not the OmniRouter or the model has no tool calls. Without a Serper key only the PNCP function is offered.
+   * The research functions and the session that runs them for this answer (`offered`), or why there are none:
+   * 'off' (switch off), 'noTools' (model without tool calls); nothing at all outside the OmniRouter path. Without a Serper key only the PNCP function is offered.
    */
-  private async researchFor(omniConfigured: boolean, optimization: OtimizacaoEfetiva, capabilities: unknown, tenantId: string, agentId: string, input: AgentExecutionInput): Promise<{ functions: AgentFunction[]; session: ResearchSession } | undefined> {
-    if (!omniConfigured || optimization.pesquisaInternet?.ligado !== true) return undefined;
+  private async researchFor(omniConfigured: boolean, optimization: OtimizacaoEfetiva, capabilities: unknown, tenantId: string, agentId: string, input: AgentExecutionInput): Promise<{ offered?: { functions: AgentFunction[]; session: ResearchSession }; reason?: 'off' | 'noTools' }> {
+    if (!omniConfigured) return {};
+    if (optimization.pesquisaInternet?.ligado !== true) return { reason: 'off' };
     const supportsTools = capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities) && (capabilities as Record<string, unknown>).supportsTools === true;
-    if (!supportsTools) return undefined;
+    if (!supportsTools) return { reason: 'noTools' };
     const config = this.researchConfig ? await this.researchConfig.get() : { serperKey: null, costPerSearchUsd: 0 };
     const session = new ResearchSession(
       { tenantId, userId: input.userId, agentId, conversationId: input.conversationId, serperKey: config.serperKey, costPerSearchUsd: config.costPerSearchUsd, signal: input.signal },
       { record: researchRecorder(this.prisma), withinUserLimit: userMinuteCheck(this.prisma, this.limits, tenantId, input.userId) },
     );
-    return { functions: builtinResearchFunctions({ web: Boolean(config.serperKey), pncp: true }), session };
+    return { offered: { functions: builtinResearchFunctions({ web: Boolean(config.serperKey), pncp: true }), session } };
   }
 
   private async openAi(agent: LoadedAgent, tenantId: string, selectedModel: LoadedModel, instructions: string, message: string, history: HistoryItem[], functions: AgentFunction[], input: AgentExecutionInput, quotaScope: QuotaScope, onDelta?: (text: string) => void): Promise<ProviderAnswer> {

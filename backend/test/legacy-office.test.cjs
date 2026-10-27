@@ -43,3 +43,30 @@ test('zip and unknown extensions return the exact messages', async () => {
   await assert.rejects(validateChatAttachment(upload('a.zip', 'application/zip', Buffer.from('PK'))), { message: 'Arquivos .zip não são lidos no chat. Extraia e anexe os arquivos de dentro (PDF, Word, Excel ou texto).' });
   await assert.rejects(validateChatAttachment(upload('a.exe', 'application/octet-stream', Buffer.from('MZ'))), { message: 'Formato .exe não suportado. Use PDF, Word (.doc/.docx), Excel (.xls/.xlsx), CSV ou texto.' });
 });
+
+const { runLegacyOffice } = require('../dist/knowledge/document-extractor');
+function sheetBuffer(build) {
+  const workbook = XLSX.utils.book_new();
+  build(workbook);
+  return Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'biff8' }));
+}
+
+test('sparse XLS with a huge declared range is refused quickly', async () => {
+  const buffer = sheetBuffer(workbook => {
+    const sheet = { A1: { t: 's', v: 'x' }, IV8200: { t: 's', v: 'y' }, '!ref': 'A1:IV8200' };
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Esparsa');
+  });
+  assert.ok(buffer.length < 20 * 1024);
+  const started = Date.now();
+  await assert.rejects(extractDocumentText('esparsa.xls', buffer), /grande demais para ser lida no chat/);
+  assert.ok(Date.now() - started < 1000, `levou ${Date.now() - started} ms`);
+});
+
+test('XLS with more than 50 sheets is refused', async () => {
+  const buffer = sheetBuffer(workbook => { for (let i = 0; i < 60; i++) XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['a']]), 'P' + i); });
+  await assert.rejects(extractDocumentText('muitas.xls', buffer), /grande demais para ser lida no chat/);
+});
+
+test('legacy parser worker is terminated on timeout', async () => {
+  await assert.rejects(runLegacyOffice('xls', xlsBuffer(), 1), { message: 'O processamento do arquivo excedeu o tempo limite.' });
+});

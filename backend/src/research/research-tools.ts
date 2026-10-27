@@ -17,6 +17,8 @@ export const BUILTIN_PNCP_ID = 'builtin:pncp';
 export const MAX_SEARCHES_PER_ANSWER = 5;
 export const SEARCH_LIMIT_ERROR = 'Limite de 5 pesquisas desta resposta atingido. Responda com o que já encontrou.';
 export const SOURCE_ERROR = 'A fonte não respondeu agora.';
+export const WEB_UNAVAILABLE = 'A pesquisa na internet está indisponível agora.';
+const ERROR_CODES = ['SERPER_RECUSOU', 'SERPER_FALHOU', 'PNCP_FALHOU'];
 const MAX_SOURCES_APPENDED = 10;
 
 const ajv = new Ajv({ allErrors: false, strict: false, validateFormats: false, ownProperties: true, coerceTypes: false, useDefaults: false, removeAdditional: false });
@@ -76,6 +78,8 @@ export class ResearchSession {
   private readonly logger = new Logger(ResearchSession.name);
   private readonly collected = new Map<string, Fonte>();
   private searches = 0;
+  /** Serper refused the key: no more web calls in this answer. */
+  private webRefused = false;
 
   constructor(private readonly ctx: ResearchContext, private readonly deps: ResearchDeps) {}
 
@@ -98,6 +102,10 @@ export class ResearchSession {
       await this.store(source, 'limite', 0);
       return reply({ erro: LIMIT_MESSAGES.userMinute });
     }
+    if (source === 'web' && this.webRefused) {
+      await this.store('web', 'erro', 0);
+      return reply({ erro: WEB_UNAVAILABLE });
+    }
     this.searches++;
     this.ctx.signal?.throwIfAborted();
     try {
@@ -108,7 +116,7 @@ export class ResearchSession {
         await this.store('web', 'ok', this.ctx.costPerSearchUsd);
         return reply(found);
       }
-      const found = await (this.deps.pncp ?? searchPurchases)({ termo: String(args.termo).trim(), ...(args.tipo ? { tipo: args.tipo } : {}), ...(args.uf ? { uf: String(args.uf).toUpperCase() } : {}) }, this.ctx.signal);
+      const found = await (this.deps.pncp ?? searchPurchases)({ termo: maskPersonalData(String(args.termo).trim()), ...(args.tipo ? { tipo: args.tipo } : {}), ...(args.uf ? { uf: String(args.uf).toUpperCase() } : {}) }, this.ctx.signal);
       this.ctx.signal?.throwIfAborted();
       for (const compra of found.compras) {
         const place = compra.municipio && compra.uf ? compra.municipio + '/' + compra.uf : compra.uf;
@@ -119,7 +127,10 @@ export class ResearchSession {
     } catch (error) {
       // The user's disconnect still cancels the whole answer; any other failure is the source's.
       if (this.ctx.signal?.aborted) this.ctx.signal.throwIfAborted();
-      this.logger.warn('Uma pesquisa (' + source + ') não respondeu.');
+      // Only the client's fixed error code; never the key or the query.
+      const code = error instanceof Error && ERROR_CODES.includes(error.message) ? error.message : 'FALHA_DESCONHECIDA';
+      if (code === 'SERPER_RECUSOU') this.webRefused = true;
+      this.logger.warn('Uma pesquisa (' + source + ') não respondeu: ' + code + '.');
       await this.store(source, 'erro', 0);
       return reply({ erro: SOURCE_ERROR });
     }

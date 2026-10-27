@@ -1,8 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
-import { extname } from 'node:path';
+import { extname, join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import * as mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
-import * as XLSX from 'xlsx';
 import { ocrPdfPages } from './pdf-ocr';
 
 export const DOCUMENT_MAX_BYTES = Math.min(100 * 1024 * 1024, Math.max(1024, Number(process.env.DOCUMENT_MAX_BYTES) || 50 * 1024 * 1024));
@@ -14,8 +14,7 @@ export const MIME_BY_EXTENSION: Record<string, string> = {
   '.doc': 'application/msword', '.xls': 'application/vnd.ms-excel',
 };
 const OLE2_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-const LEGACY_XLS_MAX_ROWS = 200_000;
-const LEGACY_PARSE_TIMEOUT_MS = 60_000;
+const LEGACY_PARSE_TIMEOUT_MS = 15_000;
 export const UNSUPPORTED_ZIP_MESSAGE = 'Arquivos .zip não são lidos no chat. Extraia e anexe os arquivos de dentro (PDF, Word, Excel ou texto).';
 export function unsupportedFormatMessage(extension: string) {
   return `Formato ${extension || '(sem extensão)'} não suportado. Use PDF, Word (.doc/.docx), Excel (.xls/.xlsx), CSV ou texto.`;
@@ -44,10 +43,23 @@ export function validateDocument(file?: DocumentUpload): string {
   return mimeType;
 }
 
-function withTimeout<T>(work: Promise<T>): Promise<T> {
-  let timer: NodeJS.Timeout;
-  const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('O processamento do arquivo excedeu o tempo limite.')), LEGACY_PARSE_TIMEOUT_MS); });
-  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+export function runLegacyOffice(kind: 'doc' | 'xls', buffer: Buffer, timeoutMs = LEGACY_PARSE_TIMEOUT_MS): Promise<string> {
+  // Parse in a worker thread: SheetJS and the OLE readers are synchronous and must not block the API.
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(join(__dirname, 'legacy-office.worker.js'), { workerData: { kind, buffer }, resourceLimits: { maxOldGenerationSizeMb: 512 } });
+    let settled = false;
+    const finish = (error?: Error, text?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      void worker.terminate();
+      if (error) reject(error); else resolve(text ?? '');
+    };
+    const timer = setTimeout(() => finish(new Error('O processamento do arquivo excedeu o tempo limite.')), timeoutMs);
+    worker.once('message', (message: { text?: string; error?: string }) => message.error ? finish(new Error(message.error)) : finish(undefined, message.text ?? ''));
+    worker.once('error', () => finish(new Error('Não foi possível ler o arquivo. Salve como .docx ou .xlsx e anexe de novo.')));
+    worker.once('exit', () => finish(new Error('Não foi possível ler o arquivo. Salve como .docx ou .xlsx e anexe de novo.')));
+  });
 }
 
 function stripMarkup(text: string) {
@@ -71,19 +83,8 @@ export async function extractDocumentText(name: string, buffer: Buffer): Promise
     } finally { await parser.destroy(); }
   } else if (extension === '.docx') {
     text = (await mammoth.extractRawText({ buffer })).value;
-  } else if (extension === '.doc') {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const WordExtractor = require('word-extractor') as new () => { extract(input: Buffer): Promise<{ getBody(): string }> };
-    text = (await withTimeout(new WordExtractor().extract(buffer))).getBody();
-  } else if (extension === '.xls') {
-    const workbook = XLSX.read(buffer, { type: 'buffer', cellFormula: false, cellHTML: false, sheetRows: LEGACY_XLS_MAX_ROWS });
-    const lines: string[] = [];
-    for (const sheetName of workbook.SheetNames) {
-      lines.push(`[Planilha: ${sheetName}]`);
-      const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '', blankrows: false });
-      for (const row of rows) lines.push(row.map(cell => String(cell ?? '')).join('\t'));
-    }
-    text = lines.join('\n');
+  } else if (extension === '.doc' || extension === '.xls') {
+    text = await runLegacyOffice(extension === '.doc' ? 'doc' : 'xls', buffer);
   } else if (extension === '.xlsx') {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer as never);
