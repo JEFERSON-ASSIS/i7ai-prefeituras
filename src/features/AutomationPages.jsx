@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, ArrowDown, ArrowUp, CalendarClock, Clock3, Pencil, Play, Plus, RefreshCw, Trash2, Zap } from 'lucide-react';
 import { apiRequest } from '../api/client';
 import { usePermission } from '../api/permissions';
+import { linkToolToAgent } from './agentTools';
 const labels = {
   DRAFT: 'Rascunho',
   ACTIVE: 'Ativa',
@@ -77,6 +78,31 @@ export function AutomationPage({
   const [archive, setArchive] = useState(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
+  const [authTools, setAuthTools] = useState(null);
+  const authorizeOpen = async () => {
+    setFormError('');
+    try {
+      setAuthTools(await apiRequest('/tools', { token }));
+    } catch (err) {
+      setFormError(err.message);
+    }
+  };
+  const authorizeTool = async toolId => {
+    const target = agents.find(agent => agent.id === form?.agentId);
+    if (!target || !toolId) return;
+    setBusy(true);
+    setFormError('');
+    try {
+      await linkToolToAgent(token, target, toolId);
+      const catalog = await apiRequest('/agents', { token });
+      setAgents(catalog.filter(agent => agent.status !== 'ARCHIVED'));
+      setAuthTools(null);
+    } catch (err) {
+      setFormError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const load = useCallback(async signal => {
     setLoading(true);
     setError('');
@@ -338,7 +364,7 @@ export function AutomationPage({
                     ...step.configuration,
                     toolId: event.target.value
                   }
-                })} label={<>Ferramenta{!permittedTools.length && <small>Vincule uma ferramenta HTTP ativa ao agente antes de usar esta ação.</small>}</>}><option value="">Selecione uma ferramenta do agente</option>{permittedTools.map(tool => <option key={tool.id} value={tool.id}>{tool.name}</option>)}</Select><Textarea value={step.inputText} onChange={event => updateStep(index, {
+                })} label={<>Ferramenta</>}><option value="">Selecione uma ferramenta do agente</option>{permittedTools.map(tool => <option key={tool.id} value={tool.id}>{tool.name}</option>)}</Select>{!permittedTools.length && <><p>Este agente ainda não usa nenhuma ferramenta.</p>{authTools ? <Select value="" disabled={busy} onChange={event => authorizeTool(event.target.value)} label={<>Ferramenta a autorizar</>}><option value="">Escolha uma ferramenta ativa</option>{authTools.filter(tool => tool.status === 'ACTIVE' && ['HTTP_REQUEST', 'WEBHOOK', 'REST_API', 'N8N'].includes(tool.type)).map(tool => <option key={tool.id} value={tool.id}>{tool.name}</option>)}</Select> : <UiButton type="button" variant="secondary" disabled={busy || !form.agentId} onClick={authorizeOpen}>Autorizar ferramenta neste agente</UiButton>}</>}<Textarea value={step.inputText} onChange={event => updateStep(index, {
                   inputText: event.target.value
                 })} label={<>Entrada da ferramenta (JSON)</>} hint={<>O resultado anterior e a entrada da automação também ficam disponíveis para a ferramenta.</>} /></> : <ErrorMessage error="Selecione um tipo de ação suportado para esta etapa." />}</UiCard></div>)}
       <UiButton type="button" variant="secondary" disabled={form.steps.length >= 20} icon={<Plus size={15} />} onClick={() => setForm({
