@@ -37,6 +37,7 @@
         "ioredis": "5.11.1",
         "mammoth": "1.11.0",
         "markdown-it": "14.3.2",
+        "node-html-parser": "9.0.5",
         "openai": "7.25.0",
         "pdf-parse": "2.4.5",
         "pdfkit": "0.17.2",

@@ -1,3 +1,4 @@
+import { htmlToPage, isHtmlContentType, HTML_MAX_BYTES } from './html-text';
 import { BadGatewayException, BadRequestException, ForbiddenException, GatewayTimeoutException } from '@nestjs/common';
 import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
@@ -86,11 +87,17 @@ export async function safeHttpRequest(options: {
       const statusCode = response.statusCode ?? 502;
       if (statusCode >= 300 && statusCode < 400) { response.resume(); done(new ForbiddenException('Redirecionamentos de ferramentas não são autorizados')); return; }
       let content = ''; let bytes = 0;
+      const isHtml = isHtmlContentType(response.headers['content-type']);
+      const limit = isHtml ? HTML_MAX_BYTES : 1024 * 1024;
       response.setEncoding('utf8');
       const result = (data: unknown): SafeHttpResult => ({ statusCode, data, headers: response.headers });
       response.on('data', (chunk: string) => {
         bytes += Buffer.byteLength(chunk);
-        if (bytes > 1024 * 1024) { done(new BadGatewayException('Resposta da ferramenta excede 1 MB')); response.destroy(); return; }
+        if (bytes > limit) {
+          if (!isHtml) { done(new BadGatewayException('Resposta da ferramenta excede 1 MB')); response.destroy(); return; }
+          // HTML pages are cut at the cap instead of failing; the tail is irrelevant for reading.
+          done(undefined, result(htmlToPage(content + chunk, url.toString(), statusCode))); response.destroy(); return;
+        }
         content += chunk;
         if (options.responseId !== undefined && String(response.headers['content-type']).includes('text/event-stream')) {
           const frames = content.split(/\r?\n\r?\n/); content = frames.pop() ?? '';
@@ -107,6 +114,7 @@ export async function safeHttpRequest(options: {
       response.on('end', () => {
         if (settled) return;
         let data: unknown = content;
+        if (isHtml && content) { done(undefined, result(htmlToPage(content, url.toString(), statusCode))); return; }
         if (content) { try { data = JSON.parse(content); } catch { /* Plain HTTP text is supported. */ } }
         done(undefined, result(data));
       });
