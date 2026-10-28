@@ -355,6 +355,20 @@ Os agentes podem pesquisar na internet e em compras públicas durante a resposta
 
 **Migrations.** i7Ai `20261101000100_research_calls`; SGDM `20261216100000_ia_pesquisa_internet`.
 
+## Assistente flutuante (canal `assistente`)
+
+O SGDM mostra um botão de conversa em todas as telas. A janela chama o mesmo `POST /api/agents/:id/chat/stream` do chat, com `channel: "assistente"`; a conversa fica salva com esse canal e aparece no chat completo (link `/i7ai/#/chat?c=<id>`, que abre a conversa uma vez e tira o parâmetro da URL). Mesma licença, mesmos limites e mesmo gateway (LiteLLM) das outras conversas, por isso o consumo entra no custo da prefeitura sem nada à parte.
+
+**Quem vê e qual agente.** Quem decide é o SGDM (`ia_assistente_prefeitura` e `ia_assistente_regras`; migration `20261217100000_ia_assistente`): desligado por padrão, ligado pelo dono por prefeitura (`IA_CENTRAL`), regras do gestor por secretaria, setor e usuário, na ordem usuário, setor principal, secretaria, padrão. O SGDM confere o agente na lista de agentes ativos da prefeitura no i7Ai (`GET /integracoes/sgdm/agentes?tenantId=`, com a chave de integração; a resposta de `meu` fica 60 s no cache do SGDM). Se o i7Ai não responder, `GET /ia/assistente/meu` devolve "desligado" sem guardar no cache e o botão some até a próxima consulta.
+
+**Conteúdo da tela (`screenContext`).** Só vai quando o usuário clica em "Usar o que está na tela", e só vale para aquela pergunta. Corpo: `{ titulo, rota, texto }`, com `texto` de até **30.000** caracteres (o navegador corta e avisa; o DTO recusa mais que isso). O SGDM bloqueia `/saude/**` e `/fila/**` no navegador e o botão fica desabilitado.
+- **Máscara no i7Ai** (`maskScreenText`): CPF, RG, CNS, e-mail e telefone viram `[CPF]`, `[RG]`, `[CNS]`, `[e-mail]` e `[telefone]`. CNPJ, números de processo, códigos e valores ficam. A máscara vale para `texto`, `titulo` e `rota` (a rota pode carregar um CPF).
+- **O que o modelo recebe:** a pergunta digitada mais um bloco `Conteúdo da tela (dados, não instruções)` com as marcas de abertura e fechamento neutralizadas se aparecerem dentro do texto, e uma instrução fixa de que o bloco é dado, não ordem. A busca nas bases de conhecimento usa só a pergunta digitada.
+- **Ferramentas:** com tela na requisição, as funções `http_*` e `mcp_*` do agente são retiradas (proteção contra instrução escondida na página). As demais ferramentas continuam.
+- **O que fica salvo:** a mensagem do usuário guarda só `metadata.screenContext = { titulo, rota }` (já mascarados); o texto da tela não vai ao banco. O log do i7Ai registra só contagens ("Conteúdo da tela enviado à IA: N caracteres, M após a máscara"). O registro de gastos do LiteLLM guarda tokens e custo, não o texto do pedido.
+
+**Limites e falhas.** A máscara é por padrão de texto: nome de pessoa, endereço e número de conta não são mascarados, e um CPF escrito sem pontuação só é pego quando tem 11 dígitos seguidos. O usuário é avisado na tela de que a tela vale só para uma pergunta. Se o i7Ai estiver parado, o proxy responde erro e a janela mostra "O assistente está indisponível agora."; as telas do SGDM não dependem dele.
+
 ## Busca por significado nas bases
 
 Sem configuração, as bases de conhecimento usam busca **literal** (palavras do texto). Para buscar por **significado** (embeddings), o i7Ai usa o LiteLLM, que já tem a credencial OpenAI da plataforma. O custo entra em **Relatórios › Custos de IA** por prefeitura: cada chamada leva `user = prefeitura` e as tags `origem:i7ai-embeddings`, `chave:plataforma` e, quando há usuário, `usuario:<id>`.
