@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Prisma } from '@prisma/client';
 import { Job, Queue, Worker, UnrecoverableError } from 'bullmq';
@@ -6,6 +6,9 @@ import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmbeddingService } from './embedding.service';
 import { chunkDocument, DOCUMENT_MAX_BYTES, extractDocumentText } from './document-extractor';
+
+/** O motivo real das falhas de processamento (antes sumia com o job). */
+const logger = new Logger('DocumentPipelineService');
 
 @Injectable()
 export class DocumentPipelineService implements OnModuleInit, OnModuleDestroy {
@@ -65,7 +68,12 @@ export class DocumentPipelineService implements OnModuleInit, OnModuleDestroy {
       }, { timeout: 60000 });
     } catch (error) {
       const permanent = error instanceof UnrecoverableError || job.attemptsMade + 1 >= (job.opts.attempts || 1);
-      const message = error instanceof UnrecoverableError ? error.message.slice(0, 1000) : 'Falha ao processar o documento. Verifique armazenamento, fila e configuração do provedor; depois reprocesse.';
+      // O motivo real fica no log (sem o conteúdo do documento); a tela recebe uma orientação.
+      const detalhe = error instanceof Error ? error.message : String(error);
+      logger.error(`document.process ${document.id} tentativa ${job.attemptsMade + 1}: ${(error as { code?: string })?.code ?? ''} ${detalhe.slice(0, 500)}`);
+      const message = error instanceof UnrecoverableError
+        ? error.message.slice(0, 1000)
+        : 'Não foi possível processar o documento agora. Tente reprocessar; se continuar, salve o PDF de novo (Imprimir › Salvar como PDF) e anexe outra vez.';
       await this.prisma.document.updateMany({ where: { id: document.id, tenantId: job.data.tenantId }, data: { status: permanent ? 'FAILED' : 'PROCESSING', errorMessage: message } });
       throw error;
     }

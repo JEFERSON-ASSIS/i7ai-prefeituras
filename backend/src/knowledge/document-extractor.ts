@@ -108,10 +108,25 @@ export async function extractDocumentText(name: string, buffer: Buffer): Promise
     if (text.includes('\0')) throw new Error('O arquivo de texto contém dados binários.');
     if (['.html', '.htm', '.xml'].includes(extension)) text = stripMarkup(text);
   }
-  text = text.replace(/\r\n/g, '\n').replace(/[\t ]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  text = limparTextoExtraido(text);
   if (!text) throw new Error(extension === '.pdf' ? 'PDF sem texto legível, inclusive após OCR local. Verifique a qualidade da digitalização.' : 'O documento não contém texto extraível.');
   if (text.length > 4_000_000) throw new Error('O texto extraído excede o limite de processamento de 4 milhões de caracteres.');
   return text;
+}
+
+/**
+ * Texto pronto para gravar: sem o caractere nulo (o PostgreSQL recusa 0x00 em
+ * texto; alguns PDFs o trazem no lugar de ligaduras, como "o\u0000cio"), sem
+ * caracteres de controle e com espaços e linhas normalizados.
+ */
+export function limparTextoExtraido(text: string): string {
+  return text
+    .replace(/\u0000/g, '')
+    .replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .replace(/[\t ]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export function chunkDocument(content: string): string[] {
