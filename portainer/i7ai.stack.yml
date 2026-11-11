@@ -110,6 +110,13 @@ services:
     image: ghcr.io/berriai/litellm@sha256:c169fb3adc514fcf210377c203f3de406d54f10bfdacf13948a4a839db9af7de
     command: [--config, /app/config.yaml, --port, '4000']
     environment:
+      # A rede do Swarm corta conexões paradas há 15 min, e o LiteLLM fixa o
+      # keepalive dele em 2 h (sysctl no container não muda isso). Por isso o
+      # sinal de vida sai do Postgres, gravado no próprio banco (11/11/2026):
+      #   ALTER DATABASE litellm SET tcp_keepalives_idle = 600;
+      #   ALTER DATABASE litellm SET tcp_keepalives_interval = 60;
+      # Se o volume do i7ai-postgres for recriado, rode os dois comandos de novo;
+      # sem eles o log enche de "Error in PostgreSQL connection" (inofensivo).
       DATABASE_URL: postgresql://i7ai:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@i7ai-postgres:5432/litellm
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY}
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY}
