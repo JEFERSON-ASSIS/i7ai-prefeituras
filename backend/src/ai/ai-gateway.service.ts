@@ -35,6 +35,8 @@ export type ChatStreamEvent = 'delta' | 'progress' | 'complete';
 export type AgentExecutionInput = { message: string; userId?: string; automationId?: string; conversationId?: string; signal?: AbortSignal; modelId?: string; attachmentContext?: AttachmentContext; historyComplete?: boolean;
   /** Masked screen block appended to the model-bound user message only (never stored). */
   screenBlock?: string;
+  /** Floating assistant of SGDM: the answer is bounded by the model's own output limit, not the agent's. */
+  channel?: 'assistente';
   /** Live stage of the answer (tool rounds) for the streaming chat; never carries arguments. */
   onProgress?: (etapa: ChatProgressStage) => void;
   /** Conversation summary system message (OmniRouter only) and the history that would go without it (savings baseline). */
@@ -50,6 +52,17 @@ type LoadedAgent = Prisma.AgentGetPayload<{ include: typeof agentInclude }>;
 type LoadedModel = LoadedAgent['models'][number]['model'];
 const conversationModel = { select: { id: true, name: true, slug: true, provider: { select: { id: true, name: true, slug: true } } } };
 const attachmentDocument = { select: { id: true, name: true, mimeType: true, sizeBytes: true, status: true, ownerUserId: true, tenantId: true } };
+
+/**
+ * Output limit of the floating assistant: the model's own maximum instead of the agent's (never lower than the
+ * agent's), kept to a quarter of the context window so the question, history and attachments still fit.
+ * Without the model's maximum in the catalog, the agent's limit stays.
+ */
+export function assistantOutputLimit(agentMax: number, modelMax?: number, contextWindow?: number): number {
+  if (typeof modelMax !== 'number' || !Number.isSafeInteger(modelMax) || modelMax < 1) return agentMax;
+  const room = typeof contextWindow === 'number' && Number.isSafeInteger(contextWindow) && contextWindow > 0 ? Math.floor(contextWindow / 4) : modelMax;
+  return Math.max(agentMax, Math.min(modelMax, room));
+}
 
 function numericTokens(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(2_147_483_647, Math.trunc(value)) : 0;
@@ -132,7 +145,7 @@ export class AiGatewayService {
       // Counts only: the screen text never reaches the logs.
       this.logger.log('Conteúdo da tela enviado à IA: ' + input.screenContext.texto.length + ' caracteres, ' + masked.length + ' após a máscara.');
     }
-    const prepared = await this.generate(agentId, tenantId, { message: input.message, ...(screenBlock ? { screenBlock } : {}), userId, conversationId: input.conversationId ?? newConversationId, modelId, attachmentContext, signal: options.signal, onProgress: options.onProgress, historyComplete: !historyCut, ...(summary ? { summary, summaryBaseline } : {}) }, history, options.onDelta, optimization);
+    const prepared = await this.generate(agentId, tenantId, { message: input.message, ...(screenBlock ? { screenBlock } : {}), ...(input.channel === 'assistente' ? { channel: 'assistente' as const } : {}), userId, conversationId: input.conversationId ?? newConversationId, modelId, attachmentContext, signal: options.signal, onProgress: options.onProgress, historyComplete: !historyCut, ...(summary ? { summary, summaryBaseline } : {}) }, history, options.onDelta, optimization);
     try {
     options.signal?.throwIfAborted();
     const { conversationId, messages } = await this.prisma.$transaction(async (tx) => {
@@ -306,7 +319,8 @@ export class AiGatewayService {
     const joined = joinedInstructions(instructions);
     // The platform's per-agent output cap only lowers agent.maxTokens, never raises it.
     const outputCap = optimization.limiteSaida.ligado && Number.isSafeInteger(optimization.limiteSaida.tokens) && optimization.limiteSaida.tokens! >= 1 ? optimization.limiteSaida.tokens! : Infinity;
-    const ownLimit = Math.min(agent.maxTokens, typeof capabilities.maxOutputTokens === 'number' ? capabilities.maxOutputTokens : Infinity);
+    const agentLimit = input.channel === 'assistente' ? assistantOutputLimit(agent.maxTokens, capabilities.maxOutputTokens, capabilities.contextWindow) : agent.maxTokens;
+    const ownLimit = Math.min(agentLimit, typeof capabilities.maxOutputTokens === 'number' ? capabilities.maxOutputTokens : Infinity);
     const maxOutput = Math.min(ownLimit, outputCap);
     // True only when the platform cap is what bounds the answer (strictly below the agent's and the model's limits).
     const outputCapApplied = outputCap < ownLimit;

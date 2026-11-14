@@ -3,7 +3,7 @@ const { THEME_VERSION } = require('../dist/sgdm/themes');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 require('reflect-metadata');
-const { AiGatewayService, calculateUsageCost } = require('../dist/ai/ai-gateway.service');
+const { AiGatewayService, assistantOutputLimit, calculateUsageCost } = require('../dist/ai/ai-gateway.service');
 const { OmniRouterService } = require('../dist/ai/omnirouter.service');
 const { OPTIMIZATION_DEFAULTS } = require('../dist/sgdm/optimization-defaults');
 
@@ -214,6 +214,39 @@ test('limite de saída do agente vira teto do max_tokens; sem limite vale o maxT
     assert.equal(request.max_tokens, expected);
     assert.deepEqual(optimization.calls, [['tenant-a', 'agent-a']]);
   }
+});
+
+test('assistente flutuante: max_tokens é o máximo do modelo (até 1/4 do contexto), não o limite do agente', async () => {
+  const cases = [
+    [{ channel: 'assistente' }, { maxOutputTokens: 16384, contextWindow: 128000 }, { ligado: false, tokens: null }, 16384],
+    [{ channel: 'assistente' }, { maxOutputTokens: 128000, contextWindow: 200000 }, { ligado: false, tokens: null }, 50000],
+    [{ channel: 'assistente' }, {}, { ligado: false, tokens: null }, 4000],
+    [{}, { maxOutputTokens: 16384, contextWindow: 128000 }, { ligado: false, tokens: null }, 4000],
+    [{ channel: 'assistente' }, { maxOutputTokens: 16384, contextWindow: 128000 }, { ligado: true, tokens: 1024 }, 1024],
+  ];
+  for (const [extra, capabilities, limiteSaida, expected] of cases) {
+    const { prisma, records, agent } = fixture(); agent.maxTokens = 4000; agent.models[1].model.slug = 'openai/gpt-4o-mini'; agent.models[1].model.capabilities = capabilities;
+    const quota = quotaFixture(prisma, records);
+    const optimization = { effective: async () => ({ ...JSON.parse(JSON.stringify(OPTIMIZATION_DEFAULTS)), limiteSaida }) };
+    const omni = new OmniRouterService({ execute: async () => { throw new Error('sem ferramentas'); } }, quota);
+    const service = new AiGatewayService(prisma, { searchForAgent: async () => [] }, { load: async () => [] }, quota, undefined, omni, undefined, optimization);
+    process.env.NODE_ENV = 'test'; process.env.OMNIROUTER_BASE_URL = 'https://omni.invalid/v1'; process.env.OMNIROUTER_API_KEY = 'synthetic-fixture';
+    let request;
+    global.fetch = async (_url, options) => {
+      request = JSON.parse(options.body);
+      return new Response(JSON.stringify({ choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Resposta.' } }], usage: { prompt_tokens: 10, completion_tokens: 2 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    await service.chat('agent-a', 'tenant-a', { message: 'Resuma', ...extra }, 'user-a');
+    assert.equal(request.max_tokens, expected, JSON.stringify({ extra, capabilities, limiteSaida }));
+  }
+});
+
+test('assistantOutputLimit: nunca abaixo do agente; sem máximo do modelo fica o do agente', () => {
+  assert.equal(assistantOutputLimit(2048, 64000, 200000), 50000);
+  assert.equal(assistantOutputLimit(2048, 64000), 64000);
+  assert.equal(assistantOutputLimit(2048, undefined, 200000), 2048);
+  assert.equal(assistantOutputLimit(8000, 4096, 128000), 8000);
+  assert.equal(assistantOutputLimit(2048, 16384, 8192), 2048);
 });
 
 test('sem o serviço de otimizações o chat segue com os padrões (sem teto de saída)', async () => {
